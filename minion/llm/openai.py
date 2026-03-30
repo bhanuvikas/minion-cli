@@ -1,0 +1,91 @@
+import os
+from typing import Iterator
+
+from openai import OpenAI
+
+from .base import LLMClient, LLMResponse, Message
+
+OPENAI_DEFAULT_MODEL = "gpt-4o"
+OPENROUTER_DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
+
+
+class OpenAIClient(LLMClient):
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        resolved_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_key:
+            raise ValueError(
+                "OPENAI_API_KEY is not set. Add it to your .env file."
+            )
+        # base_url=None uses OpenAI's default endpoint
+        self._client = OpenAI(api_key=resolved_key, base_url=base_url)
+        self._model = model or os.getenv("MINION_MODEL", OPENAI_DEFAULT_MODEL)
+        self._provider_name = "openai"
+
+    @property
+    def model_id(self) -> str:
+        return self._model
+
+    @property
+    def provider_name(self) -> str:
+        return self._provider_name
+
+    def _build_messages(self, messages: list[Message], system: str) -> list[dict]:
+        """OpenAI/OpenRouter handle the system prompt as a first message with role='system'."""
+        result = []
+        if system:
+            result.append({"role": "system", "content": system})
+        result.extend({"role": m.role, "content": m.content} for m in messages)
+        return result
+
+    def complete(self, messages: list[Message], system: str = "") -> LLMResponse:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=self._build_messages(messages, system),
+            max_tokens=8192,
+        )
+        return LLMResponse(
+            content=response.choices[0].message.content or "",
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            model=response.model,
+        )
+
+    def stream(self, messages: list[Message], system: str = "") -> Iterator[str]:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=self._build_messages(messages, system),
+            max_tokens=8192,
+            stream=True,
+        )
+        for chunk in response:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+
+
+class OpenRouterClient(OpenAIClient):
+    """OpenRouter exposes an OpenAI-compatible API that proxies 100+ models.
+
+    Using it is identical to OpenAIClient — just point at a different base_url
+    with an OpenRouter API key. This is a common pattern: many LLM providers
+    offer OpenAI-compatible endpoints so you get broad model access for free.
+    """
+
+    def __init__(self, model: str | None = None) -> None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY is not set. Add it to your .env file."
+            )
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        super().__init__(
+            model=model or os.getenv("MINION_MODEL", OPENROUTER_DEFAULT_MODEL),
+            api_key=api_key,
+            base_url=base_url,
+        )
+        self._provider_name = "openrouter"
