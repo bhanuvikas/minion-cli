@@ -1,5 +1,5 @@
 import os
-from typing import Iterator
+from typing import Iterator, Optional
 
 import anthropic
 
@@ -17,6 +17,7 @@ class AnthropicClient(LLMClient):
             )
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model or os.getenv("MINION_MODEL", DEFAULT_MODEL)
+        self._last_usage: Optional[LLMResponse] = None
 
     @property
     def model_id(self) -> str:
@@ -25,6 +26,10 @@ class AnthropicClient(LLMClient):
     @property
     def provider_name(self) -> str:
         return "anthropic"
+
+    @property
+    def last_usage(self) -> Optional[LLMResponse]:
+        return self._last_usage
 
     def _format_messages(self, messages: list[Message]) -> list[dict]:
         return [{"role": m.role, "content": m.content} for m in messages]
@@ -56,6 +61,14 @@ class AnthropicClient(LLMClient):
             kwargs["system"] = system
 
         # The `with` block keeps the HTTP connection open while we iterate.
-        # text_stream yields decoded string chunks as they arrive from the API.
-        with self._client.messages.stream(**kwargs) as stream:
-            yield from stream.text_stream
+        # Code after `yield from` runs once text_stream is exhausted — still
+        # inside the `with` block — so get_final_message() is valid here.
+        with self._client.messages.stream(**kwargs) as stream_ctx:
+            yield from stream_ctx.text_stream
+            final = stream_ctx.get_final_message()
+            self._last_usage = LLMResponse(
+                content="",
+                input_tokens=final.usage.input_tokens,
+                output_tokens=final.usage.output_tokens,
+                model=final.model,
+            )
