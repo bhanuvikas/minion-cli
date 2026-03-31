@@ -1,32 +1,21 @@
-import sys
-from pathlib import Path
+"""CLI entry point — argument parsing and delegation only.
+
+Single responsibility: define the typer app, parse CLI arguments,
+and hand off to the right module. No business logic lives here.
+"""
+
 from typing import Optional
 
 import typer
 from dotenv import load_dotenv
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion
-from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
 
 from . import __version__
-from .config import run_model_config
-from .llm import Message, get_client
-from .llm.base import LLMClient
-from .prompts import SYSTEM_PROMPT
-from .theme import (
-    BLUE,
-    YELLOW,
-    console,
-    print_error,
-    print_greeting,
-    print_model_info,
-    print_usage,
-)
+from .llm import get_client
+from .repl import run_repl
+from .runner import run_prompt
+from .theme import YELLOW, console, print_error
 
-load_dotenv()  # load .env before any client is constructed
+load_dotenv()  # must run before any LLM client is constructed
 
 app = typer.Typer(
     name="minion",
@@ -36,128 +25,6 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 
-# ─── REPL slash commands ──────────────────────────────────────────────────────
-REPL_COMMANDS = {
-    "/help":  "Show available commands",
-    "/model": "Interactively change provider, model, and API keys",
-    "/quit":  "Exit Minion",
-    "/exit":  "Exit Minion (alias for /quit)",
-}
-
-
-class _SlashCompleter(Completer):
-    """Tab-completes slash commands.
-
-    Keyed off REPL_COMMANDS so adding a new slash command automatically
-    makes it tab-completable — no separate list to maintain.
-    Only activates when the current input starts with '/'.
-    """
-
-    def get_completions(self, document: Document, complete_event: CompleteEvent):
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        for cmd, description in REPL_COMMANDS.items():
-            if cmd.startswith(text):
-                yield Completion(
-                    cmd[len(text):],   # the suffix needed to complete the word
-                    display=cmd,
-                    display_meta=description,
-                )
-
-
-# ─── Enter key: apply completion then submit ──────────────────────────────────
-# prompt_toolkit's default Enter submits raw text without applying any
-# highlighted completion. This binding intercepts Enter so that:
-#   • If the user scrolled to a specific completion → apply it, then submit
-#   • If there is exactly one match → apply it automatically, then submit
-#   • Otherwise → normal submit (no completion active)
-_kb = KeyBindings()
-
-@_kb.add("enter")
-def _enter_with_completion(event):
-    buf = event.app.current_buffer
-    state = buf.complete_state
-    if state:
-        current = state.current_completion
-        if current is not None:
-            # User tabbed / scrolled to a specific entry
-            buf.apply_completion(current)
-        elif len(state.completions) == 1:
-            # Single unambiguous match — no need to Tab first
-            buf.apply_completion(state.completions[0])
-    buf.validate_and_handle()
-
-
-def _handle_slash_command(raw: str, client: LLMClient) -> bool:
-    """Process a slash command. Returns True if the input was a slash command."""
-    cmd = raw.strip().lower()
-
-    if cmd in ("/quit", "/exit"):
-        console.print(f"[{YELLOW}]Poopaye! (Goodbye!) 👋[/]")
-        raise typer.Exit()
-
-    if cmd == "/help":
-        console.print(f"\n[bold {YELLOW}]Available commands:[/]")
-        for command, description in REPL_COMMANDS.items():
-            console.print(f"  [{BLUE}]{command:<10}[/]  {description}")
-        console.print()
-        return True
-
-    if cmd == "/model":
-        run_model_config(client)
-        return True
-
-    if cmd.startswith("/"):
-        console.print(
-            f"[muted]Unknown command '{cmd}'. Type [bold]/help[/bold] for available commands.[/]"
-        )
-        return True
-
-    return False
-
-
-# ─── Core prompt runner ───────────────────────────────────────────────────────
-
-def _run_prompt(prompt: str, client: LLMClient) -> None:
-    """Send a prompt, show a spinner until the first token, then stream the rest."""
-    messages = [Message(role="user", content=prompt)]
-
-    # Get the stream iterator. Nothing happens yet — generators are lazy.
-    stream = client.stream(messages, system=SYSTEM_PROMPT)
-
-    # Show a spinner while we wait for the first token (the actual latency).
-    # console.status() cleans up the spinner line before we start printing output.
-    try:
-        with console.status(f"[{YELLOW}]🍌  Bee-do bee-do...[/]", spinner="dots"):
-            first_chunk = next(stream, None)
-    except Exception as e:
-        print_error(str(e))
-        return
-
-    if first_chunk is None:
-        print_error("Received an empty response from the model.")
-        return
-
-    # Print the "minion › " label then stream the rest directly to stdout.
-    # We use sys.stdout.write for streaming chunks to avoid Rich's per-chunk
-    # overhead and markup-scanning on raw LLM text.
-    console.print(f"[bold {BLUE}]minion[/] › ", end="")
-    sys.stdout.write(first_chunk)
-    sys.stdout.flush()
-
-    try:
-        for chunk in stream:
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
-    except KeyboardInterrupt:
-        pass  # Ctrl+C mid-stream — just stop cleanly
-
-    print()  # final newline after streamed content
-    print_usage(client.last_usage)
-
-
-# ─── CLI entry points ─────────────────────────────────────────────────────────
 
 @app.command()
 def main(
@@ -166,20 +33,15 @@ def main(
         help="Prompt to send to Minion. Omit to start interactive REPL mode.",
     ),
     provider: Optional[str] = typer.Option(
-        None,
-        "--provider",
-        "-p",
+        None, "--provider", "-p",
         help="LLM provider: anthropic | openai | openrouter",
     ),
     model: Optional[str] = typer.Option(
-        None,
-        "--model",
-        "-m",
+        None, "--model", "-m",
         help="Model ID (overrides MINION_MODEL env var)",
     ),
     version: bool = typer.Option(
-        False,
-        "--version",
+        False, "--version",
         help="Show version and exit.",
         is_eager=True,
     ),
@@ -200,44 +62,6 @@ def main(
         raise typer.Exit(code=1)
 
     if prompt:
-        _run_prompt(prompt, client)
+        run_prompt(prompt, client)
     else:
-        _run_repl(client)
-
-
-def _run_repl(client: LLMClient) -> None:
-    print_greeting()
-    console.print(f"[muted]Type [bold]/help[/bold] for commands · [bold]/quit[/bold] to exit[/]\n")
-
-    # History file persists across sessions — up/down arrows work even after restart.
-    # prompt_toolkit is already installed as a transitive dep of questionary.
-    history_path = Path.home() / ".minion" / "history"
-    history_path.parent.mkdir(exist_ok=True)
-    session: PromptSession = PromptSession(
-        history=FileHistory(str(history_path)),
-        completer=_SlashCompleter(),
-        key_bindings=_kb,
-    )
-
-    # The prompt prefix uses prompt_toolkit's FormattedText so it gets the same
-    # yellow styling as the rest of the UI without going through Rich.
-    you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
-
-    while True:
-        try:
-            user_input = session.prompt(you_prompt)
-        except (KeyboardInterrupt, EOFError):
-            console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
-            break
-
-        user_input = user_input.strip()
-        if not user_input:
-            continue
-
-        if _handle_slash_command(user_input, client):
-            console.print()  # blank line after slash-command output
-            continue
-
-        console.print()  # blank line between "you ›" and "minion ›"
-        _run_prompt(user_input, client)
-        console.print()  # blank line after response + usage, before next prompt
+        run_repl(client)
