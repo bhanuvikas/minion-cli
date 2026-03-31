@@ -87,12 +87,14 @@ class TestSlashCompleter:
 # ─── _handle_slash_command ────────────────────────────────────────────────────
 
 class TestHandleSlashCommand:
-    def _call(self, raw: str, client=None):
+    def _call(self, raw: str, client=None, conversation=None):
         if client is None:
             client = MagicMock()
+        if conversation is None:
+            conversation = MagicMock()
         with patch("minion.repl.console"), \
              patch("minion.repl.run_model_config"):
-            return _handle_slash_command(raw, client)
+            return _handle_slash_command(raw, client, conversation)
 
     def test_returns_false_for_regular_text(self):
         assert self._call("explain recursion") is False
@@ -110,7 +112,7 @@ class TestHandleSlashCommand:
         client = MagicMock()
         with patch("minion.repl.console"), \
              patch("minion.repl.run_model_config") as mock_config:
-            _handle_slash_command("/model", client)
+            _handle_slash_command("/model", client, MagicMock())
         mock_config.assert_called_once_with(client)
 
     def test_unknown_slash_command_returns_true(self):
@@ -119,11 +121,11 @@ class TestHandleSlashCommand:
 
     def test_quit_raises_system_exit(self):
         with patch("minion.repl.console"), pytest.raises(typer.Exit):
-            _handle_slash_command("/quit", MagicMock())
+            _handle_slash_command("/quit", MagicMock(), MagicMock())
 
     def test_exit_raises_system_exit(self):
         with patch("minion.repl.console"), pytest.raises(typer.Exit):
-            _handle_slash_command("/exit", MagicMock())
+            _handle_slash_command("/exit", MagicMock(), MagicMock())
 
     def test_commands_are_case_insensitive(self):
         """Slash commands must work regardless of capitalisation."""
