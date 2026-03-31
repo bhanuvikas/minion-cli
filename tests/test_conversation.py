@@ -4,7 +4,7 @@ No network calls, no API keys needed.
 """
 
 import pytest
-from minion.conversation import Conversation, _context_limit, DEFAULT_LIMIT
+from minion.conversation import Conversation, ContextSnapshot, _context_limit, DEFAULT_LIMIT
 from minion.llm.base import LLMResponse, Message
 
 
@@ -163,3 +163,91 @@ class TestContextLimit:
 
     def test_case_insensitive_matching(self):
         assert _context_limit("GPT-4O") == 128_000
+
+
+# ─── ContextSnapshot ─────────────────────────────────────────────────────────
+
+class TestContextSnapshot:
+    def test_build_snapshot_returns_none_without_usage(self):
+        c = Conversation(model="claude-3-5-sonnet")
+        c.add_user("hi")
+        c.add_assistant("hey", None)
+        assert c.build_snapshot(None) is None
+
+    def test_build_snapshot_populates_fields(self):
+        c = Conversation()
+        c.add_user("hi")
+        c.add_assistant("hey", _usage(input_tokens=500, output_tokens=100, model="claude-3-5-sonnet"))
+        snap = c.build_snapshot(_usage(input_tokens=500, output_tokens=100, model="claude-3-5-sonnet"), system_prompt_tokens=50)
+        assert snap.model == "claude-3-5-sonnet"
+        assert snap.input_tokens == 500
+        assert snap.output_tokens == 100
+        assert snap.context_limit == 200_000
+        assert snap.session_total == 600
+        assert snap.turn_count == 1
+        assert snap.system_prompt_tokens == 50
+
+    def test_snapshot_message_tokens_derived(self):
+        snap = ContextSnapshot(
+            model="m", input_tokens=500, output_tokens=100,
+            context_limit=200_000, session_total=600, turn_count=1,
+            system_prompt_tokens=50,
+        )
+        assert snap.message_tokens == 450
+
+    def test_snapshot_context_pct(self):
+        snap = ContextSnapshot(
+            model="m", input_tokens=1_000, output_tokens=100,
+            context_limit=100_000, session_total=1_100, turn_count=1,
+        )
+        assert snap.context_pct == pytest.approx(1.0)
+
+    def test_snapshot_context_pct_zero_when_no_limit(self):
+        snap = ContextSnapshot(
+            model="m", input_tokens=100, output_tokens=10,
+            context_limit=0, session_total=110, turn_count=1,
+        )
+        assert snap.context_pct == 0.0
+
+    def test_snapshot_stored_on_conversation(self):
+        c = Conversation()
+        c.add_user("q")
+        usage = _usage(input_tokens=100, output_tokens=50, model="gpt-4o")
+        c.add_assistant("a", usage)
+        c.build_snapshot(usage)
+        assert c._snapshot is not None
+        assert c._snapshot.model == "gpt-4o"
+
+    def test_clear_resets_snapshot(self):
+        c = Conversation()
+        c.add_user("q")
+        usage = _usage(input_tokens=100, output_tokens=50, model="gpt-4o")
+        c.add_assistant("a", usage)
+        c.build_snapshot(usage)
+        c.clear()
+        assert c._snapshot is None
+
+    def test_context_display_returns_snapshot_when_available(self):
+        c = Conversation()
+        c.add_user("q")
+        usage = _usage(input_tokens=100, output_tokens=50, model="gpt-4o")
+        c.add_assistant("a", usage)
+        snap = c.build_snapshot(usage)
+        assert c.context_display() is snap
+
+    def test_context_display_returns_zero_snapshot_after_clear(self):
+        c = Conversation()
+        c.add_user("q")
+        usage = _usage(input_tokens=100, output_tokens=50, model="gpt-4o")
+        c.add_assistant("a", usage)
+        c.build_snapshot(usage)
+        c.clear()
+        display = c.context_display()
+        assert display is not None
+        assert display.input_tokens == 0
+        assert display.model == "gpt-4o"
+        assert display.session_total == 150  # billing history preserved
+
+    def test_context_display_returns_none_when_no_model(self):
+        c = Conversation()   # no model set, no turns
+        assert c.context_display() is None

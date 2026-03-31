@@ -1,5 +1,5 @@
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -7,6 +7,9 @@ from rich.text import Text
 from rich.theme import Theme
 
 from .llm.base import LLMResponse
+
+if TYPE_CHECKING:
+    from .conversation import ContextSnapshot
 
 # ─── Minion Colour Palette ────────────────────────────────────────────────────
 YELLOW = "#FFD700"
@@ -121,23 +124,77 @@ def print_model_info(provider: str, model: str) -> None:
     console.print(f"[secondary]provider[/] {provider}  [secondary]model[/] {model}")
 
 
-def print_usage(usage: Optional[LLMResponse], session_total: Optional[int] = None) -> None:
-    """Display token usage on its own line with a leading blank line for breathing room.
+def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[name-defined]
+    """Footer line shown after every response.
 
-    session_total: cumulative (input + output) tokens across all turns this session.
-                   Only shown in REPL mode where a Conversation is active.
+    Format: model · N in / N out · context: X/Y (Z%) · session total: T
     """
-    if usage is None:
+    if snapshot is None:
         return
     console.print()
-    line = (
-        f"[muted]  ↳ {usage.model}  ·  "
-        f"{usage.input_tokens:,} in  /  {usage.output_tokens:,} out"
+    console.print(
+        f"[muted]  ↳ {snapshot.model}  ·  "
+        f"{snapshot.input_tokens:,} in / {snapshot.output_tokens:,} out  ·  "
+        f"context: {snapshot.input_tokens:,}/{snapshot.context_limit:,} "
+        f"({snapshot.context_pct:.1f}%)  ·  "
+        f"session total: {snapshot.session_total:,}[/]"
     )
-    if session_total is not None:
-        line += f"  ·  session: {session_total:,}"
-    line += "[/]"
-    console.print(line)
+
+
+def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[name-defined]
+    """Rich context breakdown displayed by the /context slash command."""
+    console.print()
+
+    if snapshot is None:
+        console.print(f"[muted]  No context data yet — start a conversation first.[/]")
+        console.print()
+        return
+
+    # ── Bar chart ──────────────────────────────────────────────────────────────
+    pct = snapshot.context_pct
+    bar_width = 28
+    filled = round(bar_width * pct / 100)
+    bar = f"[{BLUE}]" + "█" * filled + "[/]" + f"[muted]" + "░" * (bar_width - filled) + "[/]"
+
+    console.print(f"  [bold {YELLOW}]Context — {snapshot.model}[/]")
+    console.print(f"  {bar}  {pct:.1f}%")
+    console.print(
+        f"  [muted]{snapshot.input_tokens:,} / {snapshot.context_limit:,} tokens[/]"
+    )
+    console.print()
+
+    # ── This turn ──────────────────────────────────────────────────────────────
+    if snapshot.input_tokens == 0:
+        console.print(f"  [muted]History cleared — context is fresh.[/]")
+    else:
+        console.print(
+            f"  This turn:     [{YELLOW}]{snapshot.input_tokens:,}[/] in  /  "
+            f"[{YELLOW}]{snapshot.output_tokens:,}[/] out"
+        )
+
+    # ── Session ────────────────────────────────────────────────────────────────
+    turn_word = "turn" if snapshot.turn_count == 1 else "turns"
+    console.print(
+        f"  Session total: [{YELLOW}]{snapshot.session_total:,}[/] tokens  "
+        f"[muted]({snapshot.turn_count} {turn_word})[/]"
+    )
+
+    # ── Breakdown ──────────────────────────────────────────────────────────────
+    if snapshot.input_tokens > 0 and snapshot.system_prompt_tokens > 0:
+        console.print()
+        console.print(f"  [muted]Breakdown (approximate):[/]")
+        sys_pct  = snapshot.system_prompt_tokens / snapshot.context_limit * 100
+        msg_pct  = snapshot.message_tokens / snapshot.context_limit * 100
+        console.print(
+            f"  [muted]  System prompt:  ~{snapshot.system_prompt_tokens:,} tokens  "
+            f"({sys_pct:.1f}%)[/]"
+        )
+        console.print(
+            f"  [muted]  Messages:       ~{snapshot.message_tokens:,} tokens  "
+            f"({msg_pct:.1f}%)[/]"
+        )
+
+    console.print()
 
 
 def stream_response_to_stdout(chunks) -> None:
