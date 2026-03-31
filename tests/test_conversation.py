@@ -193,14 +193,23 @@ class TestContextSnapshot:
             context_limit=200_000, session_total=600, turn_count=1,
             system_prompt_tokens=50,
         )
-        assert snap.message_tokens == 450
+        # message_tokens = current_context_tokens - system_prompt_tokens
+        #                = (500 + 100) - 50 = 550
+        assert snap.message_tokens == 550
+
+    def test_snapshot_current_context_tokens(self):
+        snap = ContextSnapshot(
+            model="m", input_tokens=190, output_tokens=221,
+            context_limit=16_000, session_total=411, turn_count=1,
+        )
+        assert snap.current_context_tokens == 411
 
     def test_snapshot_context_pct(self):
         snap = ContextSnapshot(
-            model="m", input_tokens=1_000, output_tokens=100,
-            context_limit=100_000, session_total=1_100, turn_count=1,
+            model="m", input_tokens=900, output_tokens=100,
+            context_limit=100_000, session_total=1_000, turn_count=1,
         )
-        assert snap.context_pct == pytest.approx(1.0)
+        assert snap.context_pct == pytest.approx(1.0)  # 1000/100000 = 1%
 
     def test_snapshot_context_pct_zero_when_no_limit(self):
         snap = ContextSnapshot(

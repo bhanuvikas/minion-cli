@@ -135,7 +135,7 @@ def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[
     console.print(
         f"[muted]  ↳ {snapshot.model}  ·  "
         f"{snapshot.input_tokens:,} in / {snapshot.output_tokens:,} out  ·  "
-        f"context: {snapshot.input_tokens:,}/{snapshot.context_limit:,} "
+        f"context: {snapshot.current_context_tokens:,}/{snapshot.context_limit:,} "
         f"({snapshot.context_pct:.1f}%)  ·  "
         f"session total: {snapshot.session_total:,}[/]"
     )
@@ -159,7 +159,7 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
     console.print(f"  [bold {YELLOW}]Context — {snapshot.model}[/]")
     console.print(f"  {bar}  {pct:.1f}%")
     console.print(
-        f"  [muted]{snapshot.input_tokens:,} / {snapshot.context_limit:,} tokens[/]"
+        f"  [muted]{snapshot.current_context_tokens:,} / {snapshot.context_limit:,} tokens[/]"
     )
     console.print()
 
