@@ -23,21 +23,22 @@ from .conversation import Conversation
 from .llm.base import LLMClient
 from .runner import run_prompt
 from .session import list_sessions, load, save
-from .theme import BLUE, YELLOW, console, print_error, print_greeting
+from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
 
 # ─── Slash command registry ───────────────────────────────────────────────────
 # Single source of truth for both the /help display and tab-completion.
 # Add an entry here to make a new command available everywhere automatically.
 
 REPL_COMMANDS = {
-    "/help":   "Show available commands",
-    "/model":  "Interactively change provider, model, and API keys",
-    "/clear":  "Clear conversation history and start fresh",
-    "/save":   "Save session: /save <name>",
-    "/load":   "Load session: /load <name>",
-    "/resume": "Pick a saved session from a dropdown and load it",
-    "/quit":   "Exit Minion",
-    "/exit":   "Exit Minion (alias for /quit)",
+    "/help":    "Show available commands",
+    "/model":   "Interactively change provider, model, and API keys",
+    "/context": "Show context window usage and token breakdown",
+    "/clear":   "Clear conversation history and start fresh",
+    "/save":    "Save session: /save <name>",
+    "/load":    "Load session: /load <name>",
+    "/resume":  "Pick a saved session from a dropdown and load it",
+    "/quit":    "Exit Minion",
+    "/exit":    "Exit Minion (alias for /quit)",
 }
 
 
@@ -121,8 +122,13 @@ def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversatio
         run_model_config(client)
         return True
 
+    if cmd == "/context":
+        print_context(conversation.context_display())
+        return True
+
     if cmd == "/clear":
         conversation.messages.clear()   # reset history only; total_tokens is billing history
+        conversation._snapshot = None
         console.print(f"[{YELLOW}]Conversation cleared.[/]")
         return True
 

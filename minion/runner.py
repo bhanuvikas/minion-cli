@@ -10,10 +10,14 @@ From Phase 3 onward this grows into the full agent loop
 import sys
 from typing import Optional
 
-from .conversation import Conversation
+from .conversation import ContextSnapshot, Conversation, _context_limit
 from .llm.base import LLMClient, Message
 from .prompts import SYSTEM_PROMPT
 from .theme import BLUE, YELLOW, console, print_error, print_usage
+
+# Estimated system prompt token count (chars // 4). Computed once at import time
+# since SYSTEM_PROMPT is a module-level constant that never changes.
+_SYSTEM_PROMPT_TOKENS = len(SYSTEM_PROMPT) // 4
 
 
 def run_prompt(
@@ -40,7 +44,6 @@ def run_prompt(
         with console.status(f"[{YELLOW}]🍌  Bee-do bee-do...[/]", spinner="dots"):
             first_chunk = next(stream, None)
     except Exception as e:
-        # If we already added the user message, remove it so history stays clean
         if conversation is not None and conversation.messages:
             conversation.messages.pop()
         print_error(str(e))
@@ -70,10 +73,25 @@ def run_prompt(
     print()  # final newline
 
     usage = client.last_usage
-    print_usage(usage, conversation.total_tokens if conversation else None)
 
     if conversation is not None:
         full_text = "".join(chunks)
         conversation.add_assistant(full_text, usage)
         if usage:
             conversation.truncate_if_needed(usage.input_tokens, usage.output_tokens)
+        snapshot = conversation.build_snapshot(usage, _SYSTEM_PROMPT_TOKENS)
+    elif usage:
+        # One-shot mode: build a minimal snapshot for the footer display
+        snapshot = ContextSnapshot(
+            model=usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            context_limit=_context_limit(usage.model),
+            session_total=usage.input_tokens + usage.output_tokens,
+            turn_count=1,
+            system_prompt_tokens=_SYSTEM_PROMPT_TOKENS,
+        )
+    else:
+        snapshot = None
+
+    print_usage(snapshot)

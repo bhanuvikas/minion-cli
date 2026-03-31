@@ -8,6 +8,7 @@ on every API call. This class manages that list.
 """
 
 import math
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .llm.base import LLMResponse, Message
@@ -24,7 +25,7 @@ MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "gpt-4o-mini":       128_000,
     "gpt-4-turbo":       128_000,
 }
-DEFAULT_LIMIT      = 16_000
+DEFAULT_LIMIT        = 16_000
 TRUNCATION_THRESHOLD = 0.85
 
 
@@ -37,13 +38,52 @@ def _context_limit(model: str) -> int:
     return DEFAULT_LIMIT
 
 
+@dataclass
+class ContextSnapshot:
+    """Everything needed to display context usage — built after each LLM response.
+
+    This is the single data structure consumed by print_usage() (footer line)
+    and print_context() (/context command). Adding new context components in
+    future phases (tool_tokens, memory_tokens, etc.) means adding fields here
+    and updating the display functions — nothing else changes.
+
+    Accuracy:
+      - input_tokens, output_tokens, context_limit, session_total: exact
+      - system_prompt_tokens: estimated (chars // 4); labeled ~ in display
+      - message_tokens: derived (input_tokens - system_prompt_tokens)
+    """
+    model: str
+    input_tokens: int           # sent this turn (system prompt + all messages)
+    output_tokens: int          # generated this turn
+    context_limit: int          # model's context window size
+    session_total: int          # cumulative (input + output) across all turns
+    turn_count: int             # completed turns this session
+    system_prompt_tokens: int = 0   # estimated from char count; 0 if unavailable
+
+    # Future phases add fields here:
+    # tool_tokens: int = 0       # Phase 3 — tool definitions sent in context
+    # memory_tokens: int = 0     # Phase 6 — retrieved memory chunks
+
+    @property
+    def message_tokens(self) -> int:
+        return max(0, self.input_tokens - self.system_prompt_tokens)
+
+    @property
+    def context_pct(self) -> float:
+        if self.context_limit == 0:
+            return 0.0
+        return self.input_tokens / self.context_limit * 100
+
+
 class Conversation:
     """Maintains message history and tracks cumulative token usage for a session."""
 
     def __init__(self, model: str = "") -> None:
         self.messages: list[Message] = []
-        self.total_tokens: int = 0   # cumulative (input + output) across all turns
+        self.total_tokens: int = 0      # cumulative (input + output) across all turns
         self._model = model
+        self._turn_count: int = 0
+        self._snapshot: Optional[ContextSnapshot] = None
 
     def set_model(self, model: str) -> None:
         """Update the model used for context-limit lookups (e.g. after /model change)."""
@@ -57,13 +97,53 @@ class Conversation:
         self.messages.append(Message(role="assistant", content=text))
         if usage:
             self.total_tokens += usage.input_tokens + usage.output_tokens
-            # Update model from usage in case it wasn't set at construction time
+            self._turn_count += 1
             if usage.model:
                 self._model = usage.model
 
+    def build_snapshot(self, usage: Optional[LLMResponse], system_prompt_tokens: int = 0) -> Optional["ContextSnapshot"]:
+        """Build and store a ContextSnapshot from the latest response.
+
+        system_prompt_tokens: estimated token count for the system prompt,
+        computed by the caller (runner.py) as len(SYSTEM_PROMPT) // 4.
+        """
+        if usage is None:
+            return None
+        self._snapshot = ContextSnapshot(
+            model=usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            context_limit=_context_limit(usage.model),
+            session_total=self.total_tokens,
+            turn_count=self._turn_count,
+            system_prompt_tokens=system_prompt_tokens,
+        )
+        return self._snapshot
+
+    def context_display(self) -> Optional[ContextSnapshot]:
+        """Return snapshot for display.
+
+        If a snapshot exists (post-response), return it.
+        If history was cleared (snapshot is None but model is known), return a
+        zero-context snapshot so /context can still show model + limit + session total.
+        """
+        if self._snapshot is not None:
+            return self._snapshot
+        if self._model:
+            return ContextSnapshot(
+                model=self._model,
+                input_tokens=0,
+                output_tokens=0,
+                context_limit=_context_limit(self._model),
+                session_total=self.total_tokens,
+                turn_count=self._turn_count,
+            )
+        return None
+
     def clear(self) -> None:
-        """Clear message history only. total_tokens is billing history — never reset."""
+        """Clear message history and snapshot. total_tokens is billing history — never reset."""
         self.messages.clear()
+        self._snapshot = None
 
     def truncate_if_needed(self, last_input_tokens: int, last_output_tokens: int) -> int:
         """Slide the window if the current context size exceeds the threshold.
