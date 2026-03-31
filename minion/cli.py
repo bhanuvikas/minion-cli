@@ -9,6 +9,7 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 
 from . import __version__
 from .config import run_model_config
@@ -63,6 +64,29 @@ class _SlashCompleter(Completer):
                     display=cmd,
                     display_meta=description,
                 )
+
+
+# ─── Enter key: apply completion then submit ──────────────────────────────────
+# prompt_toolkit's default Enter submits raw text without applying any
+# highlighted completion. This binding intercepts Enter so that:
+#   • If the user scrolled to a specific completion → apply it, then submit
+#   • If there is exactly one match → apply it automatically, then submit
+#   • Otherwise → normal submit (no completion active)
+_kb = KeyBindings()
+
+@_kb.add("enter")
+def _enter_with_completion(event):
+    buf = event.app.current_buffer
+    state = buf.complete_state
+    if state:
+        current = state.current_completion
+        if current is not None:
+            # User tabbed / scrolled to a specific entry
+            buf.apply_completion(current)
+        elif len(state.completions) == 1:
+            # Single unambiguous match — no need to Tab first
+            buf.apply_completion(state.completions[0])
+    buf.validate_and_handle()
 
 
 def _handle_slash_command(raw: str, client: LLMClient) -> bool:
@@ -192,6 +216,7 @@ def _run_repl(client: LLMClient) -> None:
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(),
+        key_bindings=_kb,
     )
 
     # The prompt prefix uses prompt_toolkit's FormattedText so it gets the same
