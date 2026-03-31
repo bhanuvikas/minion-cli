@@ -39,7 +39,8 @@ app = typer.Typer(
 REPL_COMMANDS = {
     "/help":  "Show available commands",
     "/model": "Interactively change provider, model, and API keys",
-    "/quit":  "Exit Minion (also: /exit, Ctrl+D)",
+    "/quit":  "Exit Minion",
+    "/exit":  "Exit Minion (alias for /quit)",
 }
 
 
