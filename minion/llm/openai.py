@@ -1,5 +1,5 @@
 import os
-from typing import Iterator
+from typing import Iterator, Optional
 
 from openai import OpenAI
 
@@ -25,6 +25,7 @@ class OpenAIClient(LLMClient):
         self._client = OpenAI(api_key=resolved_key, base_url=base_url)
         self._model = model or os.getenv("MINION_MODEL", OPENAI_DEFAULT_MODEL)
         self._provider_name = "openai"
+        self._last_usage: Optional[LLMResponse] = None
 
     @property
     def model_id(self) -> str:
@@ -33,6 +34,10 @@ class OpenAIClient(LLMClient):
     @property
     def provider_name(self) -> str:
         return self._provider_name
+
+    @property
+    def last_usage(self) -> Optional[LLMResponse]:
+        return self._last_usage
 
     def _build_messages(self, messages: list[Message], system: str) -> list[dict]:
         """OpenAI/OpenRouter handle the system prompt as a first message with role='system'."""
@@ -56,16 +61,27 @@ class OpenAIClient(LLMClient):
         )
 
     def stream(self, messages: list[Message], system: str = "") -> Iterator[str]:
+        # stream_options={"include_usage": True} makes the final chunk carry
+        # usage data (prompt_tokens, completion_tokens). Without this flag,
+        # OpenAI streaming gives no usage info at all.
         response = self._client.chat.completions.create(
             model=self._model,
             messages=self._build_messages(messages, system),
             max_tokens=8192,
             stream=True,
+            stream_options={"include_usage": True},
         )
         for chunk in response:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+            # The final chunk has no choices but carries usage
+            if chunk.usage:
+                self._last_usage = LLMResponse(
+                    content="",
+                    input_tokens=chunk.usage.prompt_tokens,
+                    output_tokens=chunk.usage.completion_tokens,
+                    model=chunk.model,
+                )
 
 
 class OpenRouterClient(OpenAIClient):

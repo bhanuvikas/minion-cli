@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterator, Optional
 
 
 @dataclass
@@ -54,3 +54,12 @@ class LLMClient(ABC):
     def provider_name(self) -> str:
         """Human-readable provider name, e.g. 'anthropic'."""
         ...
+
+    @property
+    def last_usage(self) -> Optional[LLMResponse]:
+        """Usage metadata from the most recent stream() call.
+
+        Returns None until stream() has been fully consumed at least once.
+        Populated by each adapter after the stream is exhausted.
+        """
+        return None
