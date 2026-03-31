@@ -5,10 +5,19 @@ import typer
 from dotenv import load_dotenv
 
 from . import __version__
+from .config import run_model_config
 from .llm import Message, get_client
 from .llm.base import LLMClient
 from .prompts import SYSTEM_PROMPT
-from .theme import BLUE, YELLOW, console, print_error, print_greeting, print_model_info
+from .theme import (
+    BLUE,
+    YELLOW,
+    console,
+    print_error,
+    print_greeting,
+    print_model_info,
+    print_usage,
+)
 
 load_dotenv()  # load .env before any client is constructed
 
@@ -22,9 +31,9 @@ app = typer.Typer(
 
 # ─── REPL slash commands ──────────────────────────────────────────────────────
 REPL_COMMANDS = {
-    "/help": "Show available commands",
-    "/model": "Show current provider and model",
-    "/quit": "Exit Minion (also: /exit, Ctrl+D)",
+    "/help":  "Show available commands",
+    "/model": "Interactively change provider, model, and API keys",
+    "/quit":  "Exit Minion (also: /exit, Ctrl+D)",
 }
 
 
@@ -44,7 +53,7 @@ def _handle_slash_command(raw: str, client: LLMClient) -> bool:
         return True
 
     if cmd == "/model":
-        print_model_info(client.provider_name, client.model_id)
+        run_model_config(client)
         return True
 
     if cmd.startswith("/"):
@@ -92,7 +101,8 @@ def _run_prompt(prompt: str, client: LLMClient) -> None:
     except KeyboardInterrupt:
         pass  # Ctrl+C mid-stream — just stop cleanly
 
-    print()  # final newline
+    print()  # final newline after streamed content
+    print_usage(client.last_usage)
 
 
 # ─── CLI entry points ─────────────────────────────────────────────────────────
@@ -149,6 +159,7 @@ def _run_repl(client: LLMClient) -> None:
 
     while True:
         try:
+            console.print()  # blank line before each user prompt
             user_input = console.input(f"[bold {YELLOW}]you[/] › ")
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
@@ -162,4 +173,3 @@ def _run_repl(client: LLMClient) -> None:
             continue
 
         _run_prompt(user_input, client)
-        console.print()  # blank line between exchanges
