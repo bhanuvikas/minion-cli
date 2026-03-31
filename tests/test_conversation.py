@@ -86,20 +86,23 @@ class TestClear:
         c.clear()
         assert c.messages == []
 
-    def test_clear_resets_token_count(self):
+    def test_clear_preserves_token_count(self):
+        """Billing history is never erased — /clear only resets message history."""
         c = Conversation()
         c.add_user("hi")
         c.add_assistant("hey", _usage(input_tokens=100, output_tokens=50))
         c.clear()
-        assert c.total_tokens == 0
+        assert c.total_tokens == 150
 
 
 # ─── truncate_if_needed ───────────────────────────────────────────────────────
 
 class TestTruncation:
     def _conversation_with_pairs(self, n: int) -> Conversation:
-        """Build a Conversation with n user+assistant pairs."""
-        c = Conversation(model="gpt-4o-mini")  # 128k limit → threshold = 108,800
+        """Build a Conversation with n user+assistant pairs.
+        Uses unknown model so DEFAULT_LIMIT (currently 500) applies.
+        """
+        c = Conversation(model="unknown-model")
         for i in range(n):
             c.add_user(f"question {i}")
             c.add_assistant(f"answer {i}", None)
@@ -107,21 +110,22 @@ class TestTruncation:
 
     def test_no_truncation_when_under_threshold(self):
         c = self._conversation_with_pairs(4)
-        dropped = c.truncate_if_needed(last_input_tokens=1_000, last_output_tokens=200)
+        # Well under DEFAULT_LIMIT (500) threshold (425)
+        dropped = c.truncate_if_needed(last_input_tokens=100, last_output_tokens=50)
         assert dropped == 0
         assert len(c.messages) == 8
 
     def test_truncation_drops_oldest_pair(self):
         c = self._conversation_with_pairs(4)
-        # Simulate being well over the threshold for gpt-4o-mini (128k * 0.85 = 108,800)
-        dropped = c.truncate_if_needed(last_input_tokens=100_000, last_output_tokens=20_000)
+        # DEFAULT_LIMIT=16_000, threshold=13_600 — simulate being over
+        dropped = c.truncate_if_needed(last_input_tokens=12_000, last_output_tokens=3_000)
         assert dropped >= 1
         # First message should no longer be "question 0"
         assert c.messages[0].content != "question 0"
 
     def test_truncation_preserves_alternating_roles(self):
         c = self._conversation_with_pairs(6)
-        c.truncate_if_needed(last_input_tokens=100_000, last_output_tokens=20_000)
+        dropped = c.truncate_if_needed(last_input_tokens=12_000, last_output_tokens=3_000)
         roles = [m.role for m in c.messages]
         for i in range(0, len(roles) - 1, 2):
             assert roles[i] == "user"
@@ -129,22 +133,22 @@ class TestTruncation:
 
     def test_truncation_never_drops_below_two_messages(self):
         c = self._conversation_with_pairs(1)  # just 2 messages
-        # Extreme overage — should not drop the last pair
-        dropped = c.truncate_if_needed(last_input_tokens=500_000, last_output_tokens=100_000)
+        # Extreme overage — guard (len <= 2) prevents dropping the last pair
+        dropped = c.truncate_if_needed(last_input_tokens=10_000, last_output_tokens=10_000)
         assert dropped == 0
         assert len(c.messages) == 2
 
     def test_no_truncation_when_no_messages(self):
-        c = Conversation(model="gpt-4o-mini")
-        dropped = c.truncate_if_needed(last_input_tokens=200_000, last_output_tokens=50_000)
+        c = Conversation(model="unknown-model")
+        dropped = c.truncate_if_needed(last_input_tokens=10_000, last_output_tokens=10_000)
         assert dropped == 0
 
-    def test_uses_input_plus_output_for_threshold_check(self):
-        """input alone under threshold but input+output over → should truncate."""
+    def test_uses_current_context_size_for_threshold_check(self):
+        """input alone under threshold but input+output (current_context_size) over → truncate."""
         c = self._conversation_with_pairs(4)
-        # gpt-4o-mini threshold = 128_000 * 0.85 = 108_800
-        # input alone = 90,000 (under) but input + output = 110,000 (over)
-        dropped = c.truncate_if_needed(last_input_tokens=90_000, last_output_tokens=20_000)
+        # DEFAULT_LIMIT=16_000, threshold=13_600
+        # input alone = 10_000 (under 13_600), but 10_000 + 5_000 = 15_000 (over 13_600)
+        dropped = c.truncate_if_needed(last_input_tokens=10_000, last_output_tokens=5_000)
         assert dropped >= 1
 
 

@@ -62,31 +62,32 @@ class Conversation:
                 self._model = usage.model
 
     def clear(self) -> None:
+        """Clear message history only. total_tokens is billing history — never reset."""
         self.messages.clear()
-        self.total_tokens = 0
 
     def truncate_if_needed(self, last_input_tokens: int, last_output_tokens: int) -> int:
-        """Slide the window if the estimated next-call input exceeds the threshold.
+        """Slide the window if the current context size exceeds the threshold.
 
         Returns the number of message pairs dropped (0 if no truncation needed).
 
-        Why input + output:
+        current_context_size = last_input_tokens + last_output_tokens
           last_input_tokens  = tokens sent on the last call (system + messages up to user_N)
-          last_output_tokens = tokens in the response (assistant_N, now in messages[])
-          The NEXT call will include both, so their sum is the minimum context size estimate.
+          last_output_tokens = tokens in the response (assistant_N, now added to messages[])
+          Their sum is the actual size of the context right now. The next call will send
+          all of this plus the new user message, so this is the minimum we know today.
         """
         limit = _context_limit(self._model)
         target = limit * TRUNCATION_THRESHOLD
 
-        estimated_next_input = last_input_tokens + last_output_tokens
-        if estimated_next_input <= target or len(self.messages) <= 2:
+        current_context_size = last_input_tokens + last_output_tokens
+        if current_context_size <= target or len(self.messages) <= 2:
             return 0
 
         # Estimate pairs to drop using average tokens-per-message as a heuristic.
         # No per-message token storage needed — if the average is slightly off, the
         # next API response will give corrected counts and we re-evaluate then.
-        overage = estimated_next_input - target
-        avg_tokens_per_message = estimated_next_input / len(self.messages)
+        overage = current_context_size - target
+        avg_tokens_per_message = current_context_size / len(self.messages)
         pairs_to_drop = math.ceil(overage / (avg_tokens_per_message * 2))
         pairs_to_drop = min(pairs_to_drop, len(self.messages) // 2)
 
