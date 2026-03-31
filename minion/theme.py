@@ -121,15 +121,23 @@ def print_model_info(provider: str, model: str) -> None:
     console.print(f"[secondary]provider[/] {provider}  [secondary]model[/] {model}")
 
 
-def print_usage(usage: Optional[LLMResponse]) -> None:
-    """Display token usage on its own line with a leading blank line for breathing room."""
+def print_usage(usage: Optional[LLMResponse], session_total: Optional[int] = None) -> None:
+    """Display token usage on its own line with a leading blank line for breathing room.
+
+    session_total: cumulative (input + output) tokens across all turns this session.
+                   Only shown in REPL mode where a Conversation is active.
+    """
     if usage is None:
         return
     console.print()
-    console.print(
+    line = (
         f"[muted]  ↳ {usage.model}  ·  "
-        f"{usage.input_tokens:,} in  /  {usage.output_tokens:,} out[/]"
+        f"{usage.input_tokens:,} in  /  {usage.output_tokens:,} out"
     )
+    if session_total is not None:
+        line += f"  ·  session: {session_total:,}"
+    line += "[/]"
+    console.print(line)
 
 
 def stream_response_to_stdout(chunks) -> None:
