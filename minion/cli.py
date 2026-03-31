@@ -5,6 +5,8 @@ from typing import Optional
 import typer
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
@@ -39,6 +41,27 @@ REPL_COMMANDS = {
     "/model": "Interactively change provider, model, and API keys",
     "/quit":  "Exit Minion (also: /exit, Ctrl+D)",
 }
+
+
+class _SlashCompleter(Completer):
+    """Tab-completes slash commands.
+
+    Keyed off REPL_COMMANDS so adding a new slash command automatically
+    makes it tab-completable — no separate list to maintain.
+    Only activates when the current input starts with '/'.
+    """
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        for cmd, description in REPL_COMMANDS.items():
+            if cmd.startswith(text):
+                yield Completion(
+                    cmd[len(text):],   # the suffix needed to complete the word
+                    display=cmd,
+                    display_meta=description,
+                )
 
 
 def _handle_slash_command(raw: str, client: LLMClient) -> bool:
@@ -165,7 +188,10 @@ def _run_repl(client: LLMClient) -> None:
     # prompt_toolkit is already installed as a transitive dep of questionary.
     history_path = Path.home() / ".minion" / "history"
     history_path.parent.mkdir(exist_ok=True)
-    session: PromptSession = PromptSession(history=FileHistory(str(history_path)))
+    session: PromptSession = PromptSession(
+        history=FileHistory(str(history_path)),
+        completer=_SlashCompleter(),
+    )
 
     # The prompt prefix uses prompt_toolkit's FormattedText so it gets the same
     # yellow styling as the rest of the UI without going through Rich.
