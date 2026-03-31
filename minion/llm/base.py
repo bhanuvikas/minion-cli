@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Iterator, Optional
+from dataclasses import dataclass, field
+from typing import Iterator, Optional, Union
 
 
 @dataclass
 class Message:
-    role: str  # "user" | "assistant"
-    content: str
+    role: str           # "user" | "assistant"
+    content: Union[str, list]  # str for normal turns; list of content blocks for tool turns
 
 
 @dataclass
@@ -15,6 +15,45 @@ class LLMResponse:
     input_tokens: int
     output_tokens: int
     model: str
+
+
+# ─── Typed stream events (Phase 3) ───────────────────────────────────────────
+# stream() yields a sequence of these instead of bare strings.
+# The runner inspects each event type to decide what to render vs execute.
+
+@dataclass
+class TextChunk:
+    """A fragment of the model's text response, ready to write to stdout."""
+    text: str
+
+
+@dataclass
+class ToolUseBlock:
+    """A fully-assembled tool call emitted by the model.
+
+    Arrives after all input_json_delta events for a content block have been
+    accumulated — the runner never sees partial JSON.
+    """
+    id: str
+    name: str
+    input: dict = field(default_factory=dict)
+
+
+@dataclass
+class StreamComplete:
+    """Signals the end of a streaming response, carrying stop reason and usage.
+
+    stop_reason values:
+      "end_turn"  — model finished responding; no further LLM calls needed
+      "tool_use"  — model emitted ≥1 ToolUseBlock; execute them and loop
+    """
+    stop_reason: str
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
+StreamEvent = Union[TextChunk, ToolUseBlock, StreamComplete]
 
 
 class LLMClient(ABC):
@@ -35,11 +74,18 @@ class LLMClient(ABC):
         ...
 
     @abstractmethod
-    def stream(self, messages: list[Message], system: str = "") -> Iterator[str]:
-        """Streaming call. Yields text chunks as they arrive.
+    def stream(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: Optional[list] = None,
+    ) -> Iterator[StreamEvent]:
+        """Streaming call. Yields typed StreamEvent objects.
 
-        Used for all interactive output so the terminal feels alive rather than
-        showing a blank screen until the full response is ready.
+        Callers iterate the stream and dispatch on event type:
+          TextChunk     — write text to stdout immediately
+          ToolUseBlock  — tool call to execute; inject result and loop
+          StreamComplete — stop_reason + usage; signals end of this iteration
         """
         ...
 

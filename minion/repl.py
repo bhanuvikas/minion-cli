@@ -175,7 +175,7 @@ def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversatio
 
 # ─── REPL entry point ─────────────────────────────────────────────────────────
 
-def run_repl(client: LLMClient) -> None:
+def run_repl(client: LLMClient, dry_run: bool = False) -> None:
     """Start the interactive REPL loop."""
     print_greeting()
     console.print(
@@ -204,6 +204,7 @@ def run_repl(client: LLMClient) -> None:
 
         user_input = user_input.strip()
         if not user_input:
+            console.print()
             continue
 
         if _handle_slash_command(user_input, client, conversation):
@@ -211,5 +212,5 @@ def run_repl(client: LLMClient) -> None:
             continue
 
         console.print()
-        run_prompt(user_input, client, conversation)
+        run_prompt(user_input, client, conversation, dry_run=dry_run)
         console.print()

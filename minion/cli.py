@@ -40,6 +40,10 @@ def main(
         None, "--model", "-m",
         help="Model ID (overrides MINION_MODEL env var)",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show tool calls without executing them.",
+    ),
     version: bool = typer.Option(
         False, "--version",
         help="Show version and exit.",
@@ -62,6 +66,6 @@ def main(
         raise typer.Exit(code=1)
 
     if prompt:
-        run_prompt(prompt, client)
+        run_prompt(prompt, client, dry_run=dry_run)
     else:
-        run_repl(client)
+        run_repl(client, dry_run=dry_run)
