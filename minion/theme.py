@@ -34,8 +34,9 @@ console = Console(theme=MINION_THEME, highlight=False)
 # Colors mirror the character: yellow body, blue overalls — M I N I O N.
 # We render each letter separately so each gets its own Rich color style.
 
-_LETTER_COLORS = [YELLOW, BLUE, YELLOW, BLUE, YELLOW, BLUE]  # M I N I O N
-_FIGLET_FONT = "slant"
+# m=yellow  i=yellow  n=blue  i=yellow  o=yellow  n=blue
+_LETTER_COLORS = [YELLOW, YELLOW, BLUE, YELLOW, YELLOW, BLUE]
+_FIGLET_FONT = "big"  # upright block letters, no diagonal slant
 
 
 def _build_title() -> Text:
@@ -43,16 +44,17 @@ def _build_title() -> Text:
         import pyfiglet
     except ImportError:
         # Graceful fallback if pyfiglet isn't installed
-        t = Text("✦ MINION ✦\n", justify="center")
-        for i, ch in enumerate("MINION"):
-            t.append(ch, style=f"bold {_LETTER_COLORS[i % len(_LETTER_COLORS)]}")
+        t = Text(justify="center")
+        for i, ch in enumerate("minion"):
+            t.append(ch, style=_LETTER_COLORS[i])
+        t.append("\n")
         return t
 
     # Render each letter individually so we can apply a per-letter color.
     # pyfiglet renders monospace rows; combining row-by-row places letters
     # side-by-side naturally — no manual width calculation needed.
     letter_lines: list[list[str]] = []
-    for letter in "MINION":
+    for letter in "minion":
         raw = pyfiglet.figlet_format(letter, font=_FIGLET_FONT)
         lines = raw.splitlines()
         # Strip trailing empty lines so all letters normalize to the same height
@@ -71,7 +73,7 @@ def _build_title() -> Text:
     title = Text(justify="center")
     for row in range(max_height):
         for ls, color in zip(letter_lines, _LETTER_COLORS):
-            title.append(ls[row], style=f"bold {color}")
+            title.append(ls[row], style=color)
         title.append("\n")
 
     return title
@@ -79,8 +81,10 @@ def _build_title() -> Text:
 
 # ─── Branded Print Helpers ────────────────────────────────────────────────────
 
-def print_greeting() -> None:
-    title = _build_title()
+def print_greeting(version: str = "") -> None:
+    from . import __version__
+
+    art = _build_title()
 
     greeting = Text(justify="center")
     greeting.append("Bello! ", style=f"bold {YELLOW}")
@@ -89,10 +93,24 @@ def print_greeting() -> None:
     greeting.append(". What do you want me to do?", style="white")
 
     content = Text()
-    content.append_text(title)
+    content.append_text(art)
     content.append("\n")
     content.append_text(greeting)
-    console.print(Panel(content, border_style=YELLOW, padding=(0, 2)))
+
+    panel_title = (
+        f"[bold {YELLOW}]minion-cli[/] "
+        f"[{GREY}]v{version or __version__}[/]"
+    )
+    console.print(
+        Panel(
+            content,
+            title=panel_title,
+            title_align="left",
+            border_style=YELLOW,
+            padding=(0, 2),
+            expand=False,   # size to content, don't stretch to terminal width
+        )
+    )
 
 
 def print_error(message: str) -> None:
