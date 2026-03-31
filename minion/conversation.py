@@ -65,14 +65,24 @@ class ContextSnapshot:
     # memory_tokens: int = 0     # Phase 6 — retrieved memory chunks
 
     @property
+    def current_context_tokens(self) -> int:
+        """Tokens currently occupying the context window.
+
+        = input_tokens (sent this turn) + output_tokens (reply, now in messages[])
+        This is what will be sent on the NEXT call before the new user message.
+        Consistent with truncate_if_needed which uses the same sum.
+        """
+        return self.input_tokens + self.output_tokens
+
+    @property
     def message_tokens(self) -> int:
-        return max(0, self.input_tokens - self.system_prompt_tokens)
+        return max(0, self.current_context_tokens - self.system_prompt_tokens)
 
     @property
     def context_pct(self) -> float:
         if self.context_limit == 0:
             return 0.0
-        return self.input_tokens / self.context_limit * 100
+        return self.current_context_tokens / self.context_limit * 100
 
 
 class Conversation:
