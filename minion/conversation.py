@@ -103,13 +103,41 @@ class Conversation:
         self.messages.append(Message(role="user", content=text))
 
     def add_assistant(self, text: str, usage: Optional[LLMResponse]) -> None:
-        """Append assistant reply and update running token totals."""
+        """Append a plain-text assistant reply and update running token totals."""
         self.messages.append(Message(role="assistant", content=text))
         if usage:
             self.total_tokens += usage.input_tokens + usage.output_tokens
             self._turn_count += 1
             if usage.model:
                 self._model = usage.model
+
+    def add_assistant_blocks(self, content_blocks: list, usage: Optional[LLMResponse]) -> None:
+        """Append an assistant turn that contains tool_use content blocks.
+
+        content_blocks is the raw list of Anthropic content block dicts, e.g.:
+          [{"type": "text", "text": "..."}, {"type": "tool_use", "id": ..., ...}]
+
+        The Anthropic API requires storing these exact blocks so subsequent calls
+        can reference tool_use IDs when injecting tool results.
+        """
+        self.messages.append(Message(role="assistant", content=content_blocks))
+        if usage:
+            self.total_tokens += usage.input_tokens + usage.output_tokens
+            self._turn_count += 1
+            if usage.model:
+                self._model = usage.model
+
+    def add_tool_result(self, tool_use_id: str, result: str) -> None:
+        """Inject a tool result as a user-role message.
+
+        The Anthropic API mandates that tool results go in the user turn — there
+        is no separate "tool" role. The tool_result content type distinguishes
+        these from human messages when inspecting conversation history.
+        """
+        self.messages.append(Message(
+            role="user",
+            content=[{"type": "tool_result", "tool_use_id": tool_use_id, "content": result}],
+        ))
 
     def build_snapshot(self, usage: Optional[LLMResponse], system_prompt_tokens: int = 0) -> Optional["ContextSnapshot"]:
         """Build and store a ContextSnapshot from the latest response.

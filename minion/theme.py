@@ -202,3 +202,54 @@ def stream_response_to_stdout(chunks) -> None:
     for chunk in chunks:
         sys.stdout.write(chunk)
         sys.stdout.flush()
+
+
+# ─── Tool Use Display (Phase 3) ───────────────────────────────────────────────
+
+def print_tool_call(name: str, inputs: dict, dry_run: bool = False) -> None:
+    """Display a tool call the agent is about to make.
+
+    Scalar and short string values appear inline. Multiline strings (e.g. the
+    content argument of write_file) are printed as an indented block below the
+    header line so the user can review the full content before confirming.
+    """
+    label = f"[muted][dry-run][/] " if dry_run else ""
+
+    inline_args = []
+    block_args = []  # (key, value) pairs that need a separate block
+
+    for k, v in inputs.items():
+        if isinstance(v, str) and "\n" in v:
+            block_args.append((k, v))  # shown below, not inline
+        elif isinstance(v, str) and len(v) > 60:
+            inline_args.append(f"[muted]{k}=[/][{BLUE}]\"{v[:50]}…\"[/]")
+        else:
+            inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
+
+    console.print(f"[bold {YELLOW}]⚙[/]  {label}[bold]{name}[/]  {'  '.join(inline_args)}")
+
+    for k, v in block_args:
+        lines = v.count("\n") + 1
+        console.print(f"  [muted]{k} ({lines} lines):[/]")
+        for line in v.splitlines():
+            console.print(f"  [muted]│[/] {line}")
+
+
+def print_tool_result(result: str) -> None:
+    """Display a compact summary of the tool result (first line, truncated)."""
+    from rich.markup import escape
+    first_line = result.split("\n")[0]
+    preview = escape(first_line[:100]) + ("…" if len(first_line) > 100 else "")
+    extra_lines = result.count("\n")
+    suffix = f"  [muted]+{extra_lines} more lines[/]" if extra_lines > 0 else ""
+    console.print(f"  [muted]└─[/] {preview}{suffix}")
+
+
+def print_tool_error(error: str) -> None:
+    """Display a tool execution error."""
+    console.print(f"  [bold red]└─ Error:[/] {error}")
+
+
+def print_iteration_limit(max_iter: int) -> None:
+    """Displayed when the agent loop hits MAX_ITERATIONS without finishing."""
+    print_error(f"Reached iteration limit ({max_iter}) without a final response.")

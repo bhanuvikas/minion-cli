@@ -60,10 +60,17 @@ class OpenAIClient(LLMClient):
             model=response.model,
         )
 
-    def stream(self, messages: list[Message], system: str = "") -> Iterator[str]:
+    def stream(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: Optional[list] = None,
+    ) -> Iterator:
+        # tools parameter accepted but ignored — OpenAI tool use deferred to a later phase.
         # stream_options={"include_usage": True} makes the final chunk carry
         # usage data (prompt_tokens, completion_tokens). Without this flag,
         # OpenAI streaming gives no usage info at all.
+        from .base import StreamComplete, TextChunk
         response = self._client.chat.completions.create(
             model=self._model,
             messages=self._build_messages(messages, system),
@@ -71,17 +78,26 @@ class OpenAIClient(LLMClient):
             stream=True,
             stream_options={"include_usage": True},
         )
+        usage_data = None
         for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                yield TextChunk(text=chunk.choices[0].delta.content)
             # The final chunk has no choices but carries usage
             if chunk.usage:
+                usage_data = chunk.usage
                 self._last_usage = LLMResponse(
                     content="",
                     input_tokens=chunk.usage.prompt_tokens,
                     output_tokens=chunk.usage.completion_tokens,
                     model=chunk.model,
                 )
+        if usage_data:
+            yield StreamComplete(
+                stop_reason="end_turn",
+                input_tokens=usage_data.prompt_tokens,
+                output_tokens=usage_data.completion_tokens,
+                model=self._model,
+            )
 
 
 class OpenRouterClient(OpenAIClient):
