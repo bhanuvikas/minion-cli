@@ -1,6 +1,9 @@
 # Context & planning docs (not for version control)
 .context/
 
+# Learning notes & concept briefs (personal study material)
+.learn/
+
 # Python
 __pycache__/
 *.py[cod]
