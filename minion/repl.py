@@ -18,7 +18,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-from .config import run_model_config
+from .config import MINION_STYLE, run_model_config
 from .conversation import Conversation
 from .llm.base import LLMClient
 from .runner import run_prompt
@@ -30,13 +30,14 @@ from .theme import BLUE, YELLOW, console, print_error, print_greeting
 # Add an entry here to make a new command available everywhere automatically.
 
 REPL_COMMANDS = {
-    "/help":  "Show available commands",
-    "/model": "Interactively change provider, model, and API keys",
-    "/clear": "Clear conversation history and start fresh",
-    "/save":  "Save session: /save <name>",
-    "/load":  "Load session: /load <name>",
-    "/quit":  "Exit Minion",
-    "/exit":  "Exit Minion (alias for /quit)",
+    "/help":   "Show available commands",
+    "/model":  "Interactively change provider, model, and API keys",
+    "/clear":  "Clear conversation history and start fresh",
+    "/save":   "Save session: /save <name>",
+    "/load":   "Load session: /load <name>",
+    "/resume": "Pick a saved session from a dropdown and load it",
+    "/quit":   "Exit Minion",
+    "/exit":   "Exit Minion (alias for /quit)",
 }
 
 
@@ -72,12 +73,30 @@ def _enter_with_completion(event):
         current = state.current_completion
         if current is not None:
             buf.apply_completion(current)
+            return  # completion applied — wait for second Enter to submit
         elif len(state.completions) == 1:
             buf.apply_completion(state.completions[0])
+            return  # same — let user add arguments before submitting
     buf.validate_and_handle()
 
 
 # ─── Slash command handler ────────────────────────────────────────────────────
+
+def _load_session(name: str, conversation: Conversation) -> None:
+    """Load a named session into conversation in-place."""
+    try:
+        loaded = load(name)
+        conversation.messages = loaded.messages
+        conversation.total_tokens = loaded.total_tokens
+        conversation._model = loaded._model
+        msg_count = len(loaded.messages)
+        console.print(
+            f"[{YELLOW}]Loaded session[/] [{BLUE}]{name}[/] "
+            f"[muted]({msg_count} messages, {loaded.total_tokens:,} tokens)[/]"
+        )
+    except FileNotFoundError as e:
+        print_error(str(e))
+
 
 def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversation) -> bool:
     """Dispatch a slash command. Returns True if the input was handled."""
@@ -103,7 +122,7 @@ def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversatio
         return True
 
     if cmd == "/clear":
-        conversation.clear()
+        conversation.messages.clear()   # reset history only; total_tokens is billing history
         console.print(f"[{YELLOW}]Conversation cleared.[/]")
         return True
 
@@ -124,19 +143,18 @@ def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversatio
                 console.print(f"[muted]No saved sessions found.[/]")
             print_error("Usage: /load <name>")
             return True
-        try:
-            loaded = load(arg)
-            # Replace conversation contents in-place so repl.py's reference stays valid
-            conversation.messages = loaded.messages
-            conversation.total_tokens = loaded.total_tokens
-            conversation._model = loaded._model
-            msg_count = len(loaded.messages)
-            console.print(
-                f"[{YELLOW}]Loaded session[/] [{BLUE}]{arg}[/] "
-                f"[muted]({msg_count} messages, {loaded.total_tokens:,} tokens)[/]"
-            )
-        except FileNotFoundError as e:
-            print_error(str(e))
+        _load_session(arg, conversation)
+        return True
+
+    if cmd == "/resume":
+        sessions = list_sessions()
+        if not sessions:
+            console.print(f"[muted]No saved sessions found.[/]")
+            return True
+        import questionary
+        name = questionary.select("Select a session:", choices=sessions, style=MINION_STYLE).ask()
+        if name:
+            _load_session(name, conversation)
         return True
 
     if cmd.startswith("/"):
