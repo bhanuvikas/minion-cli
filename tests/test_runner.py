@@ -120,7 +120,7 @@ class TestRunPromptOutput:
             mc.status.return_value = ctx
             run_prompt("hello", client)
 
-        mock_usage.assert_called_once_with(usage)
+        mock_usage.assert_called_once_with(usage, None)
 
     def test_print_usage_called_with_none_when_no_usage(self):
         """print_usage must still be called even when last_usage is None."""
@@ -133,4 +133,4 @@ class TestRunPromptOutput:
             mc.status.return_value = ctx
             run_prompt("hello", client)
 
-        mock_usage.assert_called_once_with(None)
+        mock_usage.assert_called_once_with(None, None)
