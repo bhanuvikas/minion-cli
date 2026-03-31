@@ -159,7 +159,6 @@ def _run_repl(client: LLMClient) -> None:
 
     while True:
         try:
-            console.print()  # blank line before each user prompt
             user_input = console.input(f"[bold {YELLOW}]you[/] › ")
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
@@ -170,6 +169,9 @@ def _run_repl(client: LLMClient) -> None:
             continue
 
         if _handle_slash_command(user_input, client):
+            console.print()  # blank line after slash-command output
             continue
 
+        console.print()  # blank line between "you ›" and "minion ›"
         _run_prompt(user_input, client)
+        console.print()  # blank line after response + usage, before next prompt

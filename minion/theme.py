@@ -26,50 +26,62 @@ MINION_THEME = Theme(
     }
 )
 
-# Single shared console instance used everywhere in the app.
-# highlight=False prevents Rich from auto-highlighting numbers/paths in output,
-# which can interfere with streamed LLM text.
 console = Console(theme=MINION_THEME, highlight=False)
 
 
-# ─── Static Minion ASCII Art ──────────────────────────────────────────────────
-# Generated once, reused on every greeting. Yellow head + blue overalls.
-# Intentionally simple so it renders cleanly in any terminal font.
+# ─── Figlet Title ─────────────────────────────────────────────────────────────
+# "MINION" rendered in figlet ASCII art with alternating yellow/blue per letter.
+# Colors mirror the character: yellow body, blue overalls — M I N I O N.
+# We render each letter separately so each gets its own Rich color style.
 
-_MINION_HEAD = [
-    r"      .-------.      ",
-    r"     / O     O \     ",
-    r"    |  \_____/  |    ",
-    r"    |   \   /   |    ",
-    r"    |    ---    |    ",
-    r"     \         /     ",
-    r"      `-------'      ",
-]
-
-_MINION_BODY = [
-    r"     .-----------.   ",
-    r"     |  .-----.  |   ",
-    r"     |  | GRU |  |   ",
-    r"     |  '-----'  |   ",
-    r"     |___________|   ",
-    r"        ||   ||      ",
-    r"       _||   ||_     ",
-]
+_LETTER_COLORS = [YELLOW, BLUE, YELLOW, BLUE, YELLOW, BLUE]  # M I N I O N
+_FIGLET_FONT = "slant"
 
 
-def _build_minion_art() -> Text:
-    art = Text(justify="center")
-    for line in _MINION_HEAD:
-        art.append(line + "\n", style=f"bold {YELLOW}")
-    for line in _MINION_BODY:
-        art.append(line + "\n", style=f"bold {BLUE}")
-    return art
+def _build_title() -> Text:
+    try:
+        import pyfiglet
+    except ImportError:
+        # Graceful fallback if pyfiglet isn't installed
+        t = Text("✦ MINION ✦\n", justify="center")
+        for i, ch in enumerate("MINION"):
+            t.append(ch, style=f"bold {_LETTER_COLORS[i % len(_LETTER_COLORS)]}")
+        return t
+
+    # Render each letter individually so we can apply a per-letter color.
+    # pyfiglet renders monospace rows; combining row-by-row places letters
+    # side-by-side naturally — no manual width calculation needed.
+    letter_lines: list[list[str]] = []
+    for letter in "MINION":
+        raw = pyfiglet.figlet_format(letter, font=_FIGLET_FONT)
+        lines = raw.splitlines()
+        # Strip trailing empty lines so all letters normalize to the same height
+        while lines and not lines[-1].strip():
+            lines.pop()
+        letter_lines.append(lines)
+
+    max_height = max(len(ls) for ls in letter_lines)
+
+    # Pad any shorter letter to max_height with blank rows of matching width
+    for ls in letter_lines:
+        width = max((len(l) for l in ls), default=0)
+        while len(ls) < max_height:
+            ls.append(" " * width)
+
+    title = Text(justify="center")
+    for row in range(max_height):
+        for ls, color in zip(letter_lines, _LETTER_COLORS):
+            title.append(ls[row], style=f"bold {color}")
+        title.append("\n")
+
+    return title
 
 
 # ─── Branded Print Helpers ────────────────────────────────────────────────────
 
 def print_greeting() -> None:
-    art = _build_minion_art()
+    title = _build_title()
+
     greeting = Text(justify="center")
     greeting.append("Bello! ", style=f"bold {YELLOW}")
     greeting.append("I'm ", style="white")
@@ -77,7 +89,7 @@ def print_greeting() -> None:
     greeting.append(". What do you want me to do?", style="white")
 
     content = Text()
-    content.append_text(art)
+    content.append_text(title)
     content.append("\n")
     content.append_text(greeting)
     console.print(Panel(content, border_style=YELLOW, padding=(0, 2)))
@@ -92,9 +104,10 @@ def print_model_info(provider: str, model: str) -> None:
 
 
 def print_usage(usage: Optional[LLMResponse]) -> None:
-    """Display token usage metadata below a response."""
+    """Display token usage on its own line with a leading blank line for breathing room."""
     if usage is None:
         return
+    console.print()
     console.print(
         f"[muted]  ↳ {usage.model}  ·  "
         f"{usage.input_tokens:,} in  /  {usage.output_tokens:,} out[/]"
@@ -102,12 +115,7 @@ def print_usage(usage: Optional[LLMResponse]) -> None:
 
 
 def stream_response_to_stdout(chunks) -> None:
-    """Write streamed text chunks directly to stdout for maximum throughput.
-
-    We bypass Rich's markup processing here because the LLM output is raw text
-    that arrives in small chunks — passing each through Rich's renderer would
-    add unnecessary overhead and can mangle text that looks like markup tags.
-    """
+    """Write streamed chunks directly to stdout, bypassing Rich's markup scanner."""
     for chunk in chunks:
         sys.stdout.write(chunk)
         sys.stdout.flush()
