@@ -19,12 +19,11 @@ def run_prompt(prompt: str, client: LLMClient) -> None:
     """Send a prompt, show a spinner until the first token, then stream the rest."""
     messages = [Message(role="user", content=prompt)]
 
-    # Generators are lazy — nothing happens until next() is called.
-    stream = client.stream(messages, system=SYSTEM_PROMPT)
-
     # Spinner runs while we block waiting for the first token (real latency).
     # console.status() clears the spinner line before we start printing.
+    # client.stream() is called inside the try so API errors surface here.
     try:
+        stream = client.stream(messages, system=SYSTEM_PROMPT)
         with console.status(f"[{YELLOW}]🍌  Bee-do bee-do...[/]", spinner="dots"):
             first_chunk = next(stream, None)
     except Exception as e:
