@@ -10,6 +10,7 @@ import typer
 from dotenv import load_dotenv
 
 from . import __version__
+from .conversation import Conversation
 from .llm import get_client
 from .repl import run_repl
 from .runner import run_prompt
@@ -66,6 +67,6 @@ def main(
         raise typer.Exit(code=1)
 
     if prompt:
-        run_prompt(prompt, client, dry_run=dry_run)
+        run_prompt(prompt, client, Conversation(), dry_run=dry_run)
     else:
         run_repl(client, dry_run=dry_run)
