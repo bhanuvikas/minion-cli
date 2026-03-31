@@ -1,8 +1,12 @@
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.history import FileHistory
 
 from . import __version__
 from .config import run_model_config
@@ -157,9 +161,19 @@ def _run_repl(client: LLMClient) -> None:
     print_greeting()
     console.print(f"[muted]Type [bold]/help[/bold] for commands · [bold]/quit[/bold] to exit[/]\n")
 
+    # History file persists across sessions — up/down arrows work even after restart.
+    # prompt_toolkit is already installed as a transitive dep of questionary.
+    history_path = Path.home() / ".minion" / "history"
+    history_path.parent.mkdir(exist_ok=True)
+    session: PromptSession = PromptSession(history=FileHistory(str(history_path)))
+
+    # The prompt prefix uses prompt_toolkit's FormattedText so it gets the same
+    # yellow styling as the rest of the UI without going through Rich.
+    you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
+
     while True:
         try:
-            user_input = console.input(f"[bold {YELLOW}]you[/] › ")
+            user_input = session.prompt(you_prompt)
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
             break
