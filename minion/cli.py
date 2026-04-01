@@ -9,9 +9,13 @@ from typing import Optional
 import typer
 from dotenv import load_dotenv
 
+from pathlib import Path
+
 from . import __version__
+from .context import build_project_context
 from .conversation import Conversation
 from .llm import get_client
+from .prompts import build_system_prompt
 from .repl import run_repl
 from .runner import run_prompt
 from .theme import YELLOW, console, print_error
@@ -67,6 +71,8 @@ def main(
         raise typer.Exit(code=1)
 
     if prompt:
-        run_prompt(prompt, client, Conversation(), dry_run=dry_run)
+        project_context = build_project_context(Path.cwd())
+        system_prompt = build_system_prompt(project_context)
+        run_prompt(prompt, client, Conversation(), system_prompt, dry_run=dry_run)
     else:
         run_repl(client, dry_run=dry_run)

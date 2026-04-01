@@ -5,26 +5,38 @@ Core of the ReAct pattern: on each iteration the model either finishes
 Tool results are injected back as observations and the loop continues.
 
 Responsibilities:
-  run_prompt()          — orchestrates the full agent loop
-  _stream_one_iteration() — one LLM call: spin → stream events → structured result
-  _build_content_blocks() — assemble content block list for conversation storage
-  _execute_tools()        — run each tool call, inject results into conversation
+  run_prompt()              — orchestrates the full agent loop
+  _resolve_mentions()       — expand @file.py references before sending to LLM
+  _stream_one_iteration()   — one LLM call: spin → stream events → structured result
+  _build_content_blocks()   — assemble content block list for conversation storage
+  _execute_tools()          — run each tool call, inject results into conversation
 """
 
+import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from .conversation import Conversation
 from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
-from .prompts import SYSTEM_PROMPT
 from .theme import BLUE, YELLOW, console, print_error, print_iteration_limit, print_tool_call, print_usage
 from .tools.definitions import TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
 
-_SYSTEM_PROMPT_TOKENS = len(SYSTEM_PROMPT) // 4
 MAX_ITERATIONS = 20
 _SPINNER_LABEL = f"[{YELLOW}]🍌  Bee-do bee-do...[/]"
+
+# Matches @path patterns that contain at least one / or a file extension.
+# Examples: @src/auth.py  @README.md  @config/settings.ts
+# Does NOT match bare @property, @classmethod (no slash or extension dot).
+_MENTION_RE = re.compile(
+    r"@("
+    r"(?:\w[\w\-]*/)+[\w.\-]+"           # path/with/dirs/file  e.g. @src/auth.py
+    r"|[\w][\w\-]*\.[\w]+(?:\.[\w]+)*"   # bare word.ext        e.g. @README.md
+    r"|\.[a-zA-Z][\w\-]*(?:\.[\w]+)*"    # bare dotfile         e.g. @.gitignore, @.env.example
+    r")"
+)
 
 
 # ─── Result type for a single streaming iteration ─────────────────────────────
@@ -37,11 +49,44 @@ class _IterationResult:
     usage: Optional[LLMResponse] = None
 
 
+# ─── @mention resolution ──────────────────────────────────────────────────────
+
+def _resolve_mentions(prompt: str, cwd: Path) -> str:
+    """Expand @file.py references by appending file contents to the prompt.
+
+    Preserves the original mention text inline so the model sees what the
+    user typed, then appends the actual file contents at the end.
+    Deduplicates repeated mentions of the same file.
+    """
+    mentions = list(dict.fromkeys(_MENTION_RE.findall(prompt)))  # unique, ordered
+    if not mentions:
+        return prompt
+
+    appended: list[str] = []
+    for mention_path in mentions:
+        p = cwd / mention_path
+        if not p.exists():
+            appended.append(f"[@{mention_path}: file not found]")
+        elif not p.is_file():
+            appended.append(f"[@{mention_path}: not a file — cannot inject]")
+        else:
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                appended.append(f"[Contents of {mention_path}]\n{content}")
+            except Exception as e:
+                appended.append(f"[@{mention_path}: error reading file — {e}]")
+
+    if not appended:
+        return prompt
+    return prompt + "\n\n" + "\n\n".join(appended)
+
+
 # ─── Private helpers ──────────────────────────────────────────────────────────
 
 def _stream_one_iteration(
     client: LLMClient,
     conversation: Conversation,
+    system_prompt: str,
 ) -> Optional[_IterationResult]:
     """Run one LLM streaming call and collect all events into a structured result.
 
@@ -50,7 +95,7 @@ def _stream_one_iteration(
     and pops the pending user message so conversation history stays consistent.
     """
     try:
-        stream = client.stream(conversation.messages, system=SYSTEM_PROMPT, tools=TOOL_DEFINITIONS)
+        stream = client.stream(conversation.messages, system=system_prompt, tools=TOOL_DEFINITIONS)
         with console.status(_SPINNER_LABEL, spinner="dots"):
             first_event = next(stream, None)
     except Exception as e:
@@ -108,12 +153,7 @@ def _stream_one_iteration(
 
 
 def _build_content_blocks(result: _IterationResult) -> list:
-    """Assemble typed ContentBlocks for an assistant tool-use turn.
-
-    Stores both the text preamble (if any) and tool_use blocks so subsequent
-    LLM calls can match tool_result messages back to their tool_use IDs.
-    Adapters handle translation to provider wire format.
-    """
+    """Assemble typed ContentBlocks for an assistant tool-use turn."""
     blocks = []
     if result.full_text:
         blocks.append(ContentTextBlock(text=result.full_text))
@@ -127,7 +167,7 @@ def _execute_tools(
     executor: ToolExecutor,
     conversation: Conversation,
 ) -> None:
-    """Execute each tool call and inject its result into conversation as a tool_result message."""
+    """Execute each tool call and inject its result into conversation."""
     for tool_block in tool_blocks:
         result = executor.execute(tool_block)
         conversation.add_tool_result(tool_block.id, result)
@@ -139,6 +179,7 @@ def run_prompt(
     prompt: str,
     client: LLMClient,
     conversation: Conversation,
+    system_prompt: str,
     dry_run: bool = False,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
@@ -149,12 +190,13 @@ def run_prompt(
     tool-use iteration.
     """
     executor = ToolExecutor(dry_run=dry_run)
+    prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
 
     for _ in range(MAX_ITERATIONS):
         # ── One LLM call ──────────────────────────────────────────────────────
-        result = _stream_one_iteration(client, conversation)
+        result = _stream_one_iteration(client, conversation, system_prompt)
         if result is None:
             return  # error already displayed and user message popped
 
@@ -184,7 +226,8 @@ def run_prompt(
         print_iteration_limit(MAX_ITERATIONS)
 
     # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
+    system_prompt_tokens = len(system_prompt) // 4
     if final_usage:
         conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
-    snapshot = conversation.build_snapshot(final_usage, _SYSTEM_PROMPT_TOKENS)
+    snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens)
     print_usage(snapshot)

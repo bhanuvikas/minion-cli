@@ -16,7 +16,9 @@ from unittest.mock import MagicMock, patch
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 
-from minion.repl import REPL_COMMANDS, _SlashCompleter, _handle_slash_command
+from minion.repl import REPL_COMMANDS, _SlashCompleter, _handle_slash_command, _generate_minion_md
+from minion.context.project import ProjectContext
+from minion.context.manifest import ProjectManifest
 
 
 # ─── REPL_COMMANDS registry ───────────────────────────────────────────────────
@@ -24,7 +26,7 @@ from minion.repl import REPL_COMMANDS, _SlashCompleter, _handle_slash_command
 class TestReplCommandsRegistry:
     def test_all_expected_commands_present(self):
         """Regression: /exit was missing from REPL_COMMANDS in an earlier version."""
-        for cmd in ("/help", "/model", "/quit", "/exit"):
+        for cmd in ("/help", "/init", "/model", "/quit", "/exit"):
             assert cmd in REPL_COMMANDS, f"{cmd} missing from REPL_COMMANDS"
 
     def test_every_command_has_non_empty_description(self):
@@ -134,3 +136,85 @@ class TestHandleSlashCommand:
 
     def test_commands_ignore_surrounding_whitespace(self):
         assert self._call("  /help  ") is True
+
+
+# ─── _generate_minion_md ──────────────────────────────────────────────────────
+
+def _make_context(tmp_path, language="Python 3.12", framework=None, entry_point=None):
+    manifest = ProjectManifest(language=language, framework=framework, entry_point=entry_point)
+    return ProjectContext(cwd=tmp_path, manifest=manifest, file_tree="", minion_md=None)
+
+
+class TestGenerateMinionMd:
+    def test_without_context_returns_generic_header(self):
+        result = _generate_minion_md(None)
+        assert "Project instructions for Minion" in result
+        assert "Add anything" in result
+
+    def test_with_manifest_includes_language(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12")
+        result = _generate_minion_md(ctx)
+        assert "Python 3.12" in result
+
+    def test_with_framework_includes_framework(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12", framework="Flask")
+        result = _generate_minion_md(ctx)
+        assert "Flask" in result
+
+    def test_without_framework_no_framework_in_header(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Go 1.21")
+        result = _generate_minion_md(ctx)
+        assert "·" not in result.splitlines()[2]   # header line has no separator
+
+    def test_with_entry_point_mentioned_in_how_to_run(self, tmp_path):
+        ctx = _make_context(tmp_path, entry_point="src/main.py")
+        result = _generate_minion_md(ctx)
+        assert "src/main.py" in result
+
+    def test_without_entry_point_shows_generic_placeholder(self, tmp_path):
+        ctx = _make_context(tmp_path)
+        result = _generate_minion_md(ctx)
+        assert "e.g." in result
+
+    def test_contains_all_expected_sections(self):
+        result = _generate_minion_md(None)
+        for section in ("## How to run", "## How to test", "## Key directories", "## Notes for Minion"):
+            assert section in result
+
+    def test_result_ends_with_newline(self):
+        assert _generate_minion_md(None).endswith("\n")
+
+
+# ─── /init command ────────────────────────────────────────────────────────────
+
+class TestInitCommand:
+    def _call_init(self, tmp_path, project_context=None):
+        with patch("minion.repl.console"), \
+             patch("minion.repl.Path") as mock_path_cls:
+            mock_path_cls.cwd.return_value = tmp_path
+            return _handle_slash_command("/init", MagicMock(), MagicMock(), project_context)
+
+    def test_init_returns_true(self, tmp_path):
+        assert self._call_init(tmp_path) is True
+
+    def test_init_creates_minion_md(self, tmp_path):
+        self._call_init(tmp_path)
+        assert (tmp_path / "MINION.md").exists()
+
+    def test_init_file_contains_sections(self, tmp_path):
+        self._call_init(tmp_path)
+        content = (tmp_path / "MINION.md").read_text()
+        assert "## How to run" in content
+        assert "## How to test" in content
+
+    def test_init_warns_if_already_exists(self, tmp_path):
+        (tmp_path / "MINION.md").write_text("existing content")
+        self._call_init(tmp_path)
+        assert (tmp_path / "MINION.md").read_text() == "existing content"  # not overwritten
+
+    def test_init_with_context_prefills_language(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12", framework="FastAPI")
+        self._call_init(tmp_path, project_context=ctx)
+        content = (tmp_path / "MINION.md").read_text()
+        assert "Python 3.12" in content
+        assert "FastAPI" in content

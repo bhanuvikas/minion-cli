@@ -47,13 +47,16 @@ def _make_status_ctx():
 
 # ─── Message structure ────────────────────────────────────────────────────────
 
+_SYSTEM_PROMPT = "You are a test assistant."
+
+
 class TestRunPromptArguments:
     def test_sends_user_message_to_stream(self):
         client = _make_client()
         ctx = _make_status_ctx()
         with patch("minion.runner.console") as mc, patch("sys.stdout"):
             mc.status.return_value = ctx
-            run_prompt("what is a closure?", client, Conversation())
+            run_prompt("what is a closure?", client, Conversation(), _SYSTEM_PROMPT)
         messages = client.stream.call_args[0][0]
         assert messages[0] == Message(role="user", content="what is a closure?")
 
@@ -62,17 +65,17 @@ class TestRunPromptArguments:
         ctx = _make_status_ctx()
         with patch("minion.runner.console") as mc, patch("sys.stdout"):
             mc.status.return_value = ctx
-            run_prompt("hi", client, Conversation())
+            run_prompt("hi", client, Conversation(), _SYSTEM_PROMPT)
         _, kwargs = client.stream.call_args
         assert "system" in kwargs
-        assert len(kwargs["system"]) > 0
+        assert kwargs["system"] == _SYSTEM_PROMPT
 
     def test_passes_tools_as_kwarg(self):
         client = _make_client()
         ctx = _make_status_ctx()
         with patch("minion.runner.console") as mc, patch("sys.stdout"):
             mc.status.return_value = ctx
-            run_prompt("hi", client, Conversation())
+            run_prompt("hi", client, Conversation(), _SYSTEM_PROMPT)
         _, kwargs = client.stream.call_args
         assert "tools" in kwargs
         assert isinstance(kwargs["tools"], list)
@@ -88,7 +91,7 @@ class TestRunPromptErrorHandling:
         with patch("minion.runner.console") as mc, \
              patch("minion.runner.print_error") as mock_err:
             mc.status.return_value = ctx
-            run_prompt("hello", client, Conversation())
+            run_prompt("hello", client, Conversation(), _SYSTEM_PROMPT)
         mock_err.assert_called_once()
         assert "empty" in mock_err.call_args[0][0].lower()
 
@@ -99,7 +102,7 @@ class TestRunPromptErrorHandling:
         with patch("minion.runner.console") as mc, \
              patch("minion.runner.print_error") as mock_err:
             mc.status.return_value = ctx
-            run_prompt("hello", client, Conversation())
+            run_prompt("hello", client, Conversation(), _SYSTEM_PROMPT)
         mock_err.assert_called_once_with("ANTHROPIC_API_KEY not set")
 
 
@@ -112,7 +115,7 @@ class TestRunPromptOutput:
         with patch("minion.runner.console") as mc:
             mc.status.return_value = ctx
             mc.print = MagicMock()
-            run_prompt("hi", client, Conversation())
+            run_prompt("hi", client, Conversation(), _SYSTEM_PROMPT)
         captured = capsys.readouterr()
         assert "Bello" in captured.out
         assert " from" in captured.out
@@ -125,7 +128,7 @@ class TestRunPromptOutput:
              patch("minion.runner.print_usage") as mock_usage, \
              patch("sys.stdout"):
             mc.status.return_value = ctx
-            run_prompt("hello", client, Conversation())
+            run_prompt("hello", client, Conversation(), _SYSTEM_PROMPT)
         mock_usage.assert_called_once()
 
 
@@ -155,7 +158,7 @@ class TestAgentLoop:
             mc.status.return_value = ctx
             mock_exec = MockExecutor.return_value
             mock_exec.execute.return_value = "file contents here"
-            run_prompt("read test.txt", client, Conversation())
+            run_prompt("read test.txt", client, Conversation(), _SYSTEM_PROMPT)
 
         assert client.stream.call_count == 2
         mock_exec.execute.assert_called_once_with(tool_block)
@@ -167,7 +170,7 @@ class TestAgentLoop:
              patch("minion.runner.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
             mc.status.return_value = ctx
-            run_prompt("hi", client, Conversation(), dry_run=True)
+            run_prompt("hi", client, Conversation(), _SYSTEM_PROMPT, dry_run=True)
         MockExecutor.assert_called_once_with(dry_run=True)
 
     def test_max_iterations_shows_limit_message(self):
@@ -190,6 +193,6 @@ class TestAgentLoop:
              patch("sys.stdout"):
             mc.status.return_value = ctx
             MockExecutor.return_value.execute.return_value = "result"
-            run_prompt("loop forever", client, Conversation())
+            run_prompt("loop forever", client, Conversation(), _SYSTEM_PROMPT)
 
         mock_limit.assert_called_once_with(MAX_ITERATIONS)

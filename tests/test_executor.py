@@ -94,7 +94,7 @@ class TestDispatch:
         with patch("minion.tools.executor.print_tool_call"), \
              patch("minion.tools.executor.print_tool_result"):
             result = executor.execute(block)
-        assert result == "bello"
+        assert "bello" in result  # content present (output now includes line numbers)
 
     def test_dispatches_list_directory(self, tmp_path):
         (tmp_path / "file.txt").write_text("x")

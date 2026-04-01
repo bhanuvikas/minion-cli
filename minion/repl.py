@@ -19,8 +19,10 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from .config import MINION_STYLE, run_model_config
+from .context import ProjectContext, build_project_context
 from .conversation import Conversation
 from .llm.base import LLMClient
+from .prompts import build_system_prompt
 from .runner import run_prompt
 from .session import list_sessions, load, save
 from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
@@ -31,6 +33,7 @@ from .theme import BLUE, YELLOW, console, print_context, print_error, print_gree
 
 REPL_COMMANDS = {
     "/help":    "Show available commands",
+    "/init":    "Create a MINION.md template in the current directory",
     "/model":   "Interactively change provider, model, and API keys",
     "/context": "Show context window usage and token breakdown",
     "/clear":   "Clear conversation history and start fresh",
@@ -81,6 +84,48 @@ def _enter_with_completion(event):
     buf.validate_and_handle()
 
 
+# ─── /init template generator ────────────────────────────────────────────────
+
+def _generate_minion_md(project_context: ProjectContext | None) -> str:
+    """Build a MINION.md starter template from detected project context.
+
+    Pre-fills language/framework/entry point when a manifest was detected;
+    falls back to generic placeholders for unrecognised projects.
+    """
+    manifest = project_context.manifest if project_context else None
+
+    lines: list[str] = ["# MINION.md", ""]
+
+    if manifest:
+        label = manifest.language
+        if manifest.framework:
+            label += f" · {manifest.framework}"
+        lines.append(f"Project instructions for Minion. This is a {label} project.")
+    else:
+        lines.append("Project instructions for Minion. Add anything the agent should know.")
+
+    lines += ["", "## How to run"]
+    if manifest and manifest.entry_point:
+        lines.append(f"<!-- Entry point detected: {manifest.entry_point} -->")
+    else:
+        lines.append("<!-- e.g. python src/main.py / npm start / go run . -->")
+
+    lines += [
+        "",
+        "## How to test",
+        "<!-- e.g. pytest tests/ -q / npm test / go test ./... -->",
+        "",
+        "## Key directories",
+        "<!-- Describe important directories and their purpose -->",
+        "",
+        "## Notes for Minion",
+        "<!-- Conventions, things to avoid, important patterns -->",
+        "<!-- Tip: create a .minionignore file to exclude paths from minion's file tree -->",
+    ]
+
+    return "\n".join(lines) + "\n"
+
+
 # ─── Slash command handler ────────────────────────────────────────────────────
 
 def _load_session(name: str, conversation: Conversation) -> None:
@@ -99,7 +144,12 @@ def _load_session(name: str, conversation: Conversation) -> None:
         print_error(str(e))
 
 
-def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversation) -> bool:
+def _handle_slash_command(
+    raw: str,
+    client: LLMClient,
+    conversation: Conversation,
+    project_context: ProjectContext | None = None,
+) -> bool:
     """Dispatch a slash command. Returns True if the input was handled."""
     parts = raw.strip().split(maxsplit=1)
     if not parts:
@@ -116,6 +166,24 @@ def _handle_slash_command(raw: str, client: LLMClient, conversation: Conversatio
         for command, description in REPL_COMMANDS.items():
             console.print(f"  [{BLUE}]{command:<10}[/]  {description}")
         console.print()
+        return True
+
+    if cmd == "/init":
+        minion_md_path = Path.cwd() / "MINION.md"
+        if minion_md_path.exists():
+            console.print(
+                f"[{YELLOW}]MINION.md already exists.[/] "
+                f"[muted]Edit it directly or delete it first.[/]"
+            )
+            return True
+        template = _generate_minion_md(project_context)
+        minion_md_path.write_text(template, encoding="utf-8")
+        console.print(f"[{YELLOW}]Created MINION.md[/] [muted]in {Path.cwd()}[/]")
+        console.print(
+            f"[muted]MINION.md is for instructions you author: how to run, how to test, "
+            f"conventions, things the agent should know.[/]"
+        )
+        console.print(f"[muted]Edit it to add project instructions, then restart minion to load them.[/]")
         return True
 
     if cmd == "/model":
@@ -186,6 +254,14 @@ def run_repl(client: LLMClient, dry_run: bool = False) -> None:
     history_path = Path.home() / ".minion" / "history"
     history_path.parent.mkdir(exist_ok=True)
 
+    project_context = build_project_context(Path.cwd())
+    system_prompt = build_system_prompt(project_context)
+
+    if project_context.manifest:
+        console.print(f"[muted]Project: {project_context.label}[/]\n")
+    if project_context.minion_md:
+        console.print(f"[muted]MINION.md loaded.[/]\n")
+
     conversation = Conversation()
 
     session: PromptSession = PromptSession(
@@ -207,10 +283,10 @@ def run_repl(client: LLMClient, dry_run: bool = False) -> None:
             console.print()
             continue
 
-        if _handle_slash_command(user_input, client, conversation):
+        if _handle_slash_command(user_input, client, conversation, project_context):
             console.print()
             continue
 
         console.print()
-        run_prompt(user_input, client, conversation, dry_run=dry_run)
+        run_prompt(user_input, client, conversation, system_prompt, dry_run=dry_run)
         console.print()
