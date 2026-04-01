@@ -11,7 +11,9 @@ instantiated without real credentials.
 import pytest
 from unittest.mock import patch, MagicMock
 
-from minion.llm.base import Message
+from minion.llm.base import (
+    ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock, Message,
+)
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -96,3 +98,47 @@ class TestOpenAIBuildMessages:
         msgs = [Message(role="user", content="x")] * 3
         result = openai_client._build_messages(msgs, system="sys")
         assert len(result) == 4  # 1 system + 3 user
+
+    def test_content_block_list_falls_back_to_str(self, openai_client):
+        """OpenAI tool-use translation is deferred — block lists are str()'d and don't crash."""
+        msgs = [Message(role="assistant", content=[ContentTextBlock(text="hi")])]
+        result = openai_client._build_messages(msgs, system="")
+        assert result[0]["role"] == "assistant"
+        assert isinstance(result[0]["content"], str)
+
+
+# ─── AnthropicClient._format_content ─────────────────────────────────────────
+
+class TestAnthropicFormatContent:
+    def test_plain_string_passthrough(self, anthropic_client):
+        assert anthropic_client._format_content("hello") == "hello"
+
+    def test_text_block_to_wire(self, anthropic_client):
+        result = anthropic_client._format_content([ContentTextBlock(text="hi")])
+        assert result == [{"type": "text", "text": "hi"}]
+
+    def test_tool_use_block_to_wire(self, anthropic_client):
+        block = ContentToolUseBlock(id="toolu_01", name="read_file", input={"path": "x.py"})
+        result = anthropic_client._format_content([block])
+        assert result == [{"type": "tool_use", "id": "toolu_01", "name": "read_file", "input": {"path": "x.py"}}]
+
+    def test_tool_result_block_to_wire(self, anthropic_client):
+        block = ContentToolResultBlock(tool_use_id="toolu_01", content="file data")
+        result = anthropic_client._format_content([block])
+        assert result == [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "file data"}]
+
+    def test_mixed_blocks_in_order(self, anthropic_client):
+        blocks = [
+            ContentTextBlock(text="I'll read that."),
+            ContentToolUseBlock(id="toolu_01", name="read_file", input={"path": "x.py"}),
+        ]
+        result = anthropic_client._format_content(blocks)
+        assert len(result) == 2
+        assert result[0]["type"] == "text"
+        assert result[1]["type"] == "tool_use"
+
+    def test_format_messages_with_block_list(self, anthropic_client):
+        """_format_messages translates content blocks end-to-end."""
+        msgs = [Message(role="assistant", content=[ContentTextBlock(text="done")])]
+        result = anthropic_client._format_messages(msgs)
+        assert result == [{"role": "assistant", "content": [{"type": "text", "text": "done"}]}]

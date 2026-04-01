@@ -1,11 +1,42 @@
-"""Tests for the core LLM type layer (Message, LLMResponse, LLMClient).
+"""Tests for the core LLM type layer (Message, LLMResponse, LLMClient, ContentBlocks).
 
 These types are the stable foundation that every phase builds on.
 No API calls — purely structural tests.
 """
 
-from minion.llm.base import LLMClient, LLMResponse, Message
+from minion.llm.base import (
+    ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
+    LLMClient, LLMResponse, Message,
+)
 
+
+# ─── ContentBlock types ───────────────────────────────────────────────────────
+
+class TestContentBlocks:
+    def test_content_text_block_fields(self):
+        b = ContentTextBlock(text="hello")
+        assert b.text == "hello"
+
+    def test_content_tool_use_block_fields(self):
+        b = ContentToolUseBlock(id="toolu_01", name="read_file", input={"path": "x.py"})
+        assert b.id == "toolu_01"
+        assert b.name == "read_file"
+        assert b.input == {"path": "x.py"}
+
+    def test_content_tool_use_block_default_input(self):
+        b = ContentToolUseBlock(id="toolu_01", name="list_directory")
+        assert b.input == {}
+
+    def test_content_tool_result_block_fields(self):
+        b = ContentToolResultBlock(tool_use_id="toolu_01", content="file contents")
+        assert b.tool_use_id == "toolu_01"
+        assert b.content == "file contents"
+
+    def test_content_blocks_are_distinct_types(self):
+        assert ContentTextBlock(text="x") != ContentToolUseBlock(id="x", name="x")
+
+
+# ─── Message ──────────────────────────────────────────────────────────────────
 
 class TestMessage:
     def test_fields(self):
@@ -21,6 +52,22 @@ class TestMessage:
     def test_equality(self):
         assert Message("user", "hi") == Message("user", "hi")
         assert Message("user", "hi") != Message("assistant", "hi")
+
+    def test_content_can_be_list_of_blocks(self):
+        blocks = [
+            ContentTextBlock(text="I'll read that."),
+            ContentToolUseBlock(id="toolu_01", name="read_file", input={"path": "x.py"}),
+        ]
+        m = Message(role="assistant", content=blocks)
+        assert isinstance(m.content, list)
+        assert len(m.content) == 2
+
+    def test_tool_result_message(self):
+        m = Message(role="user", content=[
+            ContentToolResultBlock(tool_use_id="toolu_01", content="file data")
+        ])
+        assert m.role == "user"
+        assert isinstance(m.content[0], ContentToolResultBlock)
 
 
 class TestLLMResponse:
