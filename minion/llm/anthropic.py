@@ -4,7 +4,10 @@ from typing import Iterator, Optional
 
 import anthropic
 
-from .base import LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk, ToolUseBlock
+from .base import (
+    ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
+    LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk, ToolUseBlock,
+)
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 
@@ -33,9 +36,26 @@ class AnthropicClient(LLMClient):
         return self._last_usage
 
     def _format_messages(self, messages: list[Message]) -> list[dict]:
-        # content is str for normal turns, list of blocks for tool turns — both
-        # are accepted by the Anthropic API without transformation.
-        return [{"role": m.role, "content": m.content} for m in messages]
+        """Translate application-level Messages to Anthropic wire format.
+
+        Plain-text content passes through unchanged. ContentBlock lists are
+        translated to Anthropic's typed dict format here — the only place in
+        the codebase that knows about Anthropic's specific message structure.
+        """
+        return [{"role": m.role, "content": self._format_content(m.content)} for m in messages]
+
+    def _format_content(self, content) -> str | list[dict]:
+        if isinstance(content, str):
+            return content
+        result = []
+        for block in content:
+            if isinstance(block, ContentTextBlock):
+                result.append({"type": "text", "text": block.text})
+            elif isinstance(block, ContentToolUseBlock):
+                result.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+            elif isinstance(block, ContentToolResultBlock):
+                result.append({"type": "tool_result", "tool_use_id": block.tool_use_id, "content": block.content})
+        return result
 
     def complete(self, messages: list[Message], system: str = "") -> LLMResponse:
         kwargs: dict = {

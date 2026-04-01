@@ -40,11 +40,17 @@ class OpenAIClient(LLMClient):
         return self._last_usage
 
     def _build_messages(self, messages: list[Message], system: str) -> list[dict]:
-        """OpenAI/OpenRouter handle the system prompt as a first message with role='system'."""
+        """Translate application-level Messages to OpenAI wire format.
+
+        OpenAI tool use (tool_calls, role="tool") is deferred — tool content
+        blocks are not yet translated. Plain-text messages pass through unchanged.
+        """
         result = []
         if system:
             result.append({"role": "system", "content": system})
-        result.extend({"role": m.role, "content": m.content} for m in messages)
+        for m in messages:
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            result.append({"role": m.role, "content": content})
         return result
 
     def complete(self, messages: list[Message], system: str = "") -> LLMResponse:

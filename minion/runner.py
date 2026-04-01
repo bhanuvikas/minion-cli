@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .conversation import Conversation
-from .llm.base import LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
+from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
 from .prompts import SYSTEM_PROMPT
 from .theme import BLUE, YELLOW, console, print_error, print_iteration_limit, print_tool_call, print_usage
 from .tools.definitions import TOOL_DEFINITIONS
@@ -107,17 +107,18 @@ def _stream_one_iteration(
     )
 
 
-def _build_content_blocks(result: _IterationResult) -> list[dict]:
-    """Assemble the content block list for an assistant tool-use turn.
+def _build_content_blocks(result: _IterationResult) -> list:
+    """Assemble typed ContentBlocks for an assistant tool-use turn.
 
     Stores both the text preamble (if any) and tool_use blocks so subsequent
     LLM calls can match tool_result messages back to their tool_use IDs.
+    Adapters handle translation to provider wire format.
     """
-    blocks: list[dict] = []
+    blocks = []
     if result.full_text:
-        blocks.append({"type": "text", "text": result.full_text})
+        blocks.append(ContentTextBlock(text=result.full_text))
     for tb in result.tool_blocks:
-        blocks.append({"type": "tool_use", "id": tb.id, "name": tb.name, "input": tb.input})
+        blocks.append(ContentToolUseBlock(id=tb.id, name=tb.name, input=tb.input))
     return blocks
 
 
