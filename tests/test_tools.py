@@ -14,7 +14,9 @@ class TestReadFile:
     def test_reads_file_content(self, tmp_path):
         f = tmp_path / "hello.txt"
         f.write_text("hello world")
-        assert read_file(str(f)) == "hello world"
+        result = read_file(str(f))
+        assert "hello world" in result
+        assert "1" in result   # line number prefix
 
     def test_returns_error_for_missing_file(self, tmp_path):
         result = read_file(str(tmp_path / "nope.txt"))
@@ -26,19 +28,43 @@ class TestReadFile:
         assert result.startswith("Error:")
         assert "not a file" in result
 
-    def test_truncates_large_file(self, tmp_path):
+    def test_truncates_large_file_at_300_lines(self, tmp_path):
         f = tmp_path / "big.txt"
-        f.write_bytes(b"x" * 100)
-        result = read_file(str(f), max_bytes=10)
-        assert "truncated" in result
-        assert "100" in result  # original size mentioned
+        f.write_text("\n".join(f"line {i}" for i in range(400)))
+        result = read_file(str(f))
+        assert "300" in result
+        assert "400" in result   # total line count mentioned
+        assert "start_line" in result  # hint to use range
 
-    def test_does_not_truncate_within_limit(self, tmp_path):
+    def test_does_not_truncate_small_file(self, tmp_path):
         f = tmp_path / "small.txt"
-        f.write_text("short content")
-        result = read_file(str(f), max_bytes=50_000)
-        assert "truncated" not in result
-        assert result == "short content"
+        f.write_text("\n".join(f"line {i}" for i in range(10)))
+        result = read_file(str(f))
+        assert "start_line" not in result   # no truncation hint
+        assert "line 9" in result           # all content present
+
+    def test_line_range_returns_correct_lines(self, tmp_path):
+        f = tmp_path / "ranged.txt"
+        f.write_text("\n".join(f"line {i}" for i in range(1, 21)))
+        result = read_file(str(f), start_line=5, end_line=7)
+        assert "line 5" in result
+        assert "line 7" in result
+        assert "line 4" not in result
+        assert "line 8" not in result
+
+    def test_line_range_header_shows_bounds(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("\n".join(str(i) for i in range(1, 11)))
+        result = read_file(str(f), start_line=2, end_line=4)
+        assert "Lines 2" in result
+        assert "4" in result
+
+    def test_start_line_beyond_eof_returns_error(self, tmp_path):
+        f = tmp_path / "short.txt"
+        f.write_text("only one line")
+        result = read_file(str(f), start_line=99)
+        assert result.startswith("Error:")
+        assert "exceeds" in result
 
     def test_handles_binary_with_replacement(self, tmp_path):
         f = tmp_path / "bin.bin"

@@ -15,13 +15,22 @@ from ..config import MINION_STYLE
 from ..llm.base import ToolUseBlock
 from ..theme import print_tool_call, print_tool_error, print_tool_result
 from .definitions import DANGEROUS_TOOLS
-from .implementations import list_directory, read_file, run_shell, write_file
+from .implementations import (
+    get_file_outline,
+    list_directory,
+    read_file,
+    run_shell,
+    search_code,
+    write_file,
+)
 
 _DISPATCH: dict = {
-    "read_file": read_file,
-    "write_file": write_file,
-    "list_directory": list_directory,
-    "run_shell": run_shell,
+    "read_file":        read_file,
+    "write_file":       write_file,
+    "list_directory":   list_directory,
+    "run_shell":        run_shell,
+    "get_file_outline": get_file_outline,
+    "search_code":      search_code,
 }
 
 
