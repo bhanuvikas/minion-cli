@@ -5,7 +5,7 @@ No network calls, no API keys needed.
 
 import pytest
 from minion.conversation import Conversation, ContextSnapshot, _context_limit, DEFAULT_LIMIT
-from minion.llm.base import LLMResponse, Message
+from minion.llm.base import ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
 
 
 def _usage(input_tokens=100, output_tokens=50, model="claude-3-5-sonnet"):
@@ -41,6 +41,54 @@ class TestConversationMessages:
         c.add_user("hi")
         c.add_assistant("hey", None)
         assert len(c.messages) == 2
+
+
+# ─── add_assistant_blocks / add_tool_result ───────────────────────────────────
+
+class TestContentBlockMessages:
+    def test_add_assistant_blocks_stores_typed_objects(self):
+        """Conversation stores application ContentBlock objects, not provider dicts."""
+        c = Conversation()
+        blocks = [
+            ContentTextBlock(text="I'll read that."),
+            ContentToolUseBlock(id="toolu_01", name="read_file", input={"path": "x.py"}),
+        ]
+        c.add_assistant_blocks(blocks, None)
+        msg = c.messages[-1]
+        assert msg.role == "assistant"
+        assert isinstance(msg.content, list)
+        assert isinstance(msg.content[0], ContentTextBlock)
+        assert isinstance(msg.content[1], ContentToolUseBlock)
+
+    def test_add_assistant_blocks_updates_token_count(self):
+        c = Conversation()
+        c.add_assistant_blocks([], _usage(input_tokens=100, output_tokens=50))
+        assert c.total_tokens == 150
+
+    def test_add_tool_result_stores_content_tool_result_block(self):
+        c = Conversation()
+        c.add_tool_result("toolu_01", "file contents")
+        msg = c.messages[-1]
+        assert msg.role == "user"
+        assert isinstance(msg.content, list)
+        block = msg.content[0]
+        assert isinstance(block, ContentToolResultBlock)
+        assert block.tool_use_id == "toolu_01"
+        assert block.content == "file contents"
+
+    def test_tool_use_round_trip_in_messages(self):
+        """A full tool-use turn: assistant blocks then tool result — roles and types correct."""
+        c = Conversation()
+        c.add_user("list the files")
+        c.add_assistant_blocks(
+            [ContentToolUseBlock(id="toolu_01", name="list_directory", input={"path": "."})],
+            _usage(),
+        )
+        c.add_tool_result("toolu_01", "README.md\nmain.py")
+        roles = [m.role for m in c.messages]
+        assert roles == ["user", "assistant", "user"]
+        # The last user message carries a tool result, not plain text
+        assert isinstance(c.messages[-1].content[0], ContentToolResultBlock)
 
 
 # ─── Token tracking ──────────────────────────────────────────────────────────
