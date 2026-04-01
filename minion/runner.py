@@ -1,11 +1,18 @@
 """Agent loop: user prompt → [LLM ↔ tools]* → streamed response.
 
-The ReAct pattern lives here: on each iteration the model either emits text
-(done) or a tool call (execute, inject result, loop). runner.py orchestrates;
-tools/ executes; theme.py displays.
+Core of the ReAct pattern: on each iteration the model either finishes
+(stop_reason="end_turn") or requests a tool call (stop_reason="tool_use").
+Tool results are injected back as observations and the loop continues.
+
+Responsibilities:
+  run_prompt()          — orchestrates the full agent loop
+  _stream_one_iteration() — one LLM call: spin → stream events → structured result
+  _build_content_blocks() — assemble Anthropic content block list for conversation storage
+  _execute_tools()        — run each tool call, inject results into conversation
 """
 
 import sys
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .conversation import Conversation
@@ -17,7 +24,115 @@ from .tools.executor import ToolExecutor
 
 _SYSTEM_PROMPT_TOKENS = len(SYSTEM_PROMPT) // 4
 MAX_ITERATIONS = 20
+_SPINNER_LABEL = f"[{YELLOW}]🍌  Bee-do bee-do...[/]"
 
+
+# ─── Result type for a single streaming iteration ─────────────────────────────
+
+@dataclass
+class _IterationResult:
+    full_text: str
+    tool_blocks: list[ToolUseBlock] = field(default_factory=list)
+    stop_reason: str = "end_turn"
+    usage: Optional[LLMResponse] = None
+
+
+# ─── Private helpers ──────────────────────────────────────────────────────────
+
+def _stream_one_iteration(
+    client: LLMClient,
+    conversation: Conversation,
+) -> Optional[_IterationResult]:
+    """Run one LLM streaming call and collect all events into a structured result.
+
+    Shows the spinner while waiting for the first event. Writes TextChunk text
+    directly to stdout as it arrives. Returns None on error (already displayed)
+    and pops the pending user message so conversation history stays consistent.
+    """
+    try:
+        stream = client.stream(conversation.messages, system=SYSTEM_PROMPT, tools=TOOL_DEFINITIONS)
+        with console.status(_SPINNER_LABEL, spinner="dots"):
+            first_event = next(stream, None)
+    except Exception as e:
+        conversation.messages.pop()
+        print_error(str(e))
+        return None
+
+    if first_event is None:
+        conversation.messages.pop()
+        print_error("Received an empty response from the model.")
+        return None
+
+    text_chunks: list[str] = []
+    tool_blocks: list[ToolUseBlock] = []
+    stop_reason = "end_turn"
+    usage: Optional[LLMResponse] = None
+    printed_prefix = False
+
+    def _process(event) -> None:
+        nonlocal printed_prefix, stop_reason, usage
+        if isinstance(event, TextChunk):
+            if not printed_prefix:
+                console.print(f"[bold {BLUE}]minion[/] › ", end="")
+                printed_prefix = True
+            sys.stdout.write(event.text)
+            sys.stdout.flush()
+            text_chunks.append(event.text)
+        elif isinstance(event, ToolUseBlock):
+            tool_blocks.append(event)
+        elif isinstance(event, StreamComplete):
+            stop_reason = event.stop_reason
+            usage = LLMResponse(
+                content="",
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                model=event.model,
+            )
+
+    _process(first_event)
+    try:
+        for event in stream:
+            _process(event)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C mid-stream — stop cleanly, no traceback
+
+    if text_chunks:
+        print()  # newline after streamed text
+
+    return _IterationResult(
+        full_text="".join(text_chunks),
+        tool_blocks=tool_blocks,
+        stop_reason=stop_reason,
+        usage=usage,
+    )
+
+
+def _build_content_blocks(result: _IterationResult) -> list[dict]:
+    """Assemble the Anthropic content block list for an assistant tool-use turn.
+
+    The API requires storing both the text preamble (if any) and the tool_use
+    blocks so subsequent calls can reference tool_use IDs when matching results.
+    """
+    blocks: list[dict] = []
+    if result.full_text:
+        blocks.append({"type": "text", "text": result.full_text})
+    for tb in result.tool_blocks:
+        blocks.append({"type": "tool_use", "id": tb.id, "name": tb.name, "input": tb.input})
+    return blocks
+
+
+def _execute_tools(
+    tool_blocks: list[ToolUseBlock],
+    executor: ToolExecutor,
+    conversation: Conversation,
+) -> None:
+    """Execute each tool call and inject its result into conversation as a tool_result message."""
+    for tool_block in tool_blocks:
+        result = executor.execute(tool_block)
+        conversation.add_tool_result(tool_block.id, result)
+
+
+# ─── Public entry point ───────────────────────────────────────────────────────
 
 def run_prompt(
     prompt: str,
@@ -27,101 +142,45 @@ def run_prompt(
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
-    Streams text to stdout, executes tool calls, injects observations, and
-    loops until the model signals end_turn or MAX_ITERATIONS is reached.
+    Loops up to MAX_ITERATIONS. Each iteration is one LLM call; if the model
+    requests tool use the results are observed and the loop continues. The loop
+    exits when the model signals end_turn or dry_run stops it after the first
+    tool-use iteration.
     """
     executor = ToolExecutor(dry_run=dry_run)
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
 
-    for iteration in range(MAX_ITERATIONS):
-        # ── Spin until the first event arrives ────────────────────────────────
-        try:
-            stream = client.stream(conversation.messages, system=SYSTEM_PROMPT, tools=TOOL_DEFINITIONS)
-            with console.status(f"[{YELLOW}]🍌  Bee-do bee-do...[/]", spinner="dots"):
-                first_event = next(stream, None)
-        except Exception as e:
-            conversation.messages.pop()
-            print_error(str(e))
-            return
+    for _ in range(MAX_ITERATIONS):
+        # ── One LLM call ──────────────────────────────────────────────────────
+        result = _stream_one_iteration(client, conversation)
+        if result is None:
+            return  # error already displayed and user message popped
 
-        if first_event is None:
-            conversation.messages.pop()
-            print_error("Received an empty response from the model.")
-            return
+        if result.usage:
+            final_usage = result.usage
 
-        # ── Process the full stream for this iteration ────────────────────────
-        text_chunks: list[str] = []
-        tool_blocks: list[ToolUseBlock] = []
-        stop_reason = "end_turn"
-        iteration_usage: Optional[LLMResponse] = None
-        printed_prefix = False
-
-        def _handle_event(event) -> None:
-            nonlocal printed_prefix, stop_reason, iteration_usage
-            if isinstance(event, TextChunk):
-                if not printed_prefix:
-                    console.print(f"[bold {BLUE}]minion[/] › ", end="")
-                    printed_prefix = True
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
-                text_chunks.append(event.text)
-            elif isinstance(event, ToolUseBlock):
-                tool_blocks.append(event)
-            elif isinstance(event, StreamComplete):
-                stop_reason = event.stop_reason
-                iteration_usage = LLMResponse(
-                    content="",
-                    input_tokens=event.input_tokens,
-                    output_tokens=event.output_tokens,
-                    model=event.model,
-                )
-
-        _handle_event(first_event)
-        try:
-            for event in stream:
-                _handle_event(event)
-        except KeyboardInterrupt:
-            pass  # Ctrl+C mid-stream — stop cleanly
-
-        if text_chunks:
-            print()  # newline after streamed text
-
-        if iteration_usage:
-            final_usage = iteration_usage
-
-        # ── Build content blocks (text + tool_use) for this assistant turn ────
-        content_blocks: list[dict] = []
-        full_text = "".join(text_chunks)
-        if full_text:
-            content_blocks.append({"type": "text", "text": full_text})
-        for tb in tool_blocks:
-            content_blocks.append({"type": "tool_use", "id": tb.id, "name": tb.name, "input": tb.input})
-
-        # ── End turn: store reply and finish ──────────────────────────────────
-        if stop_reason == "end_turn":
-            conversation.add_assistant(full_text, iteration_usage)
+        # ── End turn: model finished responding ───────────────────────────────
+        if result.stop_reason == "end_turn":
+            conversation.add_assistant(result.full_text, result.usage)
             break
 
-        # ── Tool use: store blocks, execute, inject results, loop ─────────────
-        if stop_reason == "tool_use":
-            conversation.add_assistant_blocks(content_blocks, iteration_usage)
-
-            for tool_block in tool_blocks:
-                result = executor.execute(tool_block)
-                conversation.add_tool_result(tool_block.id, result)
+        # ── Tool use: execute calls, inject observations, loop ────────────────
+        if result.stop_reason == "tool_use":
+            conversation.add_assistant_blocks(_build_content_blocks(result), result.usage)
+            _execute_tools(result.tool_blocks, executor, conversation)
 
             if dry_run:
-                console.print(f"\n[muted]Dry-run complete. {len(tool_blocks)} tool call(s) shown.[/]")
+                console.print(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
                 break
 
-            print()  # blank line before next LLM iteration
+            print()  # blank line before next iteration
 
     else:
-        # for/else: loop exhausted without break — hit MAX_ITERATIONS
+        # for/else fires when the loop exhausted all iterations without a break
         print_iteration_limit(MAX_ITERATIONS)
 
-    # ── Post-loop: truncation, snapshot, footer ───────────────────────────────
+    # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
     if final_usage:
         conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
     snapshot = conversation.build_snapshot(final_usage, _SYSTEM_PROMPT_TOKENS)
