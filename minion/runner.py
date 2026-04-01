@@ -7,7 +7,7 @@ Tool results are injected back as observations and the loop continues.
 Responsibilities:
   run_prompt()          — orchestrates the full agent loop
   _stream_one_iteration() — one LLM call: spin → stream events → structured result
-  _build_content_blocks() — assemble Anthropic content block list for conversation storage
+  _build_content_blocks() — assemble content block list for conversation storage
   _execute_tools()        — run each tool call, inject results into conversation
 """
 
@@ -18,7 +18,7 @@ from typing import Optional
 from .conversation import Conversation
 from .llm.base import LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
 from .prompts import SYSTEM_PROMPT
-from .theme import BLUE, YELLOW, console, print_error, print_iteration_limit, print_usage
+from .theme import BLUE, YELLOW, console, print_error, print_iteration_limit, print_tool_call, print_usage
 from .tools.definitions import TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
 
@@ -108,10 +108,10 @@ def _stream_one_iteration(
 
 
 def _build_content_blocks(result: _IterationResult) -> list[dict]:
-    """Assemble the Anthropic content block list for an assistant tool-use turn.
+    """Assemble the content block list for an assistant tool-use turn.
 
-    The API requires storing both the text preamble (if any) and the tool_use
-    blocks so subsequent calls can reference tool_use IDs when matching results.
+    Stores both the text preamble (if any) and tool_use blocks so subsequent
+    LLM calls can match tool_result messages back to their tool_use IDs.
     """
     blocks: list[dict] = []
     if result.full_text:
@@ -168,12 +168,14 @@ def run_prompt(
         # ── Tool use: execute calls, inject observations, loop ────────────────
         if result.stop_reason == "tool_use":
             conversation.add_assistant_blocks(_build_content_blocks(result), result.usage)
-            _execute_tools(result.tool_blocks, executor, conversation)
 
             if dry_run:
+                for tb in result.tool_blocks:
+                    print_tool_call(tb.name, tb.input, dry_run=True)
                 console.print(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
                 break
 
+            _execute_tools(result.tool_blocks, executor, conversation)
             print()  # blank line before next iteration
 
     else:
