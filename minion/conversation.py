@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .llm.base import LLMResponse, Message
+from .llm.base import ContentBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
 
 # Context window limits by model name fragment (matched with `in`).
 # These are the INPUT limits; we target 85% to leave headroom for new messages.
@@ -111,14 +111,12 @@ class Conversation:
             if usage.model:
                 self._model = usage.model
 
-    def add_assistant_blocks(self, content_blocks: list, usage: Optional[LLMResponse]) -> None:
-        """Append an assistant turn that contains tool_use content blocks.
+    def add_assistant_blocks(self, content_blocks: list[ContentBlock], usage: Optional[LLMResponse]) -> None:
+        """Append an assistant turn that contains tool-use content blocks.
 
-        content_blocks is the raw list of Anthropic content block dicts, e.g.:
-          [{"type": "text", "text": "..."}, {"type": "tool_use", "id": ..., ...}]
-
-        The Anthropic API requires storing these exact blocks so subsequent calls
-        can reference tool_use IDs when injecting tool results.
+        Stores typed ContentBlock objects — provider wire format is the adapter's
+        concern, not the conversation's. Subsequent calls reference tool IDs via
+        ContentToolUseBlock.id when matching tool results.
         """
         self.messages.append(Message(role="assistant", content=content_blocks))
         if usage:
@@ -130,13 +128,13 @@ class Conversation:
     def add_tool_result(self, tool_use_id: str, result: str) -> None:
         """Inject a tool result as a user-role message.
 
-        The Anthropic API mandates that tool results go in the user turn — there
-        is no separate "tool" role. The tool_result content type distinguishes
-        these from human messages when inspecting conversation history.
+        Tool results are user-role messages per the LLM conversation protocol —
+        there is no separate tool role. ContentToolResultBlock carries the ID
+        that links this result back to its ContentToolUseBlock.
         """
         self.messages.append(Message(
             role="user",
-            content=[{"type": "tool_result", "tool_use_id": tool_use_id, "content": result}],
+            content=[ContentToolResultBlock(tool_use_id=tool_use_id, content=result)],
         ))
 
     def build_snapshot(self, usage: Optional[LLMResponse], system_prompt_tokens: int = 0) -> Optional["ContextSnapshot"]:

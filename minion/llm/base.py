@@ -3,10 +3,39 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional, Union
 
 
+# ─── Application-level content block types ───────────────────────────────────
+# These are the canonical types the application uses to represent message content.
+# Adapters translate these to provider-specific wire formats in _format_messages().
+# The application layer (conversation.py, runner.py) never sees provider dicts.
+
+@dataclass
+class ContentTextBlock:
+    """A text segment within an assistant message."""
+    text: str
+
+
+@dataclass
+class ContentToolUseBlock:
+    """A tool call made by the model within an assistant message."""
+    id: str
+    name: str
+    input: dict = field(default_factory=dict)
+
+
+@dataclass
+class ContentToolResultBlock:
+    """The result of a tool call, injected back as a user-role message."""
+    tool_use_id: str
+    content: str
+
+
+ContentBlock = Union[ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock]
+
+
 @dataclass
 class Message:
-    role: str           # "user" | "assistant"
-    content: Union[str, list]  # str for normal turns; list of content blocks for tool turns
+    role: str                           # "user" | "assistant"
+    content: Union[str, list[ContentBlock]]  # str for plain turns; list for tool turns
 
 
 @dataclass
