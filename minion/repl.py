@@ -63,7 +63,7 @@ REPL_COMMANDS = {
     "/reflect": "Self-refine: /reflect on | /reflect 2 | /reflect off | /reflect",
     "/verbose": "Verbose output: /verbose on | /verbose off | /verbose",
     "/memory":  "Memory status/toggle: /memory | /memory on | /memory off",
-    "/remember": "Remember something: /remember <text>",
+    "/remember": "Remember something: /remember [--global] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
     "/clear":   "Clear conversation history and start fresh",
@@ -326,21 +326,32 @@ def _handle_slash_command(
 
     if cmd == "/remember":
         if not arg:
-            print_error("Usage: /remember <text>")
+            print_error("Usage: /remember [global] <text>")
             return True
         if memory_store is not None:
+            if arg == "--global" or arg.startswith("--global "):
+                scope = "global"
+                project_path = None
+                content = arg[len("--global "):].strip().strip("\"'")
+            else:
+                scope = "project"
+                project_path = str(Path.cwd())
+                content = arg.strip("\"'")
+            if not content:
+                print_error("Usage: /remember [--global] <text>")
+                return True
             record = MemoryRecord(
                 id=str(uuid.uuid4()),
-                content=arg,
+                content=content,
                 type="semantic",
-                scope="project",
-                project_path=str(Path.cwd()),
+                scope=scope,
+                project_path=project_path,
                 tags=[],
                 created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 superseded_by=None,
             )
             memory_store.store(record)
-            console.print(f"[{YELLOW}]Remembered:[/] {arg}")
+            console.print(f"[{YELLOW}]Remembered[/] [muted]({scope}):[/] {content}")
         else:
             console.print(f"[muted]Memory not available in this session.[/]")
         return True
@@ -350,7 +361,7 @@ def _handle_slash_command(
             print_error("Usage: /forget <id or text>")
             return True
         if memory_store is not None:
-            count = memory_store.delete(arg)
+            count = memory_store.delete(arg.strip("\"'"))
             if count:
                 console.print(f"[{YELLOW}]Forgotten.[/] [muted]({count} memory removed)[/]")
             else:
