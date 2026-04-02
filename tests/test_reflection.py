@@ -22,8 +22,9 @@ from minion.reflection import (
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _critique_response(score: int, type_: str = "CODE_GENERATION", critique: str = "Fix it.") -> LLMResponse:
+    import json
     return LLMResponse(
-        content=f"SCORE: {score}\nTYPE: {type_}\nCRITIQUE: {critique}",
+        content=json.dumps({"score": score, "type": type_, "critique": critique}),
         input_tokens=10,
         output_tokens=15,
         model="test-model",
@@ -64,8 +65,9 @@ def _mock_client_failing_then_passing(
 # ─── _parse_critique ──────────────────────────────────────────────────────────
 
 class TestParseCritique:
-    def test_parses_valid_structured_response(self):
-        raw = "SCORE: 8\nTYPE: CODE_GENERATION\nCRITIQUE: Looks good."
+    def test_parses_valid_json_response(self):
+        import json
+        raw = json.dumps({"score": 8, "type": "CODE_GENERATION", "critique": "Looks good."})
         result = _parse_critique(raw)
         assert result.score == 8
         assert result.response_type == "CODE_GENERATION"
@@ -79,39 +81,57 @@ class TestParseCritique:
         assert result.raw == raw
 
     def test_score_clamped_to_1_to_10(self):
-        raw = "SCORE: 15\nTYPE: GENERAL\nCRITIQUE: Over the top."
+        import json
+        raw = json.dumps({"score": 15, "type": "GENERAL", "critique": "Over the top."})
         result = _parse_critique(raw)
         assert result.score == 10
 
-        raw_low = "SCORE: -3\nTYPE: GENERAL\nCRITIQUE: Way too low."
+        raw_low = json.dumps({"score": -3, "type": "GENERAL", "critique": "Way too low."})
         result_low = _parse_critique(raw_low)
         assert result_low.score == 1
 
     def test_parses_code_generation_type(self):
-        raw = "SCORE: 6\nTYPE: CODE_GENERATION\nCRITIQUE: Missing edge case."
+        import json
+        raw = json.dumps({"score": 6, "type": "CODE_GENERATION", "critique": "Missing edge case."})
         result = _parse_critique(raw)
         assert result.response_type == "CODE_GENERATION"
 
     def test_parses_code_explanation_type(self):
-        raw = "SCORE: 7\nTYPE: CODE_EXPLANATION\nCRITIQUE: Good."
+        import json
+        raw = json.dumps({"score": 7, "type": "CODE_EXPLANATION", "critique": "Good."})
         result = _parse_critique(raw)
         assert result.response_type == "CODE_EXPLANATION"
 
     def test_parses_general_type(self):
-        raw = "SCORE: 9\nTYPE: GENERAL\nCRITIQUE: None"
+        import json
+        raw = json.dumps({"score": 9, "type": "GENERAL", "critique": None})
         result = _parse_critique(raw)
         assert result.response_type == "GENERAL"
+
+    def test_null_critique_normalized_to_none_string(self):
+        import json
+        raw = json.dumps({"score": 9, "type": "GENERAL", "critique": None})
+        result = _parse_critique(raw)
+        assert result.critique == "None"
 
     def test_unknown_type_defaults_to_general(self):
-        raw = "SCORE: 7\nTYPE: SOMETHING_WEIRD\nCRITIQUE: OK."
+        import json
+        raw = json.dumps({"score": 7, "type": "SOMETHING_WEIRD", "critique": "OK."})
         result = _parse_critique(raw)
         assert result.response_type == "GENERAL"
 
-    def test_case_insensitive_parsing(self):
-        raw = "score: 8\ntype: code_generation\ncritique: Fine."
+    def test_type_value_normalized_to_uppercase(self):
+        import json
+        raw = json.dumps({"score": 8, "type": "code_generation", "critique": "Fine."})
         result = _parse_critique(raw)
         assert result.score == 8
         assert result.response_type == "CODE_GENERATION"
+
+    def test_strips_markdown_code_fences(self):
+        raw = "```json\n{\"score\": 7, \"type\": \"GENERAL\", \"critique\": \"Fix it.\"}\n```"
+        result = _parse_critique(raw)
+        assert result.score == 7
+        assert result.response_type == "GENERAL"
 
 
 # ─── _build_critique_messages ────────────────────────────────────────────────
