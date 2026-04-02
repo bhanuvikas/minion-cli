@@ -11,7 +11,10 @@ Usage (from theme.py or any caller):
 """
 
 import difflib
+import re
 from typing import Optional
+
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def compute_diff(original: str, revised: str) -> list[tuple[str, str]]:
@@ -89,19 +92,29 @@ def format_diff_rich(
         return ""
 
     parts: list[str] = []
+    orig_lineno = 0
+    new_lineno = 0
+
     for line in diff_lines:
         if line.startswith("---") or line.startswith("+++"):
-            # Skip the file header lines — not useful in a terminal chat context
+            # Skip file header lines — not useful in a terminal chat context
             continue
         elif line.startswith("@@"):
-            # Hunk header — show in dim to separate hunks visually
+            m = _HUNK_RE.match(line)
+            if m:
+                orig_lineno = int(m.group(1))
+                new_lineno = int(m.group(2))
             parts.append(f"[dim]{_escape_rich(line)}[/dim]")
         elif line.startswith("+"):
-            parts.append(f"[bold green]{_escape_rich(line)}[/bold green]")
+            parts.append(f"[bold green]{new_lineno:>4}  {_escape_rich(line)}[/bold green]")
+            new_lineno += 1
         elif line.startswith("-"):
-            parts.append(f"[bold red]{_escape_rich(line)}[/bold red]")
+            parts.append(f"[bold red]{orig_lineno:>4}  {_escape_rich(line)}[/bold red]")
+            orig_lineno += 1
         else:
-            parts.append(f"[dim]{_escape_rich(line)}[/dim]")
+            parts.append(f"[dim]{orig_lineno:>4}  {_escape_rich(line)}[/dim]")
+            orig_lineno += 1
+            new_lineno += 1
 
     return "\n".join(parts)
 
