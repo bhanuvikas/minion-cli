@@ -91,6 +91,30 @@ class TestFormatDiffRich:
         # misinterpret them as markup tags.
         assert "\\[" in result
 
+    def test_line_numbers_present_in_output(self):
+        original = "line1\nline2\nline3"
+        revised = "line1\nLINE2\nline3"
+        result = format_diff_rich(original, revised)
+        # Line numbers should appear as right-aligned integers
+        assert "1" in result
+        assert "2" in result
+
+    def test_removed_line_shows_original_lineno(self):
+        original = "a\nb\nc"
+        revised = "a\nc"
+        result = format_diff_rich(original, revised, context_lines=0)
+        # Line 2 ("b") is removed — its line number must appear in a red block
+        red_parts = [p for p in result.split("\n") if "[bold red]" in p]
+        assert any("2" in p for p in red_parts)
+
+    def test_added_line_shows_new_lineno(self):
+        original = "a\nc"
+        revised = "a\nb\nc"
+        result = format_diff_rich(original, revised, context_lines=0)
+        # "b" is added at line 2 in the revised file
+        green_parts = [p for p in result.split("\n") if "[bold green]" in p]
+        assert any("2" in p for p in green_parts)
+
     def test_no_minion_package_imports(self):
         """diff.py must not import from the minion package (standalone guarantee)."""
         import importlib
