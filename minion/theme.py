@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.theme import Theme
 
+from .diff import format_diff_rich
 from .llm.base import LLMResponse
 
 if TYPE_CHECKING:
@@ -253,3 +254,61 @@ def print_tool_error(error: str) -> None:
 def print_iteration_limit(max_iter: int) -> None:
     """Displayed when the agent loop hits MAX_ITERATIONS without finishing."""
     print_error(f"Reached iteration limit ({max_iter}) without a final response.")
+
+
+# ─── Reflection Display (Phase 5) ────────────────────────────────────────────
+
+def print_reflection_header(round_num: int, max_rounds: int) -> None:
+    """Show a muted status line when the reflection loop begins."""
+    console.print(f"\n[muted]  ↻ Reflecting (round {round_num}/{max_rounds})...[/]")
+
+
+def print_critique(score: int, response_type: str, critique_text: str) -> None:
+    """Display a critique result in a styled panel.
+
+    Score colour:
+      green  — score >= SCORE_THRESHOLD (passed)
+      yellow — score 5-6 (marginal)
+      red    — score < 5 (poor)
+
+    Only called when verbose=True.
+    """
+    from .reflection import SCORE_THRESHOLD
+    from rich.markup import escape
+
+    if score >= SCORE_THRESHOLD:
+        score_color = "green"
+    elif score >= 5:
+        score_color = f"{YELLOW}"
+    else:
+        score_color = "red"
+
+    header = (
+        f"[bold {score_color}]Score: {score}/10[/]  "
+        f"[muted]Type: {response_type}[/]"
+    )
+    body = escape(critique_text)
+    console.print(
+        Panel(
+            f"{header}\n\n{body}",
+            title=f"[muted]critique[/]",
+            title_align="left",
+            border_style=GREY,
+            padding=(0, 1),
+            expand=False,
+        )
+    )
+
+
+def print_diff(original: str, revised: str) -> None:
+    """Compute and print a unified diff between original and revised response.
+
+    No-ops when the strings are identical.
+    Only called when verbose=True and was_refined=True.
+    """
+    markup = format_diff_rich(original, revised)
+    if not markup:
+        return
+    console.print(f"\n[muted]  ── diff ──────────────────────────────────────[/]")
+    console.print(markup)
+    console.print(f"[muted]  ─────────────────────────────────────────────[/]")

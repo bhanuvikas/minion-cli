@@ -8,6 +8,7 @@ The actual LLM call is delegated to runner.run_prompt() so this file
 stays focused on input/UX concerns.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -19,6 +20,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from .config import MINION_STYLE, run_model_config
+from .reflection import ReflectionConfig
 from .context import ProjectContext, build_project_context
 from .conversation import Conversation
 from .llm.base import LLMClient
@@ -26,6 +28,19 @@ from .prompts import build_system_prompt
 from .runner import run_prompt
 from .session import list_sessions, load, save
 from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
+
+# ─── REPL session state ───────────────────────────────────────────────────────
+
+@dataclass
+class ReplState:
+    """Mutable REPL session state passed through the command loop.
+
+    Follows the same pattern as Conversation — a single instance is created
+    at session startup and mutated in place by slash command handlers.
+    """
+    reflect_depth: int = 0    # 0 = off; N = max self-refine rounds
+    verbose: bool = False     # show critique text and diffs when True
+
 
 # ─── Slash command registry ───────────────────────────────────────────────────
 # Single source of truth for both the /help display and tab-completion.
@@ -36,6 +51,8 @@ REPL_COMMANDS = {
     "/init":    "Create a MINION.md template in the current directory",
     "/model":   "Interactively change provider, model, and API keys",
     "/context": "Show context window usage and token breakdown",
+    "/reflect": "Self-refine: /reflect on | /reflect 2 | /reflect off | /reflect",
+    "/verbose": "Verbose output: /verbose on | /verbose off | /verbose",
     "/clear":   "Clear conversation history and start fresh",
     "/save":    "Save session: /save <name>",
     "/load":    "Load session: /load <name>",
@@ -149,8 +166,14 @@ def _handle_slash_command(
     client: LLMClient,
     conversation: Conversation,
     project_context: ProjectContext | None = None,
+    state: ReplState | None = None,
 ) -> bool:
-    """Dispatch a slash command. Returns True if the input was handled."""
+    """Dispatch a slash command. Returns True if the input was handled.
+
+    state is optional for backward compatibility with tests that call this
+    function without a ReplState. When state is None, /reflect and /verbose
+    return True but silently do nothing.
+    """
     parts = raw.strip().split(maxsplit=1)
     if not parts:
         return False
@@ -184,6 +207,42 @@ def _handle_slash_command(
             f"conventions, things the agent should know.[/]"
         )
         console.print(f"[muted]Edit it to add project instructions, then restart minion to load them.[/]")
+        return True
+
+    if cmd == "/reflect":
+        if state is not None:
+            if not arg:
+                status = "off" if state.reflect_depth == 0 else f"on (depth={state.reflect_depth})"
+                console.print(f"[{YELLOW}]Reflection:[/] {status}")
+            elif arg == "off":
+                state.reflect_depth = 0
+                console.print(f"[{YELLOW}]Reflection off.[/]")
+            elif arg == "on":
+                state.reflect_depth = 1
+                console.print(f"[{YELLOW}]Reflection on[/] [muted](depth=1)[/]")
+            else:
+                try:
+                    state.reflect_depth = max(0, int(arg))
+                    console.print(
+                        f"[{YELLOW}]Reflection on[/] [muted](depth={state.reflect_depth})[/]"
+                    )
+                except ValueError:
+                    print_error("Usage: /reflect [on | off | <depth 1-3>]")
+        return True
+
+    if cmd == "/verbose":
+        if state is not None:
+            if not arg:
+                status = "on" if state.verbose else "off"
+                console.print(f"[{YELLOW}]Verbose:[/] {status}")
+            elif arg == "on":
+                state.verbose = True
+                console.print(f"[{YELLOW}]Verbose on.[/]")
+            elif arg == "off":
+                state.verbose = False
+                console.print(f"[{YELLOW}]Verbose off.[/]")
+            else:
+                print_error("Usage: /verbose [on | off]")
         return True
 
     if cmd == "/model":
@@ -243,7 +302,12 @@ def _handle_slash_command(
 
 # ─── REPL entry point ─────────────────────────────────────────────────────────
 
-def run_repl(client: LLMClient, dry_run: bool = False) -> None:
+def run_repl(
+    client: LLMClient,
+    dry_run: bool = False,
+    reflect_depth: int = 0,
+    verbose: bool = False,
+) -> None:
     """Start the interactive REPL loop."""
     print_greeting()
     console.print(
@@ -263,6 +327,7 @@ def run_repl(client: LLMClient, dry_run: bool = False) -> None:
         console.print(f"[muted]MINION.md loaded.[/]\n")
 
     conversation = Conversation()
+    state = ReplState(reflect_depth=reflect_depth, verbose=verbose)
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
@@ -283,10 +348,19 @@ def run_repl(client: LLMClient, dry_run: bool = False) -> None:
             console.print()
             continue
 
-        if _handle_slash_command(user_input, client, conversation, project_context):
+        if _handle_slash_command(user_input, client, conversation, project_context, state):
             console.print()
             continue
 
+        reflect_config = (
+            ReflectionConfig(depth=state.reflect_depth)
+            if state.reflect_depth > 0 else None
+        )
         console.print()
-        run_prompt(user_input, client, conversation, system_prompt, dry_run=dry_run)
+        run_prompt(
+            user_input, client, conversation, system_prompt,
+            dry_run=dry_run,
+            reflect_config=reflect_config,
+            verbose=state.verbose,
+        )
         console.print()

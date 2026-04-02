@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 
-from minion.repl import REPL_COMMANDS, _SlashCompleter, _handle_slash_command, _generate_minion_md
+from minion.repl import REPL_COMMANDS, ReplState, _SlashCompleter, _handle_slash_command, _generate_minion_md
 from minion.context.project import ProjectContext
 from minion.context.manifest import ProjectManifest
 
@@ -218,3 +218,92 @@ class TestInitCommand:
         content = (tmp_path / "MINION.md").read_text()
         assert "Python 3.12" in content
         assert "FastAPI" in content
+
+
+# ─── /reflect command ─────────────────────────────────────────────────────────
+
+class TestReflectCommand:
+    def _call(self, raw: str, state: ReplState | None = None):
+        if state is None:
+            state = ReplState()
+        with patch("minion.repl.console"), patch("minion.repl.print_error"):
+            result = _handle_slash_command(raw, MagicMock(), MagicMock(), state=state)
+        return result, state
+
+    def test_reflect_registered_in_repl_commands(self):
+        assert "/reflect" in REPL_COMMANDS
+
+    def test_reflect_on_sets_depth_one(self):
+        _, state = self._call("/reflect on")
+        assert state.reflect_depth == 1
+
+    def test_reflect_off_sets_depth_zero(self):
+        state = ReplState(reflect_depth=2)
+        _, state = self._call("/reflect off", state=state)
+        assert state.reflect_depth == 0
+
+    def test_reflect_integer_sets_depth(self):
+        _, state = self._call("/reflect 3")
+        assert state.reflect_depth == 3
+
+    def test_reflect_zero_sets_off(self):
+        _, state = self._call("/reflect 0")
+        assert state.reflect_depth == 0
+
+    def test_reflect_no_arg_shows_state_returns_true(self):
+        result, _ = self._call("/reflect")
+        assert result is True
+
+    def test_reflect_invalid_arg_does_not_crash(self):
+        result, state = self._call("/reflect banana")
+        assert result is True
+        assert state.reflect_depth == 0   # unchanged
+
+    def test_reflect_returns_true(self):
+        result, _ = self._call("/reflect on")
+        assert result is True
+
+    def test_reflect_without_state_returns_true(self):
+        with patch("minion.repl.console"):
+            result = _handle_slash_command("/reflect on", MagicMock(), MagicMock(), state=None)
+        assert result is True
+
+
+# ─── /verbose command ─────────────────────────────────────────────────────────
+
+class TestVerboseCommand:
+    def _call(self, raw: str, state: ReplState | None = None):
+        if state is None:
+            state = ReplState()
+        with patch("minion.repl.console"), patch("minion.repl.print_error"):
+            result = _handle_slash_command(raw, MagicMock(), MagicMock(), state=state)
+        return result, state
+
+    def test_verbose_registered_in_repl_commands(self):
+        assert "/verbose" in REPL_COMMANDS
+
+    def test_verbose_on_sets_flag(self):
+        _, state = self._call("/verbose on")
+        assert state.verbose is True
+
+    def test_verbose_off_clears_flag(self):
+        state = ReplState(verbose=True)
+        _, state = self._call("/verbose off", state=state)
+        assert state.verbose is False
+
+    def test_verbose_no_arg_shows_state_returns_true(self):
+        result, _ = self._call("/verbose")
+        assert result is True
+
+    def test_verbose_returns_true(self):
+        result, _ = self._call("/verbose on")
+        assert result is True
+
+    def test_verbose_invalid_arg_does_not_crash(self):
+        result, state = self._call("/verbose maybe")
+        assert result is True
+
+    def test_verbose_without_state_returns_true(self):
+        with patch("minion.repl.console"):
+            result = _handle_slash_command("/verbose on", MagicMock(), MagicMock(), state=None)
+        assert result is True
