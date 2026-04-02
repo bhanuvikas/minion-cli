@@ -184,12 +184,18 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
     if snapshot.input_tokens > 0 and snapshot.system_prompt_tokens > 0:
         console.print()
         console.print(f"  [muted]Breakdown (approximate):[/]")
-        sys_pct  = snapshot.system_prompt_tokens / snapshot.context_limit * 100
-        msg_pct  = snapshot.message_tokens / snapshot.context_limit * 100
+        sys_pct = snapshot.system_prompt_tokens / snapshot.context_limit * 100
+        msg_pct = snapshot.message_tokens / snapshot.context_limit * 100
         console.print(
             f"  [muted]  System prompt:  ~{snapshot.system_prompt_tokens:,} tokens  "
             f"({sys_pct:.1f}%)[/]"
         )
+        if snapshot.memory_tokens > 0:
+            mem_pct = snapshot.memory_tokens / snapshot.context_limit * 100
+            console.print(
+                f"  [muted]  Memory:         ~{snapshot.memory_tokens:,} tokens  "
+                f"({mem_pct:.1f}%)[/]"
+            )
         console.print(
             f"  [muted]  Messages:       ~{snapshot.message_tokens:,} tokens  "
             f"({msg_pct:.1f}%)[/]"

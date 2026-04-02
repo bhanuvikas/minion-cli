@@ -559,10 +559,12 @@ def run_repl(
 
         # ── Memory injection (before LLM call) ────────────────────────────────
         augmented_prompt = base_system_prompt
+        memory_tokens = 0
         if state.memory_enabled:
             with console.status("[muted]recalling memories...[/]", spinner="dots"):
                 memories = memory_store.retrieve(user_input)
             augmented_prompt = inject_memories(base_system_prompt, memories)
+            memory_tokens = (len(augmented_prompt) - len(base_system_prompt)) // 4
 
         if state.debug:
             console.print(f"[muted]── debug: system prompt ───────────────────[/]")
@@ -579,6 +581,7 @@ def run_repl(
             dry_run=dry_run,
             reflect_config=reflect_config,
             verbose=state.verbose,
+            memory_tokens=memory_tokens,
         )
         console.print()
 
@@ -593,7 +596,6 @@ def run_repl(
                     )
                     if state.debug:
                         for r in extracted:
-                            console.print(
-                                f"[muted]     · \[{r.category}·{r.type}·{r.scope}] {r.content}[/]"
-                            )
+                            tag = f"[{r.category}·{r.type}·{r.scope}]"
+                            console.print(f"[muted]     · {tag} {r.content}[/]")
                     console.print()
