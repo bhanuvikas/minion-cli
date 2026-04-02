@@ -8,5 +8,6 @@ Public API for callers (repl.py):
 
 from .config import MemoryConfig
 from .record import MemoryRecord
+from .store import MemoryStore
 
-__all__ = ["MemoryConfig", "MemoryRecord"]
+__all__ = ["MemoryConfig", "MemoryRecord", "MemoryStore"]

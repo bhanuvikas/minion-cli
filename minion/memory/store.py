@@ -1,0 +1,328 @@
+"""MemoryStore — orchestrator for all memory operations.
+
+Single responsibility: coordinate retrieval, storage, extraction, and deletion
+across two memory scopes (global and project). No LLM prompts live here;
+those are in extractor.py.
+
+Retrieval algorithm:
+  1. Embed the query (or fall back to keyword search)
+  2. Search both global and project vector indexes
+  3. Load MemoryRecord for each candidate
+  4. Score = 0.7×similarity + 0.2×recency + 0.1×type_weight
+  5. Sort, take top_k
+  6. Pairwise consolidation check: if any pair > consolidation_threshold,
+     call extractor.consolidate() and apply the result
+
+Storage:
+  - Records route by scope: global → global_dir, project → project_dir
+  - Each record written as <id>.md in the records/ subdirectory
+  - Vector index updated when embedder is available
+
+Keyword fallback (no embedder):
+  - grep file content for query terms
+  - sort by recency only; no scoring
+"""
+
+from __future__ import annotations
+
+import math
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from ..llm.base import LLMClient
+from .config import MemoryConfig
+from .embedder import Embedder
+from .extractor import ConsolidationResult, MemoryExtractor
+from .record import MemoryRecord
+from .vector_store import JSONVectorStore
+
+
+class MemoryStore:
+    """Orchestrates all memory operations across global and project scopes."""
+
+    def __init__(
+        self,
+        config: MemoryConfig,
+        project_cwd: Path,
+        client: LLMClient,
+        embedder: Optional[Embedder] = None,
+    ) -> None:
+        self._config = config
+        self._client = client
+        self._embedder = embedder
+        self._extractor = MemoryExtractor(config)
+
+        self._global_dir = config.global_memory_dir
+        self._project_dir = project_cwd / ".minion" / "memory"
+
+        self._global_index = JSONVectorStore(self._global_dir / "index.json")
+        self._project_index = JSONVectorStore(self._project_dir / "index.json")
+
+    # ─── Public API ───────────────────────────────────────────────────────────
+
+    def retrieve(self, query: str) -> list[MemoryRecord]:
+        """Return top_k relevant memories for query.
+
+        Merges global and project results. Runs consolidation on any pair
+        of results that exceeds the consolidation similarity threshold.
+        Superseded records are excluded from the final output.
+        """
+        if self._embedder:
+            candidates = self._vector_retrieve(query)
+        else:
+            candidates = self._keyword_retrieve(query)
+
+        # Filter superseded records
+        candidates = [r for r in candidates if r.superseded_by is None]
+
+        # Pairwise consolidation check
+        candidates = self._maybe_consolidate(candidates)
+
+        return candidates[: self._config.top_k]
+
+    def store(self, record: MemoryRecord) -> None:
+        """Write a memory record to disk and update the vector index."""
+        records_dir = self._records_dir_for(record)
+        records_dir.mkdir(parents=True, exist_ok=True)
+        file_path = records_dir / f"{record.id}.md"
+        file_path.write_text(record.to_file_content(), encoding="utf-8")
+
+        if self._embedder:
+            embedding = self._embedder.embed(record.content)
+            index = self._index_for(record)
+            index.upsert(record.id, embedding)
+
+    def delete(self, record_id_or_query: str) -> int:
+        """Delete memories by exact ID or fuzzy text match.
+
+        Returns the count of records deleted.
+        """
+        deleted = 0
+        for record in self._all_records():
+            if record.id == record_id_or_query or record_id_or_query.lower() in record.content.lower():
+                self._delete_record(record)
+                deleted += 1
+        return deleted
+
+    def maybe_extract(self, prompt: str, response: str) -> list[MemoryRecord]:
+        """Run extraction if the trigger fires. Store and return extracted records."""
+        if not self._config.trigger.should_extract(prompt, response):
+            return []
+
+        project_path = str(self._project_dir.parent.parent)  # <cwd>
+        extracted = self._extractor.extract(prompt, response, self._client, project_path)
+
+        for record in extracted:
+            self.store(record)
+
+        return extracted
+
+    def list_all(self, query: Optional[str] = None) -> list[MemoryRecord]:
+        """Return all non-superseded memories, optionally filtered by keyword or tag."""
+        records = [r for r in self._all_records() if r.superseded_by is None]
+        if query:
+            q = query.lower()
+            records = [
+                r for r in records
+                if q in r.content.lower() or any(q in t.lower() for t in r.tags)
+            ]
+        records.sort(key=lambda r: r.created_at, reverse=True)
+        return records
+
+    def stats(self) -> dict:
+        """Return counts and configuration info for the /memory slash command."""
+        all_records = list(self._all_records())
+        active = [r for r in all_records if r.superseded_by is None]
+        global_count = sum(1 for r in active if r.scope == "global")
+        project_count = sum(1 for r in active if r.scope == "project")
+        return {
+            "global_count": global_count,
+            "project_count": project_count,
+            "total_count": global_count + project_count,
+            "has_embeddings": self._embedder is not None,
+        }
+
+    # ─── Retrieval internals ──────────────────────────────────────────────────
+
+    def _vector_retrieve(self, query: str) -> list[MemoryRecord]:
+        """Embed query, search both indexes, score, and return sorted candidates."""
+        assert self._embedder is not None
+        query_vec = self._embedder.embed(query)
+
+        global_hits = self._global_index.search(
+            query_vec, top_k=self._config.top_k * 2,
+            min_score=self._config.similarity_threshold,
+        )
+        project_hits = self._project_index.search(
+            query_vec, top_k=self._config.top_k * 2,
+            min_score=self._config.similarity_threshold,
+        )
+
+        scored: list[tuple[MemoryRecord, float]] = []
+        for record_id, sim in global_hits + project_hits:
+            record = self._load_record_by_id(record_id)
+            if record is None:
+                continue
+            score = self._combined_score(sim, record)
+            scored.append((record, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [r for r, _ in scored]
+
+    def _keyword_retrieve(self, query: str) -> list[MemoryRecord]:
+        """Keyword grep fallback when no embedder is available."""
+        q = query.lower()
+        matches: list[MemoryRecord] = []
+        for record in self._all_records():
+            if q in record.content.lower() or any(q in t.lower() for t in record.tags):
+                matches.append(record)
+        matches.sort(key=lambda r: r.created_at, reverse=True)
+        return matches[: self._config.top_k * 2]
+
+    def _combined_score(self, similarity: float, record: MemoryRecord) -> float:
+        """Compute combined retrieval score from similarity, recency, and type."""
+        recency = self._recency_score(record.created_at)
+        type_weight = 1.0 if record.type == "semantic" else 0.8
+        return 0.7 * similarity + 0.2 * recency + 0.1 * type_weight
+
+    @staticmethod
+    def _recency_score(iso_timestamp: str) -> float:
+        """Return a 0–1 score that decays with age. Score = 1 / (1 + days_ago)."""
+        if not iso_timestamp:
+            return 0.0
+        try:
+            created = datetime.fromisoformat(iso_timestamp)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            days_ago = max(0.0, (now - created).total_seconds() / 86400)
+            return 1.0 / (1.0 + days_ago)
+        except (ValueError, OverflowError):
+            return 0.0
+
+    # ─── Consolidation ────────────────────────────────────────────────────────
+
+    def _maybe_consolidate(self, records: list[MemoryRecord]) -> list[MemoryRecord]:
+        """Check all pairs; consolidate any pair above the threshold.
+
+        Returns the updated list with superseded records removed.
+        Only processes pairs once (upper triangle of the similarity matrix).
+        Uses the vector index for pairwise similarity; skips when no embedder.
+        """
+        if not self._embedder or len(records) < 2:
+            return records
+
+        superseded_ids: set[str] = set()
+        merged_additions: list[MemoryRecord] = []
+
+        for i in range(len(records)):
+            for j in range(i + 1, len(records)):
+                a, b = records[i], records[j]
+                if a.id in superseded_ids or b.id in superseded_ids:
+                    continue
+                sim = self._pair_similarity(a, b)
+                if sim < self._config.consolidation_threshold:
+                    continue
+
+                result = self._extractor.consolidate(a, b, self._client)
+                if result.action == "supersede_a":
+                    self._mark_superseded(a, b.id)
+                    superseded_ids.add(a.id)
+                elif result.action == "supersede_b":
+                    self._mark_superseded(b, a.id)
+                    superseded_ids.add(b.id)
+                elif result.action == "merge" and result.merged_content:
+                    merged = self._create_merged(a, b, result.merged_content)
+                    self.store(merged)
+                    merged_additions.append(merged)
+                    self._mark_superseded(a, merged.id)
+                    self._mark_superseded(b, merged.id)
+                    superseded_ids.update({a.id, b.id})
+                # keep_both: do nothing
+
+        surviving = [r for r in records if r.id not in superseded_ids]
+        return surviving + merged_additions
+
+    def _pair_similarity(self, a: MemoryRecord, b: MemoryRecord) -> float:
+        """Compute cosine similarity between two records via their index entries."""
+        assert self._embedder is not None
+        a_hits = self._index_for(a).search(
+            self._embedder.embed(a.content), top_k=1
+        )
+        b_hits = self._index_for(b).search(
+            self._embedder.embed(b.content), top_k=1
+        )
+        if not a_hits or not b_hits:
+            return 0.0
+        # Cross-similarity: embed a, look up b's score for a's vector
+        results = self._index_for(b).search(
+            self._embedder.embed(a.content), top_k=len(self._index_for(b).ids()),
+        )
+        for rid, score in results:
+            if rid == b.id:
+                return score
+        return 0.0
+
+    def _mark_superseded(self, record: MemoryRecord, new_id: str) -> None:
+        """Update record's superseded_by field on disk."""
+        record.superseded_by = new_id
+        file_path = self._records_dir_for(record) / f"{record.id}.md"
+        if file_path.exists():
+            file_path.write_text(record.to_file_content(), encoding="utf-8")
+
+    def _create_merged(self, a: MemoryRecord, b: MemoryRecord, content: str) -> MemoryRecord:
+        """Create a new merged record from two existing records."""
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return MemoryRecord(
+            id=str(uuid.uuid4()),
+            content=content,
+            type=a.type,  # inherit from the first record
+            scope=a.scope,
+            project_path=a.project_path,
+            tags=list(dict.fromkeys(a.tags + b.tags)),  # deduplicated, ordered
+            created_at=now,
+            superseded_by=None,
+        )
+
+    # ─── File I/O helpers ─────────────────────────────────────────────────────
+
+    def _records_dir_for(self, record: MemoryRecord) -> Path:
+        base = self._global_dir if record.scope == "global" else self._project_dir
+        return base / "records"
+
+    def _index_for(self, record: MemoryRecord) -> JSONVectorStore:
+        return self._global_index if record.scope == "global" else self._project_index
+
+    def _all_records(self) -> list[MemoryRecord]:
+        """Load all MemoryRecord files from both global and project directories."""
+        records: list[MemoryRecord] = []
+        for base_dir in (self._global_dir, self._project_dir):
+            records_dir = base_dir / "records"
+            if not records_dir.exists():
+                continue
+            for path in records_dir.glob("*.md"):
+                try:
+                    records.append(MemoryRecord.from_file(path))
+                except (ValueError, KeyError):
+                    pass  # skip malformed files silently
+        return records
+
+    def _load_record_by_id(self, record_id: str) -> Optional[MemoryRecord]:
+        """Try to load a record by ID from either scope directory."""
+        for base_dir in (self._global_dir, self._project_dir):
+            path = base_dir / "records" / f"{record_id}.md"
+            if path.exists():
+                try:
+                    return MemoryRecord.from_file(path)
+                except (ValueError, KeyError):
+                    return None
+        return None
+
+    def _delete_record(self, record: MemoryRecord) -> None:
+        """Remove the record file and its vector index entry."""
+        file_path = self._records_dir_for(record) / f"{record.id}.md"
+        if file_path.exists():
+            file_path.unlink()
+        self._index_for(record).delete(record.id)
