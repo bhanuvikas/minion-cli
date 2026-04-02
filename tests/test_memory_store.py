@@ -168,21 +168,52 @@ class TestListAll:
         active = store.list_all()
         assert all(rec.superseded_by is None for rec in active)
 
-    def test_keyword_filter(self, tmp_path):
-        store = _make_store(tmp_path)
+    def test_keyword_match_on_content(self, tmp_path):
+        store = _make_store(tmp_path, embedder=None)
         store.store(_record(content="User uses PostgreSQL"))
         store.store(_record(content="Project uses FastAPI"))
         results = store.list_all(query="postgresql")
         assert len(results) == 1
         assert "PostgreSQL" in results[0].content
 
-    def test_tag_filter(self, tmp_path):
-        store = _make_store(tmp_path)
+    def test_keyword_match_on_tags(self, tmp_path):
+        store = _make_store(tmp_path, embedder=None)
         store.store(_record(content="db fact", tags=["database"]))
         store.store(_record(content="api fact", tags=["api"]))
         results = store.list_all(query="database")
         assert len(results) == 1
         assert results[0].content == "db fact"
+
+    def test_semantic_match_included_when_embedder_present(self, tmp_path):
+        store = _make_store(tmp_path, embedder=_MockEmbedder())
+        r = _record(content="semantically relevant fact")
+        store.store(r)
+        # _MockEmbedder returns deterministic vectors — any query returns results
+        # with score > 0 as long as vectors aren't orthogonal; verify the record
+        # appears in results (semantic path ran)
+        results = store.list_all(query="relevant")
+        assert any(rec.id == r.id for rec in results)
+
+    def test_deduplicates_semantic_and_keyword_hits(self, tmp_path):
+        store = _make_store(tmp_path, embedder=_MockEmbedder())
+        r = _record(content="User uses PostgreSQL", tags=["database"])
+        store.store(r)
+        # Record matches both keyword ("postgresql") and would appear in semantic results
+        results = store.list_all(query="postgresql")
+        ids = [rec.id for rec in results]
+        assert ids.count(r.id) == 1  # appears exactly once
+
+    def test_no_consolidation_side_effects(self, tmp_path):
+        """list_all with query must not modify the store (no consolidation)."""
+        store = _make_store(tmp_path, embedder=_MockEmbedder())
+        r1 = _record(content="fact A")
+        r2 = _record(content="fact B")
+        store.store(r1)
+        store.store(r2)
+        store.list_all(query="fact")
+        # Neither record should be marked superseded after a browse operation
+        reloaded = store.list_all()
+        assert all(r.superseded_by is None for r in reloaded)
 
     def test_sorted_by_created_at_descending(self, tmp_path):
         store = _make_store(tmp_path)
@@ -278,7 +309,7 @@ class TestMaybeExtract:
         assert records == []
 
 
-# ─── retrieve() keyword fallback ─────────────────────────────────────────────
+# ─── retrieve() keyword fallback + hybrid ────────────────────────────────────
 
 class TestKeywordRetrieve:
     def test_retrieve_returns_matching_record(self, tmp_path):
@@ -300,3 +331,21 @@ class TestKeywordRetrieve:
         store.store(r)
         results = store.retrieve("postgres")
         assert all(rec.superseded_by is None for rec in results)
+
+    def test_keyword_hit_included_even_when_embedder_present(self, tmp_path):
+        """Keyword match is returned even if vector similarity is below threshold."""
+        store = _make_store(tmp_path, embedder=_MockEmbedder())
+        r = _record(content="My name is Bhanu")
+        store.store(r)
+        # Query phrased differently — keyword match via "name" overlap
+        results = store.retrieve("name")
+        assert any(rec.id == r.id for rec in results)
+
+    def test_hybrid_deduplicates_records(self, tmp_path):
+        """A record matched by both vector and keyword appears only once."""
+        store = _make_store(tmp_path, embedder=_MockEmbedder())
+        r = _record(content="User uses PostgreSQL")
+        store.store(r)
+        results = store.retrieve("postgresql")
+        ids = [rec.id for rec in results]
+        assert ids.count(r.id) == 1

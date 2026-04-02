@@ -102,11 +102,34 @@ class TestRememberCommand:
     def test_handled_as_slash_command(self, tmp_path):
         assert _dispatch("/remember User prefers pytest", memory_store=_make_store(tmp_path)) is True
 
-    def test_stores_a_memory(self, tmp_path):
+    def test_stores_project_scoped_memory(self, tmp_path):
         store = _make_store(tmp_path)
         _dispatch("/remember User prefers pytest", memory_store=store)
         memories = store.list_all()
         assert any("prefers pytest" in m.content for m in memories)
+        assert memories[0].scope == "project"
+
+    def test_stores_global_scoped_memory(self, tmp_path):
+        store = _make_store(tmp_path)
+        _dispatch("/remember --global User prefers dark mode", memory_store=store)
+        memories = store.list_all()
+        assert len(memories) == 1
+        assert memories[0].scope == "global"
+        assert memories[0].content == "User prefers dark mode"
+        assert memories[0].project_path is None
+
+    def test_remember_global_flag_only_no_content_does_not_store(self, tmp_path):
+        store = _make_store(tmp_path)
+        _dispatch("/remember --global", memory_store=store)
+        assert store.list_all() == []
+
+    def test_remember_global_word_in_content_is_project_scoped(self, tmp_path):
+        store = _make_store(tmp_path)
+        _dispatch("/remember global impact is important", memory_store=store)
+        memories = store.list_all()
+        assert len(memories) == 1
+        assert memories[0].scope == "project"
+        assert memories[0].content == "global impact is important"
 
     def test_remember_no_arg_returns_true(self, tmp_path):
         result = _dispatch("/remember", memory_store=_make_store(tmp_path))

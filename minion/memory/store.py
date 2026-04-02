@@ -65,12 +65,18 @@ class MemoryStore:
     def retrieve(self, query: str) -> list[MemoryRecord]:
         """Return top_k relevant memories for query.
 
-        Merges global and project results. Runs consolidation on any pair
-        of results that exceeds the consolidation similarity threshold.
+        Always runs keyword search. When an embedder is available, also runs
+        vector search and merges results — vector hits first (sorted by combined
+        score), then any keyword-only hits not already found (sorted by recency).
+        Runs consolidation on any pair that exceeds the consolidation threshold.
         Superseded records are excluded from the final output.
         """
         if self._embedder:
             candidates = self._vector_retrieve(query)
+            seen_ids = {r.id for r in candidates}
+            for record in self._keyword_retrieve(query):
+                if record.id not in seen_ids:
+                    candidates.append(record)
         else:
             candidates = self._keyword_retrieve(query)
 
@@ -120,16 +126,60 @@ class MemoryStore:
         return extracted
 
     def list_all(self, query: Optional[str] = None) -> list[MemoryRecord]:
-        """Return all non-superseded memories, optionally filtered by keyword or tag."""
-        records = [r for r in self._all_records() if r.superseded_by is None]
-        if query:
-            q = query.lower()
-            records = [
-                r for r in records
-                if q in r.content.lower() or any(q in t.lower() for t in r.tags)
-            ]
-        records.sort(key=lambda r: r.created_at, reverse=True)
-        return records
+        """Return all non-superseded memories, optionally searched by query.
+
+        Without query: returns all memories sorted by recency.
+        With query: merges semantic search (when embedder available) and keyword
+        search results, deduplicated by ID, sorted by recency. No consolidation
+        side effects, no top_k cap, no similarity threshold — this is a browse
+        operation for the user, not a retrieval for the LLM.
+        """
+        if not query:
+            records = [r for r in self._all_records() if r.superseded_by is None]
+            records.sort(key=lambda r: r.created_at, reverse=True)
+            return records
+        return self._search(query)
+
+    def _search(self, query: str) -> list[MemoryRecord]:
+        """Merge semantic + keyword results for a user-facing /recall query.
+
+        Semantic search: embed query, find all records above zero similarity
+        (no threshold, no top_k). Only runs when embedder is available.
+        Keyword search: substring match on content and tags.
+        Results are deduplicated by ID and sorted by recency.
+        """
+        seen: dict[str, MemoryRecord] = {}
+
+        # Semantic search — no threshold, no top_k, no consolidation
+        if self._embedder:
+            query_vec = self._embedder.embed(query)
+            for index, base_dir in (
+                (self._global_index, self._global_dir),
+                (self._project_index, self._project_dir),
+            ):
+                all_ids = index.ids()
+                if all_ids:
+                    hits = index.search(query_vec, top_k=len(all_ids), min_score=0.0)
+                    for record_id, score in hits:
+                        if score > 0.0 and record_id not in seen:
+                            record = self._load_record_by_id(record_id)
+                            if record and record.superseded_by is None:
+                                seen[record_id] = record
+
+        # Keyword search — always runs, catches what semantic may miss
+        words = [w.strip("\"'?!.,;:") for w in query.lower().split()]
+        keywords = [w for w in words if len(w) >= 3]
+        for record in self._all_records():
+            if record.superseded_by is not None or record.id in seen:
+                continue
+            content_lower = record.content.lower()
+            tags_lower = [t.lower() for t in record.tags]
+            if keywords and any(kw in content_lower or any(kw in t for t in tags_lower) for kw in keywords):
+                seen[record.id] = record
+
+        results = list(seen.values())
+        results.sort(key=lambda r: r.created_at, reverse=True)
+        return results
 
     def stats(self) -> dict:
         """Return counts and configuration info for the /memory slash command."""
@@ -172,11 +222,21 @@ class MemoryStore:
         return [r for r, _ in scored]
 
     def _keyword_retrieve(self, query: str) -> list[MemoryRecord]:
-        """Keyword grep fallback when no embedder is available."""
-        q = query.lower()
+        """Keyword grep fallback when no embedder is available.
+
+        Matches on any meaningful word (3+ chars) from the query against
+        record content and tags, so natural language queries like
+        "what's my name?" match records containing "name".
+        """
+        words = [w.strip("\"'?!.,;:") for w in query.lower().split()]
+        keywords = [w for w in words if len(w) >= 3]
+        if not keywords:
+            return []
         matches: list[MemoryRecord] = []
         for record in self._all_records():
-            if q in record.content.lower() or any(q in t.lower() for t in record.tags):
+            content_lower = record.content.lower()
+            tags_lower = [t.lower() for t in record.tags]
+            if any(kw in content_lower or any(kw in t for t in tags_lower) for kw in keywords):
                 matches.append(record)
         matches.sort(key=lambda r: r.created_at, reverse=True)
         return matches[: self._config.top_k * 2]
