@@ -13,6 +13,7 @@ from minion.memory.record import MemoryRecord
 def _record(
     content: str = "User prefers pytest.",
     type_: str = "semantic",
+    category: str = "project",
     tags: list[str] | None = None,
     created_at: str = "2026-04-02T10:00:00+00:00",
 ) -> MemoryRecord:
@@ -24,6 +25,7 @@ def _record(
         project_path="/proj",
         tags=tags or [],
         created_at=created_at,
+        category=category,
     )
 
 
@@ -40,13 +42,29 @@ class TestInjectMemories:
         assert "What I Remember" in result
         assert "User uses PostgreSQL." in result
 
-    def test_includes_type_tag(self):
-        result = inject_memories("base", [_record(type_="episodic")])
-        assert "[episodic]" in result
+    def test_identity_category_renders_in_about_section(self):
+        result = inject_memories("base", [_record(category="identity")])
+        assert "About the user" in result
 
-    def test_semantic_type_shown(self):
-        result = inject_memories("base", [_record(type_="semantic")])
-        assert "[semantic]" in result
+    def test_event_category_renders_in_past_sessions_section(self):
+        result = inject_memories("base", [_record(category="event")])
+        assert "From past sessions" in result
+
+    def test_project_category_renders_in_project_context_section(self):
+        result = inject_memories("base", [_record(category="project")])
+        assert "Project context" in result
+
+    def test_preference_category_renders_in_preferences_section(self):
+        result = inject_memories("base", [_record(category="preference")])
+        assert "User preferences" in result
+
+    def test_sections_only_rendered_when_category_present(self):
+        # Only identity and event — should not show Project context section
+        memories = [_record(category="identity"), _record(category="event")]
+        result = inject_memories("base", memories)
+        assert "About the user" in result
+        assert "From past sessions" in result
+        assert "Project context" not in result
 
     def test_includes_tags_in_output(self):
         result = inject_memories("base", [_record(tags=["database", "postgresql"])])

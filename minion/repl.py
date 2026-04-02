@@ -49,6 +49,7 @@ class ReplState:
     reflect_depth: int = 0    # 0 = off; N = max self-refine rounds
     verbose: bool = False     # show critique text and diffs when True
     memory_enabled: bool = True  # False = private mode: skip injection + extraction
+    debug: bool = False       # print full system prompt before each LLM call
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -62,8 +63,9 @@ REPL_COMMANDS = {
     "/context": "Show context window usage and token breakdown",
     "/reflect": "Self-refine: /reflect on | /reflect 2 | /reflect off | /reflect",
     "/verbose": "Verbose output: /verbose on | /verbose off | /verbose",
+    "/debug":   "Debug mode: /debug on | /debug off | /debug",
     "/memory":  "Memory status/toggle: /memory | /memory on | /memory off",
-    "/remember": "Remember something: /remember [--global] <text>",
+    "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
     "/clear":   "Clear conversation history and start fresh",
@@ -301,6 +303,21 @@ def _handle_slash_command(
                 print_error("Usage: /verbose [on | off]")
         return True
 
+    if cmd == "/debug":
+        if state is not None:
+            if not arg:
+                status = "on" if state.debug else "off"
+                console.print(f"[{YELLOW}]Debug:[/] {status}")
+            elif arg == "on":
+                state.debug = True
+                console.print(f"[{YELLOW}]Debug on.[/] [muted]System prompt and other debug info will be printed each turn.[/]")
+            elif arg == "off":
+                state.debug = False
+                console.print(f"[{YELLOW}]Debug off.[/]")
+            else:
+                print_error("Usage: /debug [on | off]")
+        return True
+
     if cmd == "/memory":
         if state is not None:
             if not arg:
@@ -326,19 +343,31 @@ def _handle_slash_command(
 
     if cmd == "/remember":
         if not arg:
-            print_error("Usage: /remember [global] <text>")
+            print_error("Usage: /remember [--global] [--category identity|preference|project|event] <text>")
             return True
         if memory_store is not None:
-            if arg == "--global" or arg.startswith("--global "):
-                scope = "global"
-                project_path = None
-                content = arg[len("--global "):].strip().strip("\"'")
-            else:
-                scope = "project"
-                project_path = str(Path.cwd())
-                content = arg.strip("\"'")
+            tokens = arg.split()
+            scope = "project"
+            project_path = str(Path.cwd())
+            category = "project"
+            while tokens:
+                if tokens[0] == "--global":
+                    scope = "global"
+                    project_path = None
+                    tokens.pop(0)
+                elif tokens[0] == "--category" and len(tokens) > 1:
+                    cat = tokens[1].lower()
+                    if cat not in ("identity", "preference", "project", "event"):
+                        print_error("--category must be one of: identity, preference, project, event")
+                        return True
+                    category = cat
+                    tokens.pop(0)
+                    tokens.pop(0)
+                else:
+                    break
+            content = " ".join(tokens).strip("\"'")
             if not content:
-                print_error("Usage: /remember [--global] <text>")
+                print_error("Usage: /remember [--global] [--category identity|preference|project|event] <text>")
                 return True
             record = MemoryRecord(
                 id=str(uuid.uuid4()),
@@ -349,9 +378,10 @@ def _handle_slash_command(
                 tags=[],
                 created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 superseded_by=None,
+                category=category,
             )
             memory_store.store(record)
-            console.print(f"[{YELLOW}]Remembered[/] [muted]({scope}):[/] {content}")
+            console.print(f"[{YELLOW}]Remembered[/] [muted]({scope}·{category}):[/] {content}")
         else:
             console.print(f"[muted]Memory not available in this session.[/]")
         return True
@@ -379,7 +409,7 @@ def _handle_slash_command(
                 for m in memories:
                     age = _format_age(m.created_at)
                     console.print(
-                        f"  [{BLUE}]{m.id[:8]}[/] [{m.type}·{m.scope}] "
+                        f"  [{BLUE}]{m.id[:8]}[/] [{m.category}·{m.scope}] "
                         f"{m.content} [muted]({age})[/]"
                     )
         else:
@@ -463,6 +493,7 @@ def run_repl(
     reflect_depth: int = 0,
     verbose: bool = False,
     memory_enabled: bool = True,
+    debug: bool = False,
 ) -> None:
     """Start the interactive REPL loop."""
     print_greeting()
@@ -498,6 +529,7 @@ def run_repl(
         reflect_depth=reflect_depth,
         verbose=verbose,
         memory_enabled=memory_enabled,
+        debug=debug,
     )
 
     session: PromptSession = PromptSession(
@@ -531,6 +563,11 @@ def run_repl(
             memories = memory_store.retrieve(user_input)
             augmented_prompt = inject_memories(base_system_prompt, memories)
 
+        if state.debug:
+            console.print(f"[muted]── system prompt ──────────────────────────[/]")
+            console.print(f"[muted]{augmented_prompt}[/]")
+            console.print(f"[muted]───────────────────────────────────────────[/]")
+
         reflect_config = (
             ReflectionConfig(depth=state.reflect_depth)
             if state.reflect_depth > 0 else None
@@ -551,5 +588,11 @@ def run_repl(
                 extracted = memory_store.maybe_extract(user_input, last_response)
                 if extracted and state.verbose:
                     console.print(
-                        f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]\n"
+                        f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]"
                     )
+                    if state.debug:
+                        for r in extracted:
+                            console.print(
+                                f"[muted]     · \[{r.category}·{r.type}·{r.scope}] {r.content}[/]"
+                            )
+                    console.print()

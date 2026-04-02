@@ -19,19 +19,43 @@ if TYPE_CHECKING:
     from .record import MemoryRecord
 
 
+_SECTION_LABELS = {
+    "identity":   "About the user",
+    "preference": "User preferences",
+    "project":    "Project context",
+    "event":      "From past sessions",
+}
+
+_SECTION_ORDER = ["identity", "preference", "project", "event"]
+
+
 def inject_memories(base_system_prompt: str, memories: list["MemoryRecord"]) -> str:
     """Append a formatted ## What I Remember block to the system prompt.
+
+    Memories are grouped by category into labelled sections so the model
+    can easily distinguish always-injected context (identity, preference,
+    project) from query-relevant episodic events.
 
     Returns base_system_prompt unchanged when memories is empty.
     """
     if not memories:
         return base_system_prompt
 
-    lines = ["\n\n## What I Remember\n"]
+    by_category: dict[str, list] = {cat: [] for cat in _SECTION_ORDER}
     for m in memories:
-        age = _format_age(m.created_at)
-        tag_hint = f" [{', '.join(m.tags[:3])}]" if m.tags else ""
-        lines.append(f"- [{m.type}]{tag_hint} {m.content}  *(remembered {age})*")
+        cat = m.category if m.category in by_category else "event"
+        by_category[cat].append(m)
+
+    lines = ["\n\n## What I Remember\n"]
+    for cat in _SECTION_ORDER:
+        records = by_category[cat]
+        if not records:
+            continue
+        lines.append(f"\n### {_SECTION_LABELS[cat]}")
+        for m in records:
+            age = _format_age(m.created_at)
+            tag_hint = f" [{', '.join(m.tags[:3])}]" if m.tags else ""
+            lines.append(f"- {tag_hint}{m.content}  *(remembered {age})*")
 
     return base_system_prompt + "\n".join(lines)
 

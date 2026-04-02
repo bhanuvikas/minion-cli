@@ -62,6 +62,10 @@ def main(
         False, "--no-memory",
         help="Disable memory retrieval and extraction for this session (private mode).",
     ),
+    debug: bool = typer.Option(
+        False, "--debug",
+        help="Print system prompt and debug info before each turn.",
+    ),
     version: bool = typer.Option(
         False, "--version",
         help="Show version and exit.",
@@ -96,5 +100,5 @@ def main(
     else:
         run_repl(
             client, dry_run=dry_run, reflect_depth=reflect or 0,
-            verbose=verbose, memory_enabled=not no_memory,
+            verbose=verbose, memory_enabled=not no_memory, debug=debug,
         )

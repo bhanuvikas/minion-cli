@@ -43,6 +43,11 @@ class MemoryRecord:
     scope: "global"    — applies across all projects
            "project"   — specific to one codebase (project_path is set)
 
+    category: "identity"   — who the user is (name, role, background)
+              "preference" — how they like to work (tools, style, conventions)
+              "project"    — technical facts about a project or cross-project patterns
+              "event"      — catch-all: timestamped occurrences, discoveries, observations
+
     superseded_by: set when a newer memory replaces this one during
     consolidation; superseded records are excluded from retrieval results.
     """
@@ -55,6 +60,7 @@ class MemoryRecord:
     tags: list[str] = field(default_factory=list)
     created_at: str = ""             # ISO 8601 timestamp
     superseded_by: Optional[str] = None  # ID of the record that replaced this one
+    category: str = "project"        # "identity" | "preference" | "project" | "event"
 
     # ─── Serialization ────────────────────────────────────────────────────────
 
@@ -64,6 +70,7 @@ class MemoryRecord:
             _FRONTMATTER_DELIMITER,
             f"id: {self.id}",
             f"type: {self.type}",
+            f"category: {self.category}",
             f"scope: {self.scope}",
             f"project_path: {self.project_path or ''}",
             f"tags: {', '.join(self.tags)}",
@@ -111,6 +118,7 @@ class MemoryRecord:
             tags=tags,
             created_at=kv.get("created_at", ""),
             superseded_by=kv.get("superseded_by") or None,
+            category=kv.get("category", "project"),
         )
 
     # ─── Dict serialization (for JSON-based indices) ──────────────────────────
@@ -120,6 +128,7 @@ class MemoryRecord:
             "id": self.id,
             "content": self.content,
             "type": self.type,
+            "category": self.category,
             "scope": self.scope,
             "project_path": self.project_path,
             "tags": self.tags,
@@ -138,4 +147,5 @@ class MemoryRecord:
             tags=data.get("tags", []),
             created_at=data.get("created_at", ""),
             superseded_by=data.get("superseded_by"),
+            category=data.get("category", "project"),
         )

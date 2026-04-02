@@ -45,13 +45,19 @@ Do NOT extract:
 - Information derivable by reading the current codebase without any context
 
 Classify each memory:
-  type  "semantic"  = stable fact or preference, likely to remain true over time
-        "episodic"  = specific event with temporal context (e.g. "we fixed X bug today")
-  scope "global"    = applies across all projects (e.g. "user prefers pytest over unittest")
-        "project"   = specific to the current codebase (e.g. "this repo uses PostgreSQL 15")
+  type     "semantic"    = stable fact or preference, likely to remain true over time
+           "episodic"    = specific event with temporal context (e.g. "we fixed X bug today")
+  scope    "global"      = applies across all projects (e.g. "user prefers pytest over unittest")
+           "project"     = specific to the current codebase (e.g. "this repo uses PostgreSQL 15")
+  category "identity"    = who the user is: name, role, background, experience level
+           "preference"  = how the user likes to work: tools, code style, frameworks, habits
+           "project"     = technical facts about a project or cross-project patterns: stack,
+                           architecture decisions, constraints, conventions
+           "event"       = catch-all for anything else: timestamped occurrences, bugs fixed,
+                           discoveries, observations that don't fit the above
 
 Output JSON array only — no preamble, no code fences:
-[{"type":"semantic|episodic","scope":"global|project","content":"...","tags":["tag1","tag2"]}]
+[{"type":"semantic|episodic","scope":"global|project","category":"identity|preference|project|event","content":"...","tags":["tag1","tag2"]}]
 
 If nothing is worth remembering, output: []"""
 
@@ -155,6 +161,9 @@ class MemoryExtractor:
             scope = str(item.get("scope", "project")).lower()
             if scope not in ("global", "project"):
                 scope = "project"
+            category = str(item.get("category", "project")).lower()
+            if category not in ("identity", "preference", "project", "event"):
+                category = "event"
             tags = [str(t).strip() for t in item.get("tags", []) if str(t).strip()]
 
             records.append(MemoryRecord(
@@ -166,6 +175,7 @@ class MemoryExtractor:
                 tags=tags,
                 created_at=now,
                 superseded_by=None,
+                category=category,
             ))
 
         return records
