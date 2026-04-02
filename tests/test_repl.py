@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 
-from minion.repl import REPL_COMMANDS, ReplState, _SlashCompleter, _handle_slash_command, _generate_minion_md
+from minion.repl import REPL_COMMANDS, ReplState, _SlashCompleter, _handle_slash_command, _generate_minion_md, _generate_minion_md_llm
 from minion.context.project import ProjectContext
 from minion.context.manifest import ProjectManifest
 
@@ -190,7 +190,8 @@ class TestGenerateMinionMd:
 class TestInitCommand:
     def _call_init(self, tmp_path, project_context=None):
         with patch("minion.repl.console"), \
-             patch("minion.repl.Path") as mock_path_cls:
+             patch("minion.repl.Path") as mock_path_cls, \
+             patch("minion.repl._generate_minion_md_llm", return_value=None):
             mock_path_cls.cwd.return_value = tmp_path
             return _handle_slash_command("/init", MagicMock(), MagicMock(), project_context)
 
@@ -218,6 +219,80 @@ class TestInitCommand:
         content = (tmp_path / "MINION.md").read_text()
         assert "Python 3.12" in content
         assert "FastAPI" in content
+
+
+# ─── LLM-assisted /init ───────────────────────────────────────────────────────
+
+class TestInitCommandLLM:
+    def _make_client(self, content: str = "# MINION.md\n\nGenerated content.\n") -> MagicMock:
+        from minion.llm.base import LLMResponse
+        client = MagicMock()
+        client.complete.return_value = LLMResponse(
+            content=content, input_tokens=50, output_tokens=100, model="test-model"
+        )
+        return client
+
+    def _call_init(self, tmp_path, project_context=None, client=None):
+        if client is None:
+            client = MagicMock()
+        with patch("minion.repl.console"), \
+             patch("minion.repl.Path") as mock_path_cls:
+            mock_path_cls.cwd.return_value = tmp_path
+            return _handle_slash_command("/init", client, MagicMock(), project_context)
+
+    def test_init_uses_llm_when_manifest_detected(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12", framework="FastAPI")
+        client = self._make_client("# MINION.md\n\nLLM-generated content.\n")
+        self._call_init(tmp_path, project_context=ctx, client=client)
+        client.complete.assert_called_once()
+        assert "LLM-generated content." in (tmp_path / "MINION.md").read_text()
+
+    def test_init_falls_back_to_static_when_llm_fails(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12")
+        client = MagicMock()
+        client.complete.side_effect = Exception("API error")
+        self._call_init(tmp_path, project_context=ctx, client=client)
+        content = (tmp_path / "MINION.md").read_text()
+        assert "## How to run" in content  # static template
+
+    def test_init_uses_static_when_no_project_context(self, tmp_path):
+        client = self._make_client()
+        self._call_init(tmp_path, project_context=None, client=client)
+        client.complete.assert_not_called()
+        assert (tmp_path / "MINION.md").exists()
+
+    def test_init_uses_llm_even_without_manifest(self, tmp_path):
+        """Context present but no manifest — LLM still attempted using file tree."""
+        ctx = ProjectContext(cwd=tmp_path, manifest=None, file_tree="src/\n  main.py", minion_md=None)
+        client = self._make_client("# MINION.md\n\nLLM content.\n")
+        self._call_init(tmp_path, project_context=ctx, client=client)
+        client.complete.assert_called_once()
+
+    def test_generate_minion_md_llm_returns_content(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Go 1.21")
+        client = self._make_client("# MINION.md\n\nGo project.\n")
+        result = _generate_minion_md_llm(ctx, client)
+        assert result is not None
+        assert "Go project." in result
+
+    def test_generate_minion_md_llm_returns_none_on_exception(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Go 1.21")
+        client = MagicMock()
+        client.complete.side_effect = RuntimeError("network error")
+        result = _generate_minion_md_llm(ctx, client)
+        assert result is None
+
+    def test_generate_minion_md_llm_returns_none_on_empty_response(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Go 1.21")
+        client = self._make_client("")  # empty LLM response
+        result = _generate_minion_md_llm(ctx, client)
+        assert result is None
+
+    def test_llm_generated_content_ends_with_newline(self, tmp_path):
+        ctx = _make_context(tmp_path, language="Python 3.12")
+        client = self._make_client("# MINION.md\nContent")  # no trailing newline
+        result = _generate_minion_md_llm(ctx, client)
+        assert result.endswith("\n")
 
 
 # ─── /reflect command ─────────────────────────────────────────────────────────
