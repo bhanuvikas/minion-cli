@@ -17,7 +17,7 @@ is never added to the main Conversation. This module has no access to
 Conversation and never imports it. Side effects: none beyond return value.
 """
 
-import re
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -46,11 +46,8 @@ Then score the response 1-10 using these criteria:
   CODE_EXPLANATION: Evaluate: technical accuracy, clarity, whether the full
                     question is actually answered.
 
-Output EXACTLY this format — no preamble, no trailing text:
-SCORE: <integer 1-10>
-TYPE: <CODE_GENERATION|CODE_EXPLANATION|GENERAL>
-CRITIQUE: <one focused paragraph naming the most important improvement needed, \
-or "None" if the response is satisfactory>"""
+Output EXACTLY this JSON object — no preamble, no trailing text, no code fences:
+{"score": <integer 1-10>, "type": "<CODE_GENERATION|CODE_EXPLANATION|GENERAL>", "critique": "<one focused paragraph naming the most important improvement needed, or null if the response is satisfactory>"}"""
 
 
 REFINER_SYSTEM_PROMPT = """\
@@ -61,7 +58,7 @@ Rules:
 - Do not change parts of the response that were not criticised.
 - Do not acknowledge or reference the critique in your output.
 - Output only the revised response — no preamble, no meta-commentary.
-- If the critique text is "None", return the original response unchanged.
+- If the critique is null or "None", return the original response unchanged.
 - Preserve the original tone, formatting, and code language."""
 
 
@@ -169,41 +166,39 @@ def _build_refine_messages(
 
 # ─── Critique parser ──────────────────────────────────────────────────────────
 
-_CRITIQUE_RE = re.compile(
-    r"SCORE:\s*(-?\d+)\s*\n\s*TYPE:\s*(\w+)\s*\n\s*CRITIQUE:\s*(.+)",
-    re.DOTALL | re.IGNORECASE,
-)
-
 _VALID_TYPES = {"CODE_GENERATION", "CODE_EXPLANATION", "GENERAL"}
 
 
 def _parse_critique(raw: str) -> CritiqueResult:
-    """Extract score, type, and critique text from a raw LLM response.
+    """Parse the JSON critique response from the critic LLM.
 
-    Falls back gracefully when the structured format is missing or malformed:
+    Expected format:
+      {"score": 7, "type": "CODE_GENERATION", "critique": "Fix edge case." | null}
+
+    Falls back gracefully when the JSON is missing or malformed:
       score     → 5 (below threshold, triggers refinement)
       type      → GENERAL
       critique  → the raw text itself (better than losing it entirely)
 
-    This prevents crashes from unexpected LLM output while still letting
-    the loop make progress.
+    Also handles the case where the LLM wraps JSON in markdown code fences.
     """
-    match = _CRITIQUE_RE.search(raw.strip())
-    if not match:
-        return CritiqueResult(score=5, response_type="GENERAL", critique=raw.strip(), raw=raw)
+    text = raw.strip()
+    # Strip markdown code fences if the LLM wraps the JSON despite instructions
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
 
     try:
-        score = max(1, min(10, int(match.group(1))))
-    except ValueError:
-        score = 5
-
-    response_type = match.group(2).upper()
-    if response_type not in _VALID_TYPES:
-        response_type = "GENERAL"
-
-    critique = match.group(3).strip()
-
-    return CritiqueResult(score=score, response_type=response_type, critique=critique, raw=raw)
+        data = json.loads(text)
+        score = max(1, min(10, int(data["score"])))
+        response_type = str(data.get("type", "GENERAL")).upper()
+        if response_type not in _VALID_TYPES:
+            response_type = "GENERAL"
+        critique_val = data.get("critique")
+        critique = "None" if critique_val is None else str(critique_val).strip()
+        return CritiqueResult(score=score, response_type=response_type, critique=critique, raw=raw)
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return CritiqueResult(score=5, response_type="GENERAL", critique=raw.strip(), raw=raw)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────

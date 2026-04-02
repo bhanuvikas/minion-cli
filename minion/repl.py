@@ -232,12 +232,14 @@ def _handle_slash_command(
             )
             return True
         content = None
+        llm_attempted = False
         if project_context:
             with console.status(f"[muted]Generating MINION.md...[/]"):
                 content = _generate_minion_md_llm(project_context, client)
-            if content is None:
-                console.print(f"[muted]LLM generation failed — using static template.[/]")
+            llm_attempted = True
         if content is None:
+            if llm_attempted:
+                console.print(f"[muted]LLM generation failed — using static template.[/]")
             content = _generate_minion_md(project_context)
         minion_md_path.write_text(content, encoding="utf-8")
         console.print(f"[{YELLOW}]Created MINION.md[/] [muted]in {Path.cwd()}[/]")
