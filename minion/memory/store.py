@@ -97,12 +97,7 @@ class MemoryStore:
 
         query_hits = [r for r in query_hits if r.superseded_by is None and r.id not in core_ids]
 
-        candidates = core + query_hits[: self._config.top_k]
-
-        # Pairwise consolidation check
-        candidates = self._maybe_consolidate(candidates)
-
-        return candidates
+        return core + query_hits[: self._config.top_k]
 
     def store(self, record: MemoryRecord) -> None:
         """Write a memory record to disk and update the vector index."""
@@ -129,17 +124,81 @@ class MemoryStore:
         return deleted
 
     def maybe_extract(self, prompt: str, response: str) -> list[MemoryRecord]:
-        """Run extraction if the trigger fires. Store and return extracted records."""
+        """Run extraction if the trigger fires.
+
+        For each extracted record, checks for a similar existing record before
+        storing. If similarity exceeds consolidation_threshold, calls the LLM
+        to consolidate — preventing duplicates from accumulating over time.
+        """
         if not self._config.trigger.should_extract(prompt, response):
             return []
 
         project_path = str(self._project_dir.parent.parent)  # <cwd>
-        extracted = self._extractor.extract(prompt, response, self._client, project_path)
+        existing = [r for r in self._all_records() if r.superseded_by is None]
+        extracted = self._extractor.extract(prompt, response, self._client, project_path, existing)
 
+        stored: list[MemoryRecord] = []
         for record in extracted:
-            self.store(record)
+            existing = self._find_similar_existing(record)
+            if existing is None:
+                self.store(record)
+                stored.append(record)
+                continue
 
-        return extracted
+            result = self._extractor.consolidate(existing, record, self._client)
+            if result.action == "supersede_a":
+                # existing is outdated — replace with new record
+                self._mark_superseded(existing, record.id)
+                self.store(record)
+                stored.append(record)
+            elif result.action == "supersede_b":
+                # new record is redundant — discard silently
+                pass
+            elif result.action == "merge" and result.merged_content:
+                merged = self._create_merged(existing, record, result.merged_content)
+                self.store(merged)
+                self._mark_superseded(existing, merged.id)
+                stored.append(merged)
+            else:
+                # keep_both
+                self.store(record)
+                stored.append(record)
+
+        return stored
+
+    def _find_similar_existing(self, record: MemoryRecord) -> Optional[MemoryRecord]:
+        """Find an existing non-superseded record similar to the given one.
+
+        Uses vector search when embedder is available, keyword overlap as fallback.
+        Returns the most similar existing record above consolidation_threshold,
+        or None if no close match is found.
+        """
+        if self._embedder:
+            embedding = self._embedder.embed(record.content)
+            index = self._index_for(record)
+            hits = index.search(
+                embedding, top_k=1,
+                min_score=self._config.consolidation_threshold,
+            )
+            for record_id, _ in hits:
+                existing = self._load_record_by_id(record_id)
+                if existing and existing.superseded_by is None:
+                    return existing
+        else:
+            # Keyword fallback — match if majority of significant words overlap
+            words = [w.strip("\"'?!.,;:") for w in record.content.lower().split()]
+            keywords = [w for w in words if len(w) >= 3]
+            if not keywords:
+                return None
+            threshold = max(1, len(keywords) // 2)
+            for existing in self._all_records():
+                if existing.superseded_by is not None:
+                    continue
+                content_lower = existing.content.lower()
+                overlap = sum(1 for kw in keywords if kw in content_lower)
+                if overlap >= threshold:
+                    return existing
+        return None
 
     def list_all(self, query: Optional[str] = None) -> list[MemoryRecord]:
         """Return all non-superseded memories, optionally searched by query.

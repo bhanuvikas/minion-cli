@@ -110,6 +110,7 @@ class MemoryExtractor:
         response: str,
         client: LLMClient,
         project_path: Optional[str] = None,
+        existing_memories: Optional[list[MemoryRecord]] = None,
     ) -> list[MemoryRecord]:
         """Extract memorable facts from a single conversation turn.
 
@@ -118,11 +119,21 @@ class MemoryExtractor:
           - The LLM response cannot be parsed as valid JSON
 
         project_path is stored as metadata on project-scoped memories.
+        existing_memories, when provided, are listed in the prompt so the LLM
+        can skip facts that are already known.
         """
+        existing_block = ""
+        if existing_memories:
+            lines = ["Already remembered (do not re-extract these):"]
+            for m in existing_memories:
+                lines.append(f"- {m.content}")
+            existing_block = "\n\n" + "\n".join(lines)
+
         user_content = (
             f"Conversation exchange to analyse:\n\n"
             f"User: {prompt}\n\n"
             f"Assistant: {response}"
+            f"{existing_block}"
         )
         messages = [Message(role="user", content=user_content)]
         resp = client.complete(messages, system=EXTRACTION_SYSTEM_PROMPT)
