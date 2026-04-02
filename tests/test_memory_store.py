@@ -62,6 +62,7 @@ def _record(
     content: str = "User uses PostgreSQL.",
     type_: str = "semantic",
     scope: str = "project",
+    category: str = "project",
     tags: list[str] | None = None,
     superseded_by: str | None = None,
 ) -> MemoryRecord:
@@ -74,6 +75,7 @@ def _record(
         tags=tags or [],
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         superseded_by=superseded_by,
+        category=category,
     )
 
 
@@ -320,8 +322,9 @@ class TestKeywordRetrieve:
         assert any(rec.id == r.id for rec in results)
 
     def test_retrieve_returns_empty_for_no_match(self, tmp_path):
+        # event category is query-relevant only — not always injected
         store = _make_store(tmp_path, embedder=None)
-        store.store(_record(content="User loves FastAPI"))
+        store.store(_record(content="User loves FastAPI", category="event"))
         results = store.retrieve("completely unrelated xyz")
         assert results == []
 

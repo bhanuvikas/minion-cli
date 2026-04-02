@@ -39,6 +39,10 @@ from .record import MemoryRecord
 from .vector_store import JSONVectorStore
 
 
+# Categories always injected regardless of query — the agent's "core memory"
+ALWAYS_INJECT_CATEGORIES = frozenset({"identity", "preference", "project"})
+
+
 class MemoryStore:
     """Orchestrates all memory operations across global and project scopes."""
 
@@ -63,30 +67,42 @@ class MemoryStore:
     # ─── Public API ───────────────────────────────────────────────────────────
 
     def retrieve(self, query: str) -> list[MemoryRecord]:
-        """Return top_k relevant memories for query.
+        """Return memories to inject before a turn.
 
-        Always runs keyword search. When an embedder is available, also runs
-        vector search and merges results — vector hits first (sorted by combined
-        score), then any keyword-only hits not already found (sorted by recency).
+        Two-pass retrieval:
+        1. Core memories — all non-superseded records whose category is in
+           ALWAYS_INJECT_CATEGORIES (identity, preference, project). These are
+           always returned regardless of the query.
+        2. Query-relevant memories — vector + keyword search over event-category
+           records, merged and deduplicated against core results.
+
         Runs consolidation on any pair that exceeds the consolidation threshold.
-        Superseded records are excluded from the final output.
         """
+        all_active = [r for r in self._all_records() if r.superseded_by is None]
+
+        # Pass 1: core memories — always inject
+        core = [r for r in all_active if r.category in ALWAYS_INJECT_CATEGORIES]
+        core.sort(key=lambda r: r.created_at, reverse=True)
+        core_ids = {r.id for r in core}
+
+        # Pass 2: query-relevant event memories
         if self._embedder:
-            candidates = self._vector_retrieve(query)
-            seen_ids = {r.id for r in candidates}
+            query_hits = self._vector_retrieve(query)
+            seen_ids = core_ids | {r.id for r in query_hits}
             for record in self._keyword_retrieve(query):
                 if record.id not in seen_ids:
-                    candidates.append(record)
+                    query_hits.append(record)
         else:
-            candidates = self._keyword_retrieve(query)
+            query_hits = self._keyword_retrieve(query)
 
-        # Filter superseded records
-        candidates = [r for r in candidates if r.superseded_by is None]
+        query_hits = [r for r in query_hits if r.superseded_by is None and r.id not in core_ids]
+
+        candidates = core + query_hits[: self._config.top_k]
 
         # Pairwise consolidation check
         candidates = self._maybe_consolidate(candidates)
 
-        return candidates[: self._config.top_k]
+        return candidates
 
     def store(self, record: MemoryRecord) -> None:
         """Write a memory record to disk and update the vector index."""
