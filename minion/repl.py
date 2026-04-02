@@ -103,6 +103,38 @@ def _enter_with_completion(event):
 
 # ─── /init template generator ────────────────────────────────────────────────
 
+_INIT_SYSTEM_PROMPT = """\
+You are generating a MINION.md file — project instructions for an AI coding assistant called Minion.
+Output ONLY the markdown content. No preamble, no explanation, no code fences.
+Include these sections: a one-line project summary, ## How to run, ## How to test, \
+## Key directories, ## Notes for Minion.
+Keep it concise (under 40 lines). Base everything on the project context provided.
+Rules:
+- Always use relative paths (e.g. src/main.py), never absolute paths.
+- In ## How to test: if no test files are detected, say so explicitly rather than guessing.
+- If a value is genuinely unknown, write a short placeholder comment."""
+
+
+def _generate_minion_md_llm(project_context: ProjectContext, client: LLMClient) -> str | None:
+    """Generate a project-specific MINION.md via client.complete().
+
+    Returns the generated content string, or None on any failure so the caller
+    can fall back to the static template.
+    """
+    from .llm.base import Message
+
+    messages = [Message(
+        role="user",
+        content=f"Generate a MINION.md for this project:\n\n{project_context.to_prompt_block()}",
+    )]
+    try:
+        response = client.complete(messages, system=_INIT_SYSTEM_PROMPT)
+        content = response.content.strip()
+        return content + "\n" if content else None
+    except Exception:
+        return None
+
+
 def _generate_minion_md(project_context: ProjectContext | None) -> str:
     """Build a MINION.md starter template from detected project context.
 
@@ -199,8 +231,15 @@ def _handle_slash_command(
                 f"[muted]Edit it directly or delete it first.[/]"
             )
             return True
-        template = _generate_minion_md(project_context)
-        minion_md_path.write_text(template, encoding="utf-8")
+        content = None
+        if project_context:
+            with console.status(f"[muted]Generating MINION.md...[/]"):
+                content = _generate_minion_md_llm(project_context, client)
+            if content is None:
+                console.print(f"[muted]LLM generation failed — using static template.[/]")
+        if content is None:
+            content = _generate_minion_md(project_context)
+        minion_md_path.write_text(content, encoding="utf-8")
         console.print(f"[{YELLOW}]Created MINION.md[/] [muted]in {Path.cwd()}[/]")
         console.print(
             f"[muted]MINION.md is for instructions you author: how to run, how to test, "
