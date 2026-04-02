@@ -28,7 +28,7 @@ class MemoryConfig:
     enabled: bool = True
     top_k: int = 5
     similarity_threshold: float = 0.70
-    consolidation_threshold: float = 0.92
+    consolidation_threshold: float = 0.70
     global_memory_dir: Path = field(
         default_factory=lambda: Path.home() / ".minion" / "memory"
     )

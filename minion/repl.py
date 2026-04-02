@@ -560,13 +560,14 @@ def run_repl(
         # ── Memory injection (before LLM call) ────────────────────────────────
         augmented_prompt = base_system_prompt
         if state.memory_enabled:
-            memories = memory_store.retrieve(user_input)
+            with console.status("[muted]recalling memories...[/]", spinner="dots"):
+                memories = memory_store.retrieve(user_input)
             augmented_prompt = inject_memories(base_system_prompt, memories)
 
         if state.debug:
-            console.print(f"[muted]── system prompt ──────────────────────────[/]")
+            console.print(f"[muted]── debug: system prompt ───────────────────[/]")
             console.print(f"[muted]{augmented_prompt}[/]")
-            console.print(f"[muted]───────────────────────────────────────────[/]")
+            console.print(f"[muted]────────────────────────────────────────────[/]")
 
         reflect_config = (
             ReflectionConfig(depth=state.reflect_depth)

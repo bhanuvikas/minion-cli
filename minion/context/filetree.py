@@ -20,7 +20,7 @@ from pathlib import Path
 # ─── Hardcoded noise — always excluded regardless of ignore files ─────────────
 
 ALWAYS_IGNORE: frozenset[str] = frozenset({
-    ".git", ".hg", ".svn",
+    ".git", ".hg", ".svn", ".minion",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".dmypy.json",
     "node_modules", ".next", ".nuxt", ".svelte-kit",
     ".venv", "venv", "env", ".env",
