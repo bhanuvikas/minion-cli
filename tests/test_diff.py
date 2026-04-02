@@ -6,7 +6,7 @@ No API calls. No filesystem operations. Pure unit tests.
 import sys
 import pytest
 
-from minion.diff import compute_diff, format_diff_rich
+from minion.diff import compute_diff, format_diff_rich, _inline_diff_markup
 
 
 # ─── compute_diff ─────────────────────────────────────────────────────────────
@@ -62,20 +62,19 @@ class TestFormatDiffRich:
     def test_empty_diff_returns_empty_string(self):
         assert format_diff_rich("same", "same") == ""
 
-    def test_additions_get_green_markup(self):
+    def test_additions_get_green_background(self):
         result = format_diff_rich("line1", "line1\nline2")
-        assert "[bold green]" in result
+        assert "on #113b11" in result
         assert "line2" in result
 
-    def test_removals_get_red_markup(self):
+    def test_removals_get_red_background(self):
         result = format_diff_rich("line1\nline2", "line1")
-        assert "[bold red]" in result
+        assert "on #3b1111" in result
 
     def test_context_lines_get_dim_markup(self):
         original = "a\nb\nc\nd\ne"
         revised = "a\nb\nC\nd\ne"
         result = format_diff_rich(original, revised, context_lines=1)
-        # context lines ('b', 'd') should be dim
         assert "[dim]" in result
 
     def test_returns_string(self):
@@ -87,15 +86,12 @@ class TestFormatDiffRich:
         original = "x = [1, 2, 3]"
         revised = "x = [1, 2, 3, 4]"
         result = format_diff_rich(original, revised)
-        # The brackets in the code should be escaped (\\[) so Rich doesn't
-        # misinterpret them as markup tags.
         assert "\\[" in result
 
     def test_line_numbers_present_in_output(self):
         original = "line1\nline2\nline3"
         revised = "line1\nLINE2\nline3"
         result = format_diff_rich(original, revised)
-        # Line numbers should appear as right-aligned integers
         assert "1" in result
         assert "2" in result
 
@@ -103,17 +99,63 @@ class TestFormatDiffRich:
         original = "a\nb\nc"
         revised = "a\nc"
         result = format_diff_rich(original, revised, context_lines=0)
-        # Line 2 ("b") is removed — its line number must appear in a red block
-        red_parts = [p for p in result.split("\n") if "[bold red]" in p]
-        assert any("2" in p for p in red_parts)
+        removed_lines = [p for p in result.split("\n") if "on #3b1111" in p]
+        assert any("2" in p for p in removed_lines)
 
     def test_added_line_shows_new_lineno(self):
         original = "a\nc"
         revised = "a\nb\nc"
         result = format_diff_rich(original, revised, context_lines=0)
-        # "b" is added at line 2 in the revised file
-        green_parts = [p for p in result.split("\n") if "[bold green]" in p]
-        assert any("2" in p for p in green_parts)
+        added_lines = [p for p in result.split("\n") if "on #113b11" in p]
+        assert any("2" in p for p in added_lines)
+
+    def test_replacement_pair_gets_inline_diff(self):
+        """Adjacent -/+ lines (replacements) should have word-level highlights."""
+        result = format_diff_rich("hello world", "hello earth", context_lines=0)
+        # The changed word should get a brighter inline highlight
+        assert "on #6b2020" in result   # removed word highlight
+        assert "on #1f6b1f" in result   # added word highlight
+
+    def test_pure_addition_no_inline_diff(self):
+        """A pure addition (no adjacent removal) gets line bg only, no word highlights."""
+        result = format_diff_rich("a\nb", "a\nb\nc", context_lines=0)
+        assert "on #113b11" in result
+        assert "on #1f6b1f" not in result
+
+    def test_pure_removal_no_inline_diff(self):
+        """A pure removal (no adjacent addition) gets line bg only, no word highlights."""
+        result = format_diff_rich("a\nb\nc", "a\nb", context_lines=0)
+        assert "on #3b1111" in result
+        assert "on #6b2020" not in result
+
+
+# ─── _inline_diff_markup ──────────────────────────────────────────────────────
+
+class TestInlineDiffMarkup:
+    def test_equal_text_has_no_highlights(self):
+        old_hl, new_hl = _inline_diff_markup("hello", "hello")
+        assert "on #" not in old_hl
+        assert "on #" not in new_hl
+
+    def test_changed_word_gets_highlight(self):
+        old_hl, new_hl = _inline_diff_markup("hello world", "hello earth")
+        assert "on #6b2020" in old_hl   # "world" highlighted in old
+        assert "on #1f6b1f" in new_hl   # "earth" highlighted in new
+
+    def test_unchanged_prefix_not_highlighted(self):
+        old_hl, _ = _inline_diff_markup("hello world", "hello earth")
+        # "hello " is unchanged — should not be inside a highlight span
+        assert old_hl.startswith("hello ")
+
+    def test_pure_insertion_only_in_new(self):
+        old_hl, new_hl = _inline_diff_markup("hi", "hi there")
+        assert "on #" not in old_hl
+        assert "on #1f6b1f" in new_hl
+
+    def test_pure_deletion_only_in_old(self):
+        old_hl, new_hl = _inline_diff_markup("hi there", "hi")
+        assert "on #6b2020" in old_hl
+        assert "on #" not in new_hl
 
     def test_no_minion_package_imports(self):
         """diff.py must not import from the minion package (standalone guarantee)."""

@@ -16,6 +16,13 @@ from typing import Optional
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
+# Line background colors (dark, terminal-friendly)
+_REMOVED_LINE_STYLE = "on #3b1111"
+_ADDED_LINE_STYLE   = "on #113b11"
+# Inline word highlight colors (brighter, within the line background)
+_REMOVED_WORD_STYLE = "on #6b2020"
+_ADDED_WORD_STYLE   = "on #1f6b1f"
+
 
 def compute_diff(original: str, revised: str) -> list[tuple[str, str]]:
     """Return a list of (tag, line) pairs from a line-by-line diff.
@@ -53,6 +60,31 @@ def compute_diff(original: str, revised: str) -> list[tuple[str, str]]:
     return result
 
 
+def _inline_diff_markup(old: str, new: str) -> tuple[str, str]:
+    """Character-level diff between old and new content (without leading +/- char).
+
+    Returns (old_markup, new_markup) where changed character spans are wrapped
+    in a brighter background so individual edits are visible within the line.
+    Unchanged spans are escaped for Rich but otherwise unstyled (they inherit
+    the outer line background).
+    """
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    old_parts: list[str] = []
+    new_parts: list[str] = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            old_parts.append(_escape_rich(old[i1:i2]))
+            new_parts.append(_escape_rich(new[j1:j2]))
+        elif op == "replace":
+            old_parts.append(f"[{_REMOVED_WORD_STYLE}]{_escape_rich(old[i1:i2])}[/]")
+            new_parts.append(f"[{_ADDED_WORD_STYLE}]{_escape_rich(new[j1:j2])}[/]")
+        elif op == "delete":
+            old_parts.append(f"[{_REMOVED_WORD_STYLE}]{_escape_rich(old[i1:i2])}[/]")
+        elif op == "insert":
+            new_parts.append(f"[{_ADDED_WORD_STYLE}]{_escape_rich(new[j1:j2])}[/]")
+    return "".join(old_parts), "".join(new_parts)
+
+
 def format_diff_rich(
     original: str,
     revised: str,
@@ -60,16 +92,17 @@ def format_diff_rich(
 ) -> str:
     """Produce a Rich-markup string showing the diff between original and revised.
 
-    Additions:  [bold green]+ line[/bold green]
-    Removals:   [bold red]- line[/bold red]
-    Context:    [dim]  line[/dim]
+    Removed lines: dark red background; changed chars highlighted with brighter red.
+    Added lines:   dark green background; changed chars highlighted with brighter green.
+    Context lines: dim text, no background.
 
-    Uses unified_diff internally for context-aware hunks (shows only the
-    neighbourhood of each change, not the entire file). Returns an empty
-    string when the two inputs are identical.
+    Adjacent -/+ pairs (replacements) are character-diffed so only the exact
+    changed spans are highlighted within each line, matching the Claude Code
+    diff style. Pure removals and pure additions get a full-line background
+    without inline highlights.
 
-    The returned string is safe to pass to Rich's console.print() — all
-    diff content is plain text that does not contain Rich markup characters.
+    Uses unified_diff for context-aware hunks. Returns an empty string when
+    the two inputs are identical.
     """
     if original == revised:
         return ""
@@ -94,28 +127,48 @@ def format_diff_rich(
     parts: list[str] = []
     orig_lineno = 0
     new_lineno = 0
+    # Buffer consecutive - lines; paired with subsequent + lines for inline diff
+    pending: list[tuple[int, str]] = []
+
+    def flush_pending() -> None:
+        """Render buffered removals that had no matching addition."""
+        for lineno, content in pending:
+            parts.append(f"[{_REMOVED_LINE_STYLE}]{lineno:>4}  -{_escape_rich(content)}[/]")
+        pending.clear()
 
     for line in diff_lines:
         if line.startswith("---") or line.startswith("+++"):
-            # Skip file header lines — not useful in a terminal chat context
             continue
         elif line.startswith("@@"):
+            flush_pending()
             m = _HUNK_RE.match(line)
             if m:
                 orig_lineno = int(m.group(1))
                 new_lineno = int(m.group(2))
             parts.append(f"[dim]{_escape_rich(line)}[/dim]")
-        elif line.startswith("+"):
-            parts.append(f"[bold green]{new_lineno:>4}  {_escape_rich(line)}[/bold green]")
-            new_lineno += 1
         elif line.startswith("-"):
-            parts.append(f"[bold red]{orig_lineno:>4}  {_escape_rich(line)}[/bold red]")
+            pending.append((orig_lineno, line[1:]))
             orig_lineno += 1
+        elif line.startswith("+"):
+            content = line[1:]
+            if pending:
+                # Pair with the oldest buffered removal → inline character diff
+                old_lineno, old_content = pending.pop(0)
+                old_hl, new_hl = _inline_diff_markup(old_content, content)
+                parts.append(f"[{_REMOVED_LINE_STYLE}]{old_lineno:>4}  -{old_hl}[/]")
+                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}  +{new_hl}[/]")
+            else:
+                # Pure addition — no removal to pair with
+                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}  +{_escape_rich(content)}[/]")
+            new_lineno += 1
         else:
-            parts.append(f"[dim]{orig_lineno:>4}  {_escape_rich(line)}[/dim]")
+            flush_pending()
+            content = line[1:] if line else line
+            parts.append(f"[dim]{orig_lineno:>4}   {_escape_rich(content)}[/dim]")
             orig_lineno += 1
             new_lineno += 1
 
+    flush_pending()
     return "\n".join(parts)
 
 
