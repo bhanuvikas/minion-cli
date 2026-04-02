@@ -59,10 +59,7 @@ class ContextSnapshot:
     session_total: int          # cumulative (input + output) across all turns
     turn_count: int             # completed turns this session
     system_prompt_tokens: int = 0   # estimated from char count; 0 if unavailable
-
-    # Future phases add fields here:
-    # tool_tokens: int = 0       # Phase 3 — tool definitions sent in context
-    # memory_tokens: int = 0     # Phase 6 — retrieved memory chunks
+    memory_tokens: int = 0          # estimated from injected memory block size
 
     @property
     def current_context_tokens(self) -> int:
@@ -137,11 +134,17 @@ class Conversation:
             content=[ContentToolResultBlock(tool_use_id=tool_use_id, content=result)],
         ))
 
-    def build_snapshot(self, usage: Optional[LLMResponse], system_prompt_tokens: int = 0) -> Optional["ContextSnapshot"]:
+    def build_snapshot(
+        self,
+        usage: Optional[LLMResponse],
+        system_prompt_tokens: int = 0,
+        memory_tokens: int = 0,
+    ) -> Optional["ContextSnapshot"]:
         """Build and store a ContextSnapshot from the latest response.
 
-        system_prompt_tokens: estimated token count for the system prompt,
-        computed by the caller (runner.py) as len(SYSTEM_PROMPT) // 4.
+        system_prompt_tokens: estimated token count for the base system prompt.
+        memory_tokens: estimated token count for the injected memory block.
+        Both computed by the caller (runner.py) as len(text) // 4.
         """
         if usage is None:
             return None
@@ -153,6 +156,7 @@ class Conversation:
             session_total=self.total_tokens,
             turn_count=self._turn_count,
             system_prompt_tokens=system_prompt_tokens,
+            memory_tokens=memory_tokens,
         )
         return self._snapshot
 

@@ -231,6 +231,7 @@ def run_prompt(
     dry_run: bool = False,
     reflect_config: Optional[ReflectionConfig] = None,
     verbose: bool = False,
+    memory_tokens: int = 0,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -296,8 +297,8 @@ def run_prompt(
         print_iteration_limit(MAX_ITERATIONS)
 
     # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
-    system_prompt_tokens = len(system_prompt) // 4
+    system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
     if final_usage:
         conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
-    snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens)
+    snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
     print_usage(snapshot)
