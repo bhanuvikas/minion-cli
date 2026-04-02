@@ -1,0 +1,282 @@
+"""Self-Refine reflection loop.
+
+Implements the Self-Refine pattern (Madaan et al., 2023): after the agent
+produces an initial response, a critic LLM call scores it. If the score is
+below the threshold and rounds remain, a refiner LLM call rewrites it based
+on the critique. The loop repeats until the response is good enough or the
+round limit is hit.
+
+Responsibilities:
+  ReflectionConfig  — user-facing settings (depth, threshold)
+  CritiqueResult    — structured output from one critique call
+  ReflectionResult  — everything produced by a completed reflect() pass
+  reflect()         — run the critique/refine loop; return ReflectionResult
+
+Isolation guarantee: all LLM calls use a freshly-built list[Message] that
+is never added to the main Conversation. This module has no access to
+Conversation and never imports it. Side effects: none beyond return value.
+"""
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .llm.base import LLMClient, LLMResponse, Message
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+
+SCORE_THRESHOLD = 7   # scores >= this exit the loop immediately
+
+
+# ─── Prompts ─────────────────────────────────────────────────────────────────
+
+CRITIC_SYSTEM_PROMPT = """\
+You are a precise critic evaluating an AI assistant's response.
+
+First, classify the response as exactly one of:
+  CODE_GENERATION   — the response primarily writes or modifies code
+  CODE_EXPLANATION  — the response primarily explains or analyzes code or a concept
+  GENERAL           — conversational, factual lookup, or non-technical response
+
+Then score the response 1-10 using these criteria:
+  GENERAL:          Score 8 if the answer is clear and relevant, 9-10 if exceptional.
+                    Do not penalise GENERAL responses for missing code.
+  CODE_GENERATION:  Evaluate: syntactic correctness, edge case handling,
+                    idiomatic style for the language, security issues, completeness.
+  CODE_EXPLANATION: Evaluate: technical accuracy, clarity, whether the full
+                    question is actually answered.
+
+Output EXACTLY this format — no preamble, no trailing text:
+SCORE: <integer 1-10>
+TYPE: <CODE_GENERATION|CODE_EXPLANATION|GENERAL>
+CRITIQUE: <one focused paragraph naming the most important improvement needed, \
+or "None" if the response is satisfactory>"""
+
+
+REFINER_SYSTEM_PROMPT = """\
+You are revising your previous response based on a critique.
+
+Rules:
+- Address every point raised in the critique.
+- Do not change parts of the response that were not criticised.
+- Do not acknowledge or reference the critique in your output.
+- Output only the revised response — no preamble, no meta-commentary.
+- If the critique text is "None", return the original response unchanged.
+- Preserve the original tone, formatting, and code language."""
+
+
+# ─── Result types ─────────────────────────────────────────────────────────────
+
+@dataclass
+class ReflectionConfig:
+    """User-controllable settings for the reflection loop.
+
+    depth=0  means reflection is disabled (reflect() returns immediately).
+    depth=1  is the default when /reflect on or --reflect is used.
+    depth=N  allows up to N refinement rounds before returning.
+    threshold defaults to SCORE_THRESHOLD (7).
+    """
+    depth: int = 0
+    threshold: int = SCORE_THRESHOLD
+
+
+@dataclass
+class CritiqueResult:
+    """Parsed output from one critique call."""
+    score: int
+    response_type: str    # "CODE_GENERATION" | "CODE_EXPLANATION" | "GENERAL"
+    critique: str         # actionable critique text, or "None"
+    raw: str              # unparsed LLM response, for fallback display
+
+
+@dataclass
+class ReflectionResult:
+    """Everything produced by a completed reflect() call.
+
+    final_response equals original_response when:
+      - depth == 0 (reflection disabled)
+      - the first critique scores >= threshold
+      - refinement was attempted but produced no textual change
+
+    rounds counts how many critique+refine cycles completed (0 when skipped).
+    was_refined is True only if at least one refine call was made and the
+    response text actually changed.
+    """
+    original_response: str
+    final_response: str
+    rounds: int
+    final_score: int
+    critiques: list[CritiqueResult] = field(default_factory=list)
+    was_refined: bool = False
+
+
+# ─── Message builders ─────────────────────────────────────────────────────────
+
+def _build_critique_messages(
+    prompt: str,
+    response: str,
+    context_messages: Optional[list[Message]] = None,
+) -> list[Message]:
+    """Build an isolated message list for a critique call.
+
+    When context_messages is provided (the full conversation history including
+    tool results), it is used as-is so the critic has complete context — e.g.
+    it can see what read_file returned. A brief evaluation request is appended.
+
+    Without context_messages, falls back to a minimal prompt+response pair.
+    This is NOT added to the main conversation.
+    """
+    if context_messages:
+        return list(context_messages) + [
+            Message(role="user", content="Evaluate the assistant's last response above.")
+        ]
+    content = (
+        f"Original user prompt:\n{prompt}\n\n"
+        f"Your response:\n{response}\n\n"
+        f"Evaluate the response above."
+    )
+    return [Message(role="user", content=content)]
+
+
+def _build_refine_messages(
+    prompt: str,
+    response: str,
+    critique: CritiqueResult,
+    context_messages: Optional[list[Message]] = None,
+) -> list[Message]:
+    """Build an isolated message list for a refine call.
+
+    When context_messages is provided, it is used so the refiner sees tool
+    results (e.g. file contents read during the turn) and can write an improved
+    response with full context. The critique is appended as a user turn.
+
+    Without context_messages, falls back to a minimal prompt+response+critique.
+    """
+    refine_request = (
+        f"Critique to address:\n{critique.critique}\n\n"
+        f"Score received: {critique.score}/10. Required: >= {SCORE_THRESHOLD}/10.\n\n"
+        f"Write the improved response:"
+    )
+    if context_messages:
+        return list(context_messages) + [Message(role="user", content=refine_request)]
+    content = (
+        f"Original user prompt:\n{prompt}\n\n"
+        f"Your previous response:\n{response}\n\n"
+        f"{refine_request}"
+    )
+    return [Message(role="user", content=content)]
+
+
+# ─── Critique parser ──────────────────────────────────────────────────────────
+
+_CRITIQUE_RE = re.compile(
+    r"SCORE:\s*(-?\d+)\s*\n\s*TYPE:\s*(\w+)\s*\n\s*CRITIQUE:\s*(.+)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_VALID_TYPES = {"CODE_GENERATION", "CODE_EXPLANATION", "GENERAL"}
+
+
+def _parse_critique(raw: str) -> CritiqueResult:
+    """Extract score, type, and critique text from a raw LLM response.
+
+    Falls back gracefully when the structured format is missing or malformed:
+      score     → 5 (below threshold, triggers refinement)
+      type      → GENERAL
+      critique  → the raw text itself (better than losing it entirely)
+
+    This prevents crashes from unexpected LLM output while still letting
+    the loop make progress.
+    """
+    match = _CRITIQUE_RE.search(raw.strip())
+    if not match:
+        return CritiqueResult(score=5, response_type="GENERAL", critique=raw.strip(), raw=raw)
+
+    try:
+        score = max(1, min(10, int(match.group(1))))
+    except ValueError:
+        score = 5
+
+    response_type = match.group(2).upper()
+    if response_type not in _VALID_TYPES:
+        response_type = "GENERAL"
+
+    critique = match.group(3).strip()
+
+    return CritiqueResult(score=score, response_type=response_type, critique=critique, raw=raw)
+
+
+# ─── Main entry point ─────────────────────────────────────────────────────────
+
+def reflect(
+    prompt: str,
+    response: str,
+    client: LLMClient,
+    config: ReflectionConfig,
+    context_messages: Optional[list[Message]] = None,
+) -> ReflectionResult:
+    """Run the self-refine critique/refine loop.
+
+    Uses client.complete() (non-streaming) for all calls. Never modifies
+    any Conversation object — callers must handle conversation updates.
+
+    When context_messages is provided (the full conversation history), the
+    critic and refiner receive complete context — including tool results from
+    read_file calls — so they can evaluate and improve the response accurately.
+    After each refinement round, context_messages is updated so subsequent
+    critique calls see the latest revised response.
+
+    Returns immediately (with original response) when config.depth == 0.
+    """
+    if config.depth == 0:
+        return ReflectionResult(
+            original_response=response,
+            final_response=response,
+            rounds=0,
+            final_score=0,
+        )
+
+    current = response
+    current_context = list(context_messages) if context_messages else None
+    critiques: list[CritiqueResult] = []
+    was_refined = False
+    final_score = 0
+
+    for _ in range(config.depth):
+        # ── Critique ──────────────────────────────────────────────────────────
+        critique_resp = client.complete(
+            _build_critique_messages(prompt, current, current_context),
+            system=CRITIC_SYSTEM_PROMPT,
+        )
+        parsed = _parse_critique(critique_resp.content)
+        critiques.append(parsed)
+        final_score = parsed.score
+
+        if parsed.score >= config.threshold:
+            break   # good enough — exit before refining
+
+        # ── Refine ────────────────────────────────────────────────────────────
+        refine_resp = client.complete(
+            _build_refine_messages(prompt, current, parsed, current_context),
+            system=REFINER_SYSTEM_PROMPT,
+        )
+        refined = refine_resp.content.strip()
+
+        if refined and refined != current:
+            current = refined
+            was_refined = True
+            # Update context so the next critique round sees the refined response.
+            # Replace the last assistant message with the new text.
+            if current_context and current_context[-1].role == "assistant":
+                current_context = current_context[:-1] + [
+                    Message(role="assistant", content=current)
+                ]
+
+    return ReflectionResult(
+        original_response=response,
+        final_response=current,
+        rounds=len(critiques),
+        final_score=final_score,
+        critiques=critiques,
+        was_refined=was_refined,
+    )

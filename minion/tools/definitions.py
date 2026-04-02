@@ -156,3 +156,8 @@ TOOL_DEFINITIONS: list[dict] = [
 
 # Tools that modify state or execute arbitrary code — require user confirmation.
 DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})
+
+# Tools that produce side effects that cannot be undone (writes, shell execution).
+# Reflection is skipped when any of these ran — the refiner cannot re-run tools,
+# and the side effects have already occurred.
+SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})

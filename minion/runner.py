@@ -20,8 +20,13 @@ from typing import Optional
 
 from .conversation import Conversation
 from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
-from .theme import BLUE, YELLOW, console, print_error, print_iteration_limit, print_tool_call, print_usage
-from .tools.definitions import TOOL_DEFINITIONS
+from .reflection import ReflectionConfig, ReflectionResult, reflect
+from .theme import (
+    BLUE, YELLOW, console,
+    print_critique, print_diff, print_error, print_iteration_limit,
+    print_reflection_header, print_tool_call, print_usage,
+)
+from .tools.definitions import SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
 
 MAX_ITERATIONS = 20
@@ -175,12 +180,57 @@ def _execute_tools(
 
 # ─── Public entry point ───────────────────────────────────────────────────────
 
+def _run_reflection(
+    prompt: str,
+    response: str,
+    client: LLMClient,
+    config: ReflectionConfig,
+    verbose: bool,
+    conversation: Conversation,
+) -> None:
+    """Run the self-refine loop and update the conversation if refined.
+
+    Delegates all LLM calls to reflection.reflect(). Passes the full
+    conversation history as context so the critic and refiner can see tool
+    results (e.g. file contents from read_file calls). Handles display of
+    critique and diff when verbose=True. Replaces the last assistant message
+    with the refined text when refinement occurred.
+
+    Invariant: called only immediately after conversation.add_assistant(),
+    so conversation.messages[-1] is always the draft assistant message.
+    """
+    from .llm.base import Message
+
+    print_reflection_header(round_num=1, max_rounds=config.depth)
+    result = reflect(prompt, response, client, config, context_messages=conversation.messages)
+
+    if verbose:
+        for c in result.critiques:
+            print_critique(c.score, c.response_type, c.critique)
+        if result.was_refined:
+            print_diff(response, result.final_response)
+
+    if result.was_refined:
+        console.print(f"\n[bold {BLUE}]minion[/] › [muted](refined)[/]")
+        console.print(result.final_response)
+        # Replace the draft with the refined version so future turns reference
+        # the improved response, not the original streaming draft.
+        conversation.messages[-1] = Message(
+            role="assistant", content=result.final_response
+        )
+    else:
+        score_hint = f" · score: {result.final_score}/10" if verbose else ""
+        console.print(f"[muted]  ↳ accepted{score_hint}[/]")
+
+
 def run_prompt(
     prompt: str,
     client: LLMClient,
     conversation: Conversation,
     system_prompt: str,
     dry_run: bool = False,
+    reflect_config: Optional[ReflectionConfig] = None,
+    verbose: bool = False,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -188,11 +238,15 @@ def run_prompt(
     requests tool use the results are observed and the loop continues. The loop
     exits when the model signals end_turn or dry_run stops it after the first
     tool-use iteration.
+
+    When reflect_config is provided and depth > 0, runs the self-refine loop
+    after the final end_turn response before returning.
     """
     executor = ToolExecutor(dry_run=dry_run)
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
+    side_effects_occurred = False
 
     for _ in range(MAX_ITERATIONS):
         # ── One LLM call ──────────────────────────────────────────────────────
@@ -206,6 +260,18 @@ def run_prompt(
         # ── End turn: model finished responding ───────────────────────────────
         if result.stop_reason == "end_turn":
             conversation.add_assistant(result.full_text, result.usage)
+            if reflect_config and reflect_config.depth > 0:
+                if side_effects_occurred:
+                    console.print("[muted]  ↳ reflection skipped (side-effecting tools were used)[/]")
+                else:
+                    _run_reflection(
+                        prompt=prompt,
+                        response=result.full_text,
+                        client=client,
+                        config=reflect_config,
+                        verbose=verbose,
+                        conversation=conversation,
+                    )
             break
 
         # ── Tool use: execute calls, inject observations, loop ────────────────
@@ -217,6 +283,10 @@ def run_prompt(
                     print_tool_call(tb.name, tb.input, dry_run=True)
                 console.print(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
                 break
+
+            for tb in result.tool_blocks:
+                if tb.name in SIDE_EFFECTING_TOOLS:
+                    side_effects_occurred = True
 
             _execute_tools(result.tool_blocks, executor, conversation)
             print()  # blank line before next iteration
