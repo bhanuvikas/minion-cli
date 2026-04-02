@@ -8,8 +8,11 @@ The actual LLM call is delegated to runner.run_prompt() so this file
 stays focused on input/UX concerns.
 """
 
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import typer
 from prompt_toolkit import PromptSession
@@ -23,7 +26,12 @@ from .config import MINION_STYLE, run_model_config
 from .reflection import ReflectionConfig
 from .context import ProjectContext, build_project_context
 from .conversation import Conversation
-from .llm.base import LLMClient
+from .llm.base import ContentTextBlock, LLMClient
+from .memory.config import MemoryConfig
+from .memory.embedder import build_embedder
+from .memory.injection import _format_age, inject_memories
+from .memory.record import MemoryRecord
+from .memory.store import MemoryStore
 from .prompts import build_system_prompt
 from .runner import run_prompt
 from .session import list_sessions, load, save
@@ -40,6 +48,7 @@ class ReplState:
     """
     reflect_depth: int = 0    # 0 = off; N = max self-refine rounds
     verbose: bool = False     # show critique text and diffs when True
+    memory_enabled: bool = True  # False = private mode: skip injection + extraction
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -53,6 +62,10 @@ REPL_COMMANDS = {
     "/context": "Show context window usage and token breakdown",
     "/reflect": "Self-refine: /reflect on | /reflect 2 | /reflect off | /reflect",
     "/verbose": "Verbose output: /verbose on | /verbose off | /verbose",
+    "/memory":  "Memory status/toggle: /memory | /memory on | /memory off",
+    "/remember": "Remember something: /remember <text>",
+    "/forget":  "Forget a memory: /forget <id or text>",
+    "/recall":  "Show memories: /recall [query]",
     "/clear":   "Clear conversation history and start fresh",
     "/save":    "Save session: /save <name>",
     "/load":    "Load session: /load <name>",
@@ -199,12 +212,14 @@ def _handle_slash_command(
     conversation: Conversation,
     project_context: ProjectContext | None = None,
     state: ReplState | None = None,
+    memory_store: MemoryStore | None = None,
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
     state is optional for backward compatibility with tests that call this
-    function without a ReplState. When state is None, /reflect and /verbose
-    return True but silently do nothing.
+    function without a ReplState. When state is None, /reflect, /verbose,
+    and /memory return True but silently do nothing.
+    memory_store is optional; memory commands no-op gracefully when None.
     """
     parts = raw.strip().split(maxsplit=1)
     if not parts:
@@ -286,6 +301,80 @@ def _handle_slash_command(
                 print_error("Usage: /verbose [on | off]")
         return True
 
+    if cmd == "/memory":
+        if state is not None:
+            if not arg:
+                status = "on" if state.memory_enabled else "off"
+                if memory_store is not None:
+                    s = memory_store.stats()
+                    console.print(
+                        f"[{YELLOW}]Memory:[/] {status} · "
+                        f"{s['global_count']} global, {s['project_count']} project"
+                        + (" · embeddings on" if s["has_embeddings"] else " · keyword search only")
+                    )
+                else:
+                    console.print(f"[{YELLOW}]Memory:[/] {status}")
+            elif arg == "on":
+                state.memory_enabled = True
+                console.print(f"[{YELLOW}]Memory on.[/]")
+            elif arg == "off":
+                state.memory_enabled = False
+                console.print(f"[{YELLOW}]Memory off.[/]")
+            else:
+                print_error("Usage: /memory [on | off]")
+        return True
+
+    if cmd == "/remember":
+        if not arg:
+            print_error("Usage: /remember <text>")
+            return True
+        if memory_store is not None:
+            record = MemoryRecord(
+                id=str(uuid.uuid4()),
+                content=arg,
+                type="semantic",
+                scope="project",
+                project_path=str(Path.cwd()),
+                tags=[],
+                created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                superseded_by=None,
+            )
+            memory_store.store(record)
+            console.print(f"[{YELLOW}]Remembered:[/] {arg}")
+        else:
+            console.print(f"[muted]Memory not available in this session.[/]")
+        return True
+
+    if cmd == "/forget":
+        if not arg:
+            print_error("Usage: /forget <id or text>")
+            return True
+        if memory_store is not None:
+            count = memory_store.delete(arg)
+            if count:
+                console.print(f"[{YELLOW}]Forgotten.[/] [muted]({count} memory removed)[/]")
+            else:
+                console.print(f"[muted]No matching memory found.[/]")
+        else:
+            console.print(f"[muted]Memory not available in this session.[/]")
+        return True
+
+    if cmd == "/recall":
+        if memory_store is not None:
+            memories = memory_store.list_all(query=arg or None)
+            if not memories:
+                console.print(f"[muted]No memories stored yet.[/]")
+            else:
+                for m in memories:
+                    age = _format_age(m.created_at)
+                    console.print(
+                        f"  [{BLUE}]{m.id[:8]}[/] [{m.type}·{m.scope}] "
+                        f"{m.content} [muted]({age})[/]"
+                    )
+        else:
+            console.print(f"[muted]Memory not available in this session.[/]")
+        return True
+
     if cmd == "/model":
         run_model_config(client)
         return True
@@ -343,11 +432,26 @@ def _handle_slash_command(
 
 # ─── REPL entry point ─────────────────────────────────────────────────────────
 
+def _get_last_response_text(conversation: Conversation) -> Optional[str]:
+    """Extract plain text from the last assistant message in conversation."""
+    if not conversation.messages:
+        return None
+    last = conversation.messages[-1]
+    if last.role != "assistant":
+        return None
+    if isinstance(last.content, str):
+        return last.content
+    # Handle ContentBlock lists (tool-use turns — extract text blocks only)
+    parts = [b.text for b in last.content if isinstance(b, ContentTextBlock)]
+    return "\n".join(parts) if parts else None
+
+
 def run_repl(
     client: LLMClient,
     dry_run: bool = False,
     reflect_depth: int = 0,
     verbose: bool = False,
+    memory_enabled: bool = True,
 ) -> None:
     """Start the interactive REPL loop."""
     print_greeting()
@@ -359,16 +463,31 @@ def run_repl(
     history_path = Path.home() / ".minion" / "history"
     history_path.parent.mkdir(exist_ok=True)
 
-    project_context = build_project_context(Path.cwd())
-    system_prompt = build_system_prompt(project_context)
+    project_cwd = Path.cwd()
+    project_context = build_project_context(project_cwd)
+    base_system_prompt = build_system_prompt(project_context)
 
     if project_context.manifest:
         console.print(f"[muted]Project: {project_context.label}[/]\n")
     if project_context.minion_md:
         console.print(f"[muted]MINION.md loaded.[/]\n")
 
+    # ── Memory setup ──────────────────────────────────────────────────────────
+    memory_config = MemoryConfig()
+    embedder = build_embedder() if memory_enabled else None
+    memory_store = MemoryStore(
+        config=memory_config,
+        project_cwd=project_cwd,
+        client=client,
+        embedder=embedder,
+    )
+
     conversation = Conversation()
-    state = ReplState(reflect_depth=reflect_depth, verbose=verbose)
+    state = ReplState(
+        reflect_depth=reflect_depth,
+        verbose=verbose,
+        memory_enabled=memory_enabled,
+    )
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
@@ -389,9 +508,17 @@ def run_repl(
             console.print()
             continue
 
-        if _handle_slash_command(user_input, client, conversation, project_context, state):
+        if _handle_slash_command(
+            user_input, client, conversation, project_context, state, memory_store
+        ):
             console.print()
             continue
+
+        # ── Memory injection (before LLM call) ────────────────────────────────
+        augmented_prompt = base_system_prompt
+        if state.memory_enabled:
+            memories = memory_store.retrieve(user_input)
+            augmented_prompt = inject_memories(base_system_prompt, memories)
 
         reflect_config = (
             ReflectionConfig(depth=state.reflect_depth)
@@ -399,9 +526,19 @@ def run_repl(
         )
         console.print()
         run_prompt(
-            user_input, client, conversation, system_prompt,
+            user_input, client, conversation, augmented_prompt,
             dry_run=dry_run,
             reflect_config=reflect_config,
             verbose=state.verbose,
         )
         console.print()
+
+        # ── Memory extraction (after LLM call) ────────────────────────────────
+        if state.memory_enabled:
+            last_response = _get_last_response_text(conversation)
+            if last_response:
+                extracted = memory_store.maybe_extract(user_input, last_response)
+                if extracted and state.verbose:
+                    console.print(
+                        f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]\n"
+                    )

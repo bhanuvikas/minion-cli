@@ -58,6 +58,10 @@ def main(
         False, "--verbose", "-v",
         help="Show critique text and response diffs during reflection.",
     ),
+    no_memory: bool = typer.Option(
+        False, "--no-memory",
+        help="Disable memory retrieval and extraction for this session (private mode).",
+    ),
     version: bool = typer.Option(
         False, "--version",
         help="Show version and exit.",
@@ -90,4 +94,7 @@ def main(
             verbose=verbose,
         )
     else:
-        run_repl(client, dry_run=dry_run, reflect_depth=reflect or 0, verbose=verbose)
+        run_repl(
+            client, dry_run=dry_run, reflect_depth=reflect or 0,
+            verbose=verbose, memory_enabled=not no_memory,
+        )
