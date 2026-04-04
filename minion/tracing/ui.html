@@ -340,6 +340,7 @@ const EVENT_COLORS = {
   user_turn:            '#3b82f6',
   llm_request:          '#a78bfa',
   llm_response:         '#a78bfa',
+  llm_error:            '#ef4444',
   tool_call:            '#f97316',
   tool_result:          '#f97316',
   memory_retrieve:      '#06b6d4',
@@ -362,6 +363,7 @@ const EVENT_LABELS = {
   user_turn:            'User',
   llm_request:          'LLM Request',
   llm_response:         'LLM Response',
+  llm_error:            'LLM Error',
   tool_call:            'Tool Call',
   tool_result:          'Tool Result',
   memory_retrieve:      'Memory Retrieve',
@@ -379,7 +381,7 @@ const EVENT_LABELS = {
 };
 
 // Default expansion: LLM and tool cards start open
-const DEFAULT_OPEN = new Set(['llm_request','llm_response','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start']);
+const DEFAULT_OPEN = new Set(['llm_request','llm_response','llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start']);
 
 let allEvents = [];
 let filters = {};  // event_type -> bool (shown)
@@ -463,6 +465,9 @@ function buildCardBody(ev) {
     if (d.response) {
       parts.push(fieldRow('response', `<pre>${escHtml(d.response)}</pre>`));
     }
+  } else if (t === 'llm_error') {
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)} ms`));
+    if (d.error) parts.push(fieldRow('error', `<pre style="color:#ef4444">${escHtml(d.error)}</pre>`));
   } else if (t === 'tool_call') {
     parts.push(fieldRow('tool', `<span class="pill">${escHtml(d.tool_name||'')}</span>`));
     if (d.inputs && Object.keys(d.inputs).length) {
@@ -559,6 +564,7 @@ function buildCardHeader(ev) {
             <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`;
     if (d.reflection_role) meta += ` <span style="color:var(--c-reflection);font-size:11px;padding:1px 6px;background:rgba(236,72,153,0.1);border-radius:3px">${escHtml(d.reflection_role)}</span>`;
   }
+  else if (t === 'llm_error')  { title = escHtml((d.error||'').slice(0,80)); meta = `<span class="error-badge">✗ error</span>`; }
   else if (t === 'tool_call')  title = escHtml(d.tool_name||'');
   else if (t === 'tool_result') {
     title = escHtml(d.tool_name||'');
