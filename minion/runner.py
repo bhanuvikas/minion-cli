@@ -138,6 +138,11 @@ def _stream_one_iteration(
         with console.status(_SPINNER_LABEL, spinner="dots"):
             first_event = next(stream, None)
     except Exception as e:
+        get_tracer().emit(
+            "llm_error",
+            error=str(e),
+            latency_ms=int((_time.monotonic() - _llm_start) * 1000),
+        )
         conversation.messages.pop()
         print_error(str(e))
         return None

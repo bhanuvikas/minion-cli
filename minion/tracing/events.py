@@ -48,6 +48,12 @@ class LLMResponseData:
 
 
 @dataclass
+class LLMErrorData:
+    error: str               # full error message
+    latency_ms: int          # time elapsed before the error
+
+
+@dataclass
 class ToolCallData:
     tool_name: str
     inputs: dict

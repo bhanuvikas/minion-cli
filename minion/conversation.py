@@ -13,6 +13,19 @@ from typing import Optional
 
 from .llm.base import ContentBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
 
+
+def _is_tool_result_message(msg: Message) -> bool:
+    """True if this message is an orphaned tool_result (user role, tool_result content).
+
+    Used by truncate_if_needed() to avoid leaving tool_result messages at the
+    front of history after their corresponding tool_use block has been dropped.
+    """
+    if msg.role != "user":
+        return False
+    if isinstance(msg.content, list) and msg.content:
+        return isinstance(msg.content[0], ContentToolResultBlock)
+    return False
+
 # Context window limits by model name fragment (matched with `in`).
 # These are the INPUT limits; we target 85% to leave headroom for new messages.
 MODEL_CONTEXT_LIMITS: dict[str, int] = {
@@ -211,8 +224,17 @@ class Conversation:
         pairs_to_drop = math.ceil(overage / (avg_tokens_per_message * 2))
         pairs_to_drop = min(pairs_to_drop, len(self.messages) // 2)
 
+        dropped = 0
         for _ in range(pairs_to_drop):
+            if len(self.messages) <= 2:
+                break
             self.messages.pop(0)   # oldest user message
-            self.messages.pop(0)   # oldest assistant reply
+            self.messages.pop(0)   # oldest assistant reply (may contain tool_use blocks)
+            dropped += 1
+            # After dropping an assistant+tool_use message, its corresponding
+            # tool_result user messages are now orphaned at the front of history.
+            # Drop them too — keeping them would cause a 400 from the API.
+            while self.messages and _is_tool_result_message(self.messages[0]):
+                self.messages.pop(0)
 
-        return pairs_to_drop
+        return dropped

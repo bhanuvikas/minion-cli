@@ -199,6 +199,47 @@ class TestTruncation:
         dropped = c.truncate_if_needed(last_input_tokens=10_000, last_output_tokens=5_000)
         assert dropped >= 1
 
+    def test_truncation_drops_orphaned_tool_results(self):
+        """Truncation after a tool-use turn must not leave orphaned tool_result messages."""
+        c = Conversation(model="unknown-model")
+        # Simulate a tool-use turn:
+        #   [0] user: regular message
+        #   [1] assistant: tool_use block
+        #   [2] user: tool_result block  ← would be orphaned if [0]+[1] dropped
+        #   [3] assistant: final response
+        #   [4] user: another message
+        #   [5] assistant: another response
+        c.add_user("user question 1")
+        c.add_assistant_blocks(
+            [ContentToolUseBlock(id="t1", name="read_file", input={"path": "main.py"})],
+            usage=None,
+        )
+        c.add_tool_result("t1", "file content here")
+        c.add_assistant("Got the file.", usage=None)
+        c.add_user("user question 2")
+        c.add_assistant("Second answer.", usage=None)
+
+        # Force truncation (overage large enough to drop at least one pair)
+        c.truncate_if_needed(last_input_tokens=12_000, last_output_tokens=3_000)
+
+        # After truncation, the first message must NEVER be a tool_result
+        from minion.conversation import _is_tool_result_message
+        assert not _is_tool_result_message(c.messages[0]), (
+            "First message after truncation is an orphaned tool_result — "
+            "this would cause a 400 API error"
+        )
+
+    def test_tool_result_detection(self):
+        from minion.conversation import _is_tool_result_message
+        regular = Message(role="user", content="hello")
+        tool_result = Message(role="user", content=[
+            ContentToolResultBlock(tool_use_id="t1", content="result")
+        ])
+        assistant = Message(role="assistant", content="response")
+        assert not _is_tool_result_message(regular)
+        assert _is_tool_result_message(tool_result)
+        assert not _is_tool_result_message(assistant)
+
 
 # ─── _context_limit ──────────────────────────────────────────────────────────
 
