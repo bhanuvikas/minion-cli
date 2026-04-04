@@ -106,3 +106,35 @@ class SessionEndData:
     total_output_tokens: int
     total_tool_calls: int
     duration_seconds: float
+
+
+# ─── Plan lifecycle events ────────────────────────────────────────────────────
+
+@dataclass
+class PlanStartData:
+    goal: str
+
+
+@dataclass
+class PlanGeneratedData:
+    plan_path: str
+    plan_length_chars: int
+    generation_time_ms: int
+
+
+@dataclass
+class PlanRefinedData:
+    plan_path: str
+    feedback: str
+    refinement_round: int
+
+
+@dataclass
+class PlanExecuteStartData:
+    plan_path: str
+    plan_length_chars: int
+
+
+@dataclass
+class PlanCompleteData:
+    plan_path: str
