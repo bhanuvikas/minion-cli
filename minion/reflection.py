@@ -18,14 +18,22 @@ Conversation and never imports it. Side effects: none beyond return value.
 """
 
 import json
+import time as _time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .llm.base import LLMClient, LLMResponse, Message
+from .tracing import get_tracer
+
+
+def _ser_msgs(messages: list) -> list:
+    """Serialize Message objects to JSON-serializable dicts for tracing."""
+    return [{"role": m.role, "content": m.content if isinstance(m.content, str) else str(m.content)}
+            for m in messages]
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-SCORE_THRESHOLD = 7   # scores >= this exit the loop immediately
+SCORE_THRESHOLD = 10   # scores >= this exit the loop immediately
 
 
 # ─── Prompts ─────────────────────────────────────────────────────────────────
@@ -231,6 +239,12 @@ def reflect(
             final_score=0,
         )
 
+    get_tracer().emit(
+        "reflection_start",
+        initial_response_length=len(response),
+        reflection_enabled=True,
+    )
+
     current = response
     current_context = list(context_messages) if context_messages else None
     critiques: list[CritiqueResult] = []
@@ -239,21 +253,66 @@ def reflect(
 
     for _ in range(config.depth):
         # ── Critique ──────────────────────────────────────────────────────────
-        critique_resp = client.complete(
-            _build_critique_messages(prompt, current, current_context),
+        _critique_msgs = _build_critique_messages(prompt, current, current_context)
+        get_tracer().emit(
+            "llm_request",
+            message_count=len(_critique_msgs),
+            messages=_ser_msgs(_critique_msgs),
             system=CRITIC_SYSTEM_PROMPT,
+            tools=[],
+            tool_names=[],
+            model=getattr(client, "model_id", "unknown"),
+            estimated_input_tokens=sum(len(str(m.content)) for m in _critique_msgs) // 4,
+            reflection_role="critique",
+        )
+        _t0 = _time.monotonic()
+        critique_resp = client.complete(_critique_msgs, system=CRITIC_SYSTEM_PROMPT)
+        get_tracer().emit(
+            "llm_response",
+            response=critique_resp.content,
+            stop_reason="end_turn",
+            input_tokens=getattr(critique_resp, "input_tokens", 0),
+            output_tokens=getattr(critique_resp, "output_tokens", 0),
+            model=getattr(critique_resp, "model", getattr(client, "model_id", "unknown")),
+            latency_ms=int((_time.monotonic() - _t0) * 1000),
+            reflection_role="critique",
         )
         parsed = _parse_critique(critique_resp.content)
         critiques.append(parsed)
         final_score = parsed.score
+        get_tracer().emit(
+            "reflection_critique",
+            score=parsed.score,
+            critique=parsed.critique or "",
+        )
 
         if parsed.score >= config.threshold:
             break   # good enough — exit before refining
 
         # ── Refine ────────────────────────────────────────────────────────────
-        refine_resp = client.complete(
-            _build_refine_messages(prompt, current, parsed, current_context),
+        _refine_msgs = _build_refine_messages(prompt, current, parsed, current_context)
+        get_tracer().emit(
+            "llm_request",
+            message_count=len(_refine_msgs),
+            messages=_ser_msgs(_refine_msgs),
             system=REFINER_SYSTEM_PROMPT,
+            tools=[],
+            tool_names=[],
+            model=getattr(client, "model_id", "unknown"),
+            estimated_input_tokens=sum(len(str(m.content)) for m in _refine_msgs) // 4,
+            reflection_role="refine",
+        )
+        _t0 = _time.monotonic()
+        refine_resp = client.complete(_refine_msgs, system=REFINER_SYSTEM_PROMPT)
+        get_tracer().emit(
+            "llm_response",
+            response=refine_resp.content,
+            stop_reason="end_turn",
+            input_tokens=getattr(refine_resp, "input_tokens", 0),
+            output_tokens=getattr(refine_resp, "output_tokens", 0),
+            model=getattr(refine_resp, "model", getattr(client, "model_id", "unknown")),
+            latency_ms=int((_time.monotonic() - _t0) * 1000),
+            reflection_role="refine",
         )
         refined = refine_resp.content.strip()
 
@@ -267,7 +326,7 @@ def reflect(
                     Message(role="assistant", content=current)
                 ]
 
-    return ReflectionResult(
+    result = ReflectionResult(
         original_response=response,
         final_response=current,
         rounds=len(critiques),
@@ -275,3 +334,11 @@ def reflect(
         critiques=critiques,
         was_refined=was_refined,
     )
+    get_tracer().emit(
+        "reflection_revision",
+        was_revised=result.was_refined,
+        new_response_length=len(result.final_response),
+        final_response=result.final_response,
+        original_response=result.original_response,
+    )
+    return result

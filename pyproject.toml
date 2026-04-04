@@ -25,7 +25,8 @@ dev = [
 ]
 
 [project.scripts]
-minion = "minion.cli:app"
+minion  = "minion.cli:app"
+nefario = "minion.tracing.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["minion"]

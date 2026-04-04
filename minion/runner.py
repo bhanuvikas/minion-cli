@@ -14,6 +14,7 @@ Responsibilities:
 
 import re
 import sys
+import time as _time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -28,9 +29,31 @@ from .theme import (
 )
 from .tools.definitions import SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
+from .tracing import get_tracer
 
 MAX_ITERATIONS = 20
 _SPINNER_LABEL = f"[{YELLOW}]🍌  Bee-do bee-do...[/]"
+
+
+def _serialize_messages(messages) -> list:
+    """Convert conversation messages to a JSON-serializable list for tracing."""
+    import dataclasses
+    result = []
+    for msg in messages:
+        content = msg.content
+        if isinstance(content, str):
+            content_out = content
+        elif isinstance(content, list):
+            content_out = []
+            for block in content:
+                try:
+                    content_out.append(dataclasses.asdict(block))
+                except Exception:
+                    content_out.append(str(block))
+        else:
+            content_out = str(content)
+        result.append({"role": msg.role, "content": content_out})
+    return result
 
 # Matches @path patterns that contain at least one / or a file extension.
 # Examples: @src/auth.py  @README.md  @config/settings.ts
@@ -99,6 +122,17 @@ def _stream_one_iteration(
     directly to stdout as it arrives. Returns None on error (already displayed)
     and pops the pending user message so conversation history stays consistent.
     """
+    _llm_start = _time.monotonic()
+    get_tracer().emit(
+        "llm_request",
+        message_count=len(conversation.messages),
+        messages=_serialize_messages(conversation.messages),
+        system=system_prompt,
+        tools=TOOL_DEFINITIONS,
+        tool_names=[t["name"] for t in TOOL_DEFINITIONS],
+        model=getattr(client, "model_id", "unknown"),
+        estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
+    )
     try:
         stream = client.stream(conversation.messages, system=system_prompt, tools=TOOL_DEFINITIONS)
         with console.status(_SPINNER_LABEL, spinner="dots"):
@@ -137,6 +171,15 @@ def _stream_one_iteration(
                 input_tokens=event.input_tokens,
                 output_tokens=event.output_tokens,
                 model=event.model,
+            )
+            get_tracer().emit(
+                "llm_response",
+                response="".join(text_chunks),
+                stop_reason=event.stop_reason,
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                model=event.model,
+                latency_ms=int((_time.monotonic() - _llm_start) * 1000),
             )
 
     _process(first_event)

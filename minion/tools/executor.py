@@ -14,6 +14,7 @@ import questionary
 from ..config import MINION_STYLE
 from ..llm.base import ToolUseBlock
 from ..theme import print_tool_call, print_tool_error, print_tool_result
+from ..tracing import get_tracer
 from .definitions import DANGEROUS_TOOLS
 from .implementations import (
     get_file_outline,
@@ -71,11 +72,14 @@ class ToolExecutor:
             print_tool_error(error)
             return f"Error: {error}"
 
+        get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
             result = fn(**inputs)
             print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:
             error = str(e)
             print_tool_error(error)
+            get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
             return f"Error: {error}"
