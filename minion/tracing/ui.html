@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nefario — Minion Trace Viewer</title>
+<style>
+  :root {
+    --bg: #111111;
+    --sidebar-bg: #191919;
+    --card-bg: #1e1e1e;
+    --card-bg-hover: #242424;
+    --border: #2a2a2a;
+    --text: #e0e0e0;
+    --muted: #777;
+    --accent: #f59e0b;
+    --accent-dim: #78450a;
+
+    --c-session: #22c55e;
+    --c-user: #3b82f6;
+    --c-llm: #a78bfa;
+    --c-tool: #f97316;
+    --c-memory: #06b6d4;
+    --c-reflection: #ec4899;
+    --c-skip: #4b5563;
+    --c-inject: #14b8a6;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Summary bar ── */
+  #summary-bar {
+    background: #141414;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-shrink: 0;
+  }
+  #summary-bar .logo {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+    margin-right: 8px;
+  }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 13px; font-weight: 600; color: var(--text); }
+  #refresh-badge {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--c-session);
+    animation: pulse 2s infinite;
+  }
+  .dot.stopped { background: var(--c-skip); animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* ── Main layout ── */
+  #layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 210px;
+    min-width: 210px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .sidebar-section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .filter-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .filter-row:hover { background: #242424; }
+  .filter-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .filter-label { flex: 1; font-size: 12px; color: var(--text); }
+  .filter-count { font-size: 11px; color: var(--muted); }
+  input[type=checkbox] { accent-color: var(--accent); width: 13px; height: 13px; }
+
+  #sidebar-stats .stat { margin-bottom: 10px; }
+
+  /* ── Timeline ── */
+  #timeline-wrap {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px 40px;
+  }
+  #timeline { display: flex; flex-direction: column; gap: 8px; }
+
+  /* ── Event card ── */
+  .event-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 6px;
+    overflow: hidden;
+    transition: border-color 0.1s;
+  }
+  .event-card:hover { border-color: #3a3a3a; }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .card-header:hover { background: var(--card-bg-hover); }
+
+  .card-type-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    background: rgba(255,255,255,0.06);
+  }
+  .card-title { flex: 1; font-size: 12px; color: var(--text); }
+  .card-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .card-time { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .card-chevron { font-size: 10px; color: var(--muted); transition: transform 0.15s; }
+  .card-chevron.open { transform: rotate(90deg); }
+
+  .token-badge {
+    background: rgba(167,139,250,0.15);
+    color: #a78bfa;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .latency-badge {
+    background: rgba(245,158,11,0.12);
+    color: var(--accent);
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 3px;
+  }
+  .success-badge { color: var(--c-session); font-size: 11px; }
+  .error-badge { color: #ef4444; font-size: 11px; }
+
+  .card-body {
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--border);
+    display: none;
+  }
+  .card-body.visible { display: block; }
+
+  pre {
+    background: #161616;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #ccc;
+    font-size: 12px;
+    line-height: 1.5;
+    max-height: 600px;
+    overflow-y: auto;
+    resize: vertical;
+  }
+  .field-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    align-items: flex-start;
+  }
+  .field-key {
+    color: var(--muted);
+    font-size: 11px;
+    min-width: 130px;
+    flex-shrink: 0;
+    padding-top: 1px;
+  }
+  .field-val { color: var(--text); font-size: 12px; word-break: break-word; }
+  .pill {
+    display: inline-block;
+    background: rgba(255,255,255,0.07);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 11px;
+    margin: 1px 2px 1px 0;
+    color: #ccc;
+  }
+  .memory-preview {
+    background: #161616;
+    border-left: 2px solid var(--c-memory);
+    padding: 6px 10px;
+    margin: 3px 0;
+    border-radius: 0 4px 4px 0;
+    font-size: 11px;
+    color: #aaa;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .ctrl-btn {
+    background: #242424;
+    border: 1px solid #3a3a3a;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+  .ctrl-btn:hover { background: #2e2e2e; color: var(--text); }
+
+  #empty-state {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--muted);
+  }
+  #empty-state .big { font-size: 32px; margin-bottom: 12px; }
+
+  /* Type-specific border colors */
+  .type-session_start, .type-session_end { border-left-color: var(--c-session); }
+  .type-user_turn { border-left-color: var(--c-user); }
+  .type-llm_request, .type-llm_response { border-left-color: var(--c-llm); }
+  .type-tool_call, .type-tool_result { border-left-color: var(--c-tool); }
+  .type-memory_retrieve, .type-memory_store { border-left-color: var(--c-memory); }
+  .type-memory_skip { border-left-color: var(--c-skip); }
+  .type-context_inject { border-left-color: var(--c-inject); }
+  .type-reflection_start, .type-reflection_critique, .type-reflection_revision { border-left-color: var(--c-reflection); }
+</style>
+</head>
+<body>
+
+<!-- Summary bar -->
+<div id="summary-bar">
+  <span class="logo">🍌 nefario</span>
+  <div class="stat">
+    <span class="stat-label">Session</span>
+    <span class="stat-value" id="stat-session">—</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Turns</span>
+    <span class="stat-value" id="stat-turns">0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Tokens in / out</span>
+    <span class="stat-value" id="stat-tokens">0 / 0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Tool calls</span>
+    <span class="stat-value" id="stat-tools">0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Duration</span>
+    <span class="stat-value" id="stat-duration">—</span>
+  </div>
+  <div id="refresh-badge">
+    <div class="dot" id="live-dot"></div>
+    <span id="live-label">live</span>
+  </div>
+  <div style="margin-left:12px;display:flex;gap:6px">
+    <button onclick="collapseAll()" class="ctrl-btn">Collapse all</button>
+    <button onclick="expandAll()"   class="ctrl-btn">Expand all</button>
+  </div>
+</div>
+
+<div id="layout">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div>
+      <div class="sidebar-section-title">Filter events</div>
+      <div id="filter-list"></div>
+    </div>
+    <div id="sidebar-stats">
+      <div class="sidebar-section-title">Session stats</div>
+      <div id="sidebar-stats-body"></div>
+    </div>
+  </div>
+
+  <!-- Timeline -->
+  <div id="timeline-wrap">
+    <div id="timeline"></div>
+    <div id="empty-state" style="display:none">
+      <div class="big">🍌</div>
+      <div>No events yet — start a minion session</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const EVENT_COLORS = {
+  session_start:        '#22c55e',
+  session_end:          '#22c55e',
+  user_turn:            '#3b82f6',
+  llm_request:          '#a78bfa',
+  llm_response:         '#a78bfa',
+  tool_call:            '#f97316',
+  tool_result:          '#f97316',
+  memory_retrieve:      '#06b6d4',
+  memory_store:         '#06b6d4',
+  memory_skip:          '#4b5563',
+  context_inject:       '#14b8a6',
+  reflection_start:     '#ec4899',
+  reflection_critique:  '#ec4899',
+  reflection_revision:  '#ec4899',
+};
+
+const EVENT_LABELS = {
+  session_start:        'Session Start',
+  session_end:          'Session End',
+  user_turn:            'User',
+  llm_request:          'LLM Request',
+  llm_response:         'LLM Response',
+  tool_call:            'Tool Call',
+  tool_result:          'Tool Result',
+  memory_retrieve:      'Memory Retrieve',
+  memory_store:         'Memory Store',
+  memory_skip:          'Memory Skip',
+  context_inject:       'Context Inject',
+  reflection_start:     'Reflection Start',
+  reflection_critique:  'Reflection Critique',
+  reflection_revision:  'Reflection Revision',
+};
+
+// Default expansion: LLM and tool cards start open
+const DEFAULT_OPEN = new Set(['llm_request','llm_response','tool_call','tool_result','user_turn','reflection_revision']);
+
+let allEvents = [];
+let filters = {};  // event_type -> bool (shown)
+let sessionEnded = false;
+
+function colorFor(t) { return EVENT_COLORS[t] || '#888'; }
+function labelFor(t) { return EVENT_LABELS[t] || t; }
+
+function fmtTime(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      timeZone: 'America/Los_Angeles',
+    });
+  } catch { return ts; }
+}
+
+function fmtNum(n) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString();
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function sidebarStat(label, value) {
+  return `<div class="stat" style="margin-bottom:10px">
+    <span class="stat-label">${escHtml(label)}</span>
+    <span class="stat-value" style="font-size:11px;word-break:break-all">${value}</span>
+  </div>`;
+}
+
+function fieldRow(key, val) {
+  return `<div class="field-row"><span class="field-key">${escHtml(key)}</span><span class="field-val">${val}</span></div>`;
+}
+
+function buildCardBody(ev) {
+  const t = ev.event_type;
+  const d = ev.data || {};
+  const parts = [];
+
+  if (t === 'session_start') {
+    parts.push(fieldRow('model', `<span class="pill">${escHtml(d.model||'')}</span>`));
+    parts.push(fieldRow('cwd', escHtml(d.cwd||'')));
+    if (d.system_prompt) {
+      parts.push(fieldRow('system prompt', `<pre>${escHtml(d.system_prompt)}</pre>`));
+    }
+  } else if (t === 'user_turn') {
+    parts.push(`<pre>${escHtml(d.text||'')}</pre>`);
+  } else if (t === 'llm_request') {
+    parts.push(fieldRow('model', `<span class="pill">${escHtml(d.model||'')}</span>`));
+    if (d.reflection_role) parts.push(fieldRow('role', `<span style="color:var(--c-reflection)">${escHtml(d.reflection_role)}</span>`));
+    parts.push(fieldRow('messages', fmtNum(d.message_count)));
+    parts.push(fieldRow('est. input tokens', fmtNum(d.estimated_input_tokens)));
+    if (d.tool_names && d.tool_names.length) {
+      const pills = d.tool_names.map(n => `<span class="pill">${escHtml(n)}</span>`).join('');
+      parts.push(fieldRow('tools', pills));
+    }
+    if (d.system) {
+      parts.push(fieldRow('system prompt', `<pre>${escHtml(d.system)}</pre>`));
+    }
+    if (d.messages && d.messages.length) {
+      parts.push(fieldRow('conversation', `<pre>${escHtml(JSON.stringify(d.messages, null, 2))}</pre>`));
+    }
+    if (d.tools && d.tools.length) {
+      parts.push(fieldRow('tools schema', `<pre>${escHtml(JSON.stringify(d.tools, null, 2))}</pre>`));
+    }
+  } else if (t === 'llm_response') {
+    parts.push(fieldRow('model', `<span class="pill">${escHtml(d.model||'')}</span>`));
+    parts.push(fieldRow('stop reason', `<span class="pill">${escHtml(d.stop_reason||'')}</span>`));
+    parts.push(fieldRow('input tokens', fmtNum(d.input_tokens)));
+    parts.push(fieldRow('output tokens', fmtNum(d.output_tokens)));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)} ms`));
+    if (d.response) {
+      parts.push(fieldRow('response', `<pre>${escHtml(d.response)}</pre>`));
+    }
+  } else if (t === 'tool_call') {
+    parts.push(fieldRow('tool', `<span class="pill">${escHtml(d.tool_name||'')}</span>`));
+    if (d.inputs && Object.keys(d.inputs).length) {
+      parts.push(fieldRow('inputs', `<pre>${escHtml(JSON.stringify(d.inputs, null, 2))}</pre>`));
+    }
+  } else if (t === 'tool_result') {
+    parts.push(fieldRow('tool', `<span class="pill">${escHtml(d.tool_name||'')}</span>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ success</span>'
+      : '<span class="error-badge">✗ error</span>'));
+    if (d.output) {
+      parts.push(fieldRow('output', `<pre>${escHtml(d.output)}</pre>`));
+    }
+  } else if (t === 'memory_retrieve') {
+    parts.push(fieldRow('query', escHtml(d.query||'')));
+    parts.push(fieldRow('retrieved', fmtNum(d.num_retrieved)));
+    if (d.memories && d.memories.length) {
+      const previews = d.memories.map(m => `<div class="memory-preview">${escHtml(m)}</div>`).join('');
+      parts.push(fieldRow('memories', previews));
+    }
+  } else if (t === 'memory_store') {
+    parts.push(fieldRow('type', `<span class="pill">${escHtml(d.type||'')}</span>`));
+    parts.push(fieldRow('category', `<span class="pill">${escHtml(d.category||'')}</span>`));
+    parts.push(fieldRow('scope', `<span class="pill">${escHtml(d.scope||'')}</span>`));
+    if (d.content) parts.push(fieldRow('content', `<pre>${escHtml(d.content)}</pre>`));
+  } else if (t === 'memory_skip') {
+    parts.push(fieldRow('reason', escHtml(d.reason||'')));
+  } else if (t === 'context_inject') {
+    parts.push(fieldRow('memories injected', fmtNum(d.memory_count)));
+    parts.push(fieldRow('token estimate', fmtNum(d.token_estimate)));
+    if (d.memories && d.memories.length) {
+      const previews = d.memories.map(m => `<div class="memory-preview">${escHtml(m)}</div>`).join('');
+      parts.push(fieldRow('memories', previews));
+    }
+  } else if (t === 'reflection_start') {
+    parts.push(fieldRow('response length', fmtNum(d.initial_response_length)));
+  } else if (t === 'reflection_critique') {
+    parts.push(fieldRow('score', `<strong>${fmtNum(d.score)}/10</strong>`));
+    if (d.critique) parts.push(fieldRow('critique', `<pre>${escHtml(d.critique)}</pre>`));
+  } else if (t === 'reflection_revision') {
+    parts.push(fieldRow('revised', d.was_revised
+      ? '<span class="success-badge">yes</span>'
+      : '<span class="muted">no</span>'));
+    parts.push(fieldRow('final length', fmtNum(d.new_response_length)));
+    if (d.was_revised && d.final_response) {
+      parts.push(fieldRow('final response', `<pre>${escHtml(d.final_response)}</pre>`));
+    }
+    if (d.was_revised && d.original_response) {
+      parts.push(fieldRow('original response', `<pre>${escHtml(d.original_response)}</pre>`));
+    }
+  } else if (t === 'session_end') {
+    parts.push(fieldRow('turns', fmtNum(d.total_turns)));
+    parts.push(fieldRow('tokens in', fmtNum(d.total_input_tokens)));
+    parts.push(fieldRow('tokens out', fmtNum(d.total_output_tokens)));
+    parts.push(fieldRow('tool calls', fmtNum(d.total_tool_calls)));
+    parts.push(fieldRow('duration', `${d.duration_seconds}s`));
+  } else {
+    parts.push(`<pre>${escHtml(JSON.stringify(d, null, 2))}</pre>`);
+  }
+
+  return parts.join('');
+}
+
+function buildCardHeader(ev) {
+  const t = ev.event_type;
+  const d = ev.data || {};
+  const color = colorFor(t);
+  const badge = `<span class="card-type-badge" style="color:${color}">${labelFor(t)}</span>`;
+  let title = '';
+  let meta = '';
+
+  if (t === 'user_turn')       title = escHtml((d.text||'').slice(0,80));
+  else if (t === 'llm_request') {
+    title = `${fmtNum(d.message_count)} msgs`;
+    if (d.reflection_role) meta = `<span style="color:var(--c-reflection);font-size:11px;padding:1px 6px;background:rgba(236,72,153,0.1);border-radius:3px">${escHtml(d.reflection_role)}</span>`;
+  }
+  else if (t === 'llm_response') {
+    meta = `<span class="token-badge">↑ ${fmtNum(d.input_tokens)} / ↓ ${fmtNum(d.output_tokens)}</span>
+            <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`;
+    if (d.reflection_role) meta += ` <span style="color:var(--c-reflection);font-size:11px;padding:1px 6px;background:rgba(236,72,153,0.1);border-radius:3px">${escHtml(d.reflection_role)}</span>`;
+  }
+  else if (t === 'tool_call')  title = escHtml(d.tool_name||'');
+  else if (t === 'tool_result') {
+    title = escHtml(d.tool_name||'');
+    meta = d.success
+      ? '<span class="success-badge">✓</span>'
+      : '<span class="error-badge">✗</span>';
+  }
+  else if (t === 'memory_retrieve') title = `${fmtNum(d.num_retrieved)} memories · ${escHtml((d.query||'').slice(0,40))}`;
+  else if (t === 'memory_store')    title = `[${escHtml(d.category||'')}] ${escHtml((d.content||'').slice(0,60))}`;
+  else if (t === 'memory_skip')     title = escHtml(d.reason||'');
+  else if (t === 'context_inject')  title = `${fmtNum(d.memory_count)} memories · ~${fmtNum(d.token_estimate)} tokens`;
+  else if (t === 'reflection_critique') title = `score ${d.score}/10`;
+  else if (t === 'reflection_revision') title = d.was_revised ? 'revised' : 'accepted';
+  else if (t === 'session_end') title = `${fmtNum(d.total_turns)} turns · ${d.duration_seconds}s`;
+
+  return `${badge}
+    <span class="card-title">${title}</span>
+    ${meta}
+    <span class="card-time">${fmtTime(ev.timestamp)}</span>
+    <span class="card-chevron ${DEFAULT_OPEN.has(t)?'open':''}">▶</span>`;
+}
+
+function createCard(ev, idx) {
+  const t = ev.event_type;
+  const card = document.createElement('div');
+  card.className = `event-card type-${t}`;
+  card.dataset.type = t;
+  card.dataset.idx = idx;
+
+  const header = document.createElement('div');
+  header.className = 'card-header';
+  header.innerHTML = buildCardHeader(ev);
+
+  const body = document.createElement('div');
+  body.className = 'card-body' + (DEFAULT_OPEN.has(t) ? ' visible' : '');
+  body.innerHTML = buildCardBody(ev);
+
+  header.addEventListener('click', () => {
+    const open = body.classList.toggle('visible');
+    header.querySelector('.card-chevron').classList.toggle('open', open);
+  });
+
+  card.appendChild(header);
+  card.appendChild(body);
+  return card;
+}
+
+function updateSummary() {
+  if (!allEvents.length) return;
+
+  const sid = allEvents[0].session_id || '—';
+  document.getElementById('stat-session').textContent = sid.slice(0,8) + '…';
+
+  // Derive live counts from events
+  const turns     = allEvents.filter(e => e.event_type === 'user_turn').length;
+  const toolCalls = allEvents.filter(e => e.event_type === 'tool_call').length;
+  const memStores = allEvents.filter(e => e.event_type === 'memory_store').length;
+  const responses = allEvents.filter(e => e.event_type === 'llm_response');
+  const tokIn  = responses.reduce((s,e) => s + (e.data.input_tokens||0), 0);
+  const tokOut = responses.reduce((s,e) => s + (e.data.output_tokens||0), 0);
+  const llmCalls  = responses.length;
+
+  // Try to get final stats from session_end
+  const endEv = allEvents.find(e => e.event_type === 'session_end');
+  if (endEv) {
+    const d = endEv.data || {};
+    document.getElementById('stat-turns').textContent    = fmtNum(d.total_turns);
+    document.getElementById('stat-tokens').textContent   = `${fmtNum(d.total_input_tokens)} / ${fmtNum(d.total_output_tokens)}`;
+    document.getElementById('stat-tools').textContent    = fmtNum(d.total_tool_calls);
+    document.getElementById('stat-duration').textContent = `${d.duration_seconds}s`;
+    sessionEnded = true;
+    document.getElementById('live-dot').classList.add('stopped');
+    document.getElementById('live-label').textContent = 'ended';
+  } else {
+    document.getElementById('stat-turns').textContent  = turns;
+    document.getElementById('stat-tokens').textContent = `${fmtNum(tokIn)} / ${fmtNum(tokOut)}`;
+    document.getElementById('stat-tools').textContent  = toolCalls;
+  }
+
+  // ── Sidebar stats ─────────────────────────────────────────────────────────
+  const startEv = allEvents.find(e => e.event_type === 'session_start');
+  const sd = startEv ? startEv.data || {} : {};
+
+  const parts = [];
+  parts.push(sidebarStat('Session ID', `<span style="color:var(--muted);font-size:10px">${escHtml(sid)}</span>`));
+  if (sd.model)  parts.push(sidebarStat('Model', `<span class="pill">${escHtml(sd.model)}</span>`));
+  if (sd.cwd)    parts.push(sidebarStat('CWD', escHtml(sd.cwd)));
+  if (startEv) {
+    try {
+      const d = new Date(startEv.timestamp);
+      const started = d.toLocaleString('en-US', {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false, timeZone: 'America/Los_Angeles',
+      });
+      parts.push(sidebarStat('Started', escHtml(started)));
+    } catch { parts.push(sidebarStat('Started', escHtml(startEv.timestamp))); }
+  }
+  parts.push(sidebarStat('Turns',      fmtNum(turns)));
+  parts.push(sidebarStat('LLM calls',  fmtNum(llmCalls)));
+  parts.push(sidebarStat('Tool calls', fmtNum(toolCalls)));
+  parts.push(sidebarStat('Tokens in',  fmtNum(tokIn)));
+  parts.push(sidebarStat('Tokens out', fmtNum(tokOut)));
+  parts.push(sidebarStat('Memories stored', fmtNum(memStores)));
+  if (endEv) {
+    const ed = endEv.data || {};
+    parts.push(sidebarStat('Duration', `${ed.duration_seconds}s`));
+  }
+
+  document.getElementById('sidebar-stats-body').innerHTML = parts.join('');
+}
+
+function rebuildFilters() {
+  const counts = {};
+  for (const ev of allEvents) {
+    counts[ev.event_type] = (counts[ev.event_type]||0) + 1;
+  }
+
+  const list = document.getElementById('filter-list');
+  list.innerHTML = '';
+  const types = Object.keys(counts).sort();
+
+  for (const t of types) {
+    if (!(t in filters)) filters[t] = true;
+    const row = document.createElement('label');
+    row.className = 'filter-row';
+    row.innerHTML = `
+      <input type="checkbox" ${filters[t]?'checked':''} data-type="${escHtml(t)}">
+      <span class="filter-dot" style="background:${colorFor(t)}"></span>
+      <span class="filter-label">${labelFor(t)}</span>
+      <span class="filter-count">${counts[t]}</span>
+    `;
+    row.querySelector('input').addEventListener('change', (e) => {
+      filters[t] = e.target.checked;
+      applyFilters();
+    });
+    list.appendChild(row);
+  }
+}
+
+function applyFilters() {
+  const cards = document.querySelectorAll('.event-card');
+  cards.forEach(card => {
+    const t = card.dataset.type;
+    card.style.display = (filters[t] !== false) ? '' : 'none';
+  });
+}
+
+let prevCount = 0;
+
+async function fetchEvents() {
+  try {
+    const resp = await fetch('/api/events');
+    if (!resp.ok) return;
+    const events = await resp.json();
+
+    if (events.length === prevCount) return;
+
+    const timeline = document.getElementById('timeline');
+    const empty = document.getElementById('empty-state');
+
+    if (events.length === 0) {
+      empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+
+    // Append only new events
+    for (let i = prevCount; i < events.length; i++) {
+      allEvents.push(events[i]);
+      const card = createCard(events[i], i);
+      timeline.appendChild(card);
+    }
+    prevCount = events.length;
+
+    rebuildFilters();
+    applyFilters();
+    updateSummary();
+  } catch (e) {
+    // silently ignore fetch errors (server not yet ready / session ended)
+  }
+}
+
+function collapseAll() {
+  document.querySelectorAll('.card-body').forEach(b => b.classList.remove('visible'));
+  document.querySelectorAll('.card-chevron').forEach(c => c.classList.remove('open'));
+}
+
+function expandAll() {
+  document.querySelectorAll('.card-body').forEach(b => b.classList.add('visible'));
+  document.querySelectorAll('.card-chevron').forEach(c => c.classList.add('open'));
+}
+
+// Initial load + auto-refresh every 2s
+fetchEvents();
+const refreshInterval = setInterval(() => {
+  if (sessionEnded) {
+    clearInterval(refreshInterval);
+    return;
+  }
+  fetchEvents();
+}, 2000);
+</script>
+</body>
+</html>

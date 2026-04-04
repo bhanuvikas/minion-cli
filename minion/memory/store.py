@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..llm.base import LLMClient
+from ..tracing import get_tracer
 from .config import MemoryConfig
 from .embedder import Embedder
 from .extractor import ConsolidationResult, MemoryExtractor
@@ -97,10 +98,24 @@ class MemoryStore:
 
         query_hits = [r for r in query_hits if r.superseded_by is None and r.id not in core_ids]
 
-        return core + query_hits[: self._config.top_k]
+        results = core + query_hits[: self._config.top_k]
+        get_tracer().emit(
+            "memory_retrieve",
+            query=query,
+            num_retrieved=len(results),
+            memories=[r.content for r in results],
+        )
+        return results
 
     def store(self, record: MemoryRecord) -> None:
         """Write a memory record to disk and update the vector index."""
+        get_tracer().emit(
+            "memory_store",
+            content=record.content,
+            type=record.type,
+            category=getattr(record, "category", ""),
+            scope=record.scope,
+        )
         records_dir = self._records_dir_for(record)
         records_dir.mkdir(parents=True, exist_ok=True)
         file_path = records_dir / f"{record.id}.md"
@@ -131,6 +146,7 @@ class MemoryStore:
         to consolidate — preventing duplicates from accumulating over time.
         """
         if not self._config.trigger.should_extract(prompt, response):
+            get_tracer().emit("memory_skip", reason="trigger_not_met")
             return []
 
         project_path = str(self._project_dir.parent.parent)  # <cwd>

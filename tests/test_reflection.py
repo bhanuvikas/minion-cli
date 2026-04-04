@@ -40,7 +40,7 @@ def _refine_response(content: str = "def improved(): pass") -> LLMResponse:
     )
 
 
-def _mock_client_passing(score: int = 8) -> MagicMock:
+def _mock_client_passing(score: int = SCORE_THRESHOLD) -> MagicMock:
     """Client whose critique passes on the first call (score >= threshold)."""
     client = MagicMock()
     client.complete.return_value = _critique_response(score)
@@ -237,7 +237,7 @@ class TestReflectFunction:
         assert result.rounds == 1
 
     def test_was_refined_false_when_no_refinement_needed(self):
-        client = _mock_client_passing(score=9)
+        client = _mock_client_passing(score=SCORE_THRESHOLD)
         result = reflect("prompt", "response", client, ReflectionConfig(depth=2))
         assert result.was_refined is False
 
@@ -251,22 +251,22 @@ class TestReflectFunction:
         result = reflect("prompt", "original", client, ReflectionConfig(depth=1))
         assert result.rounds == 1
 
-    def test_rounds_count_zero_when_passes_immediately(self):
+    def test_rounds_count_one_when_passes_immediately(self):
         client = _mock_client_passing()
         result = reflect("prompt", "response", client, ReflectionConfig(depth=2))
         assert result.rounds == 1   # one critique call, no refine
 
     def test_critiques_list_populated(self):
-        client = _mock_client_passing(score=8)
+        client = _mock_client_passing(score=SCORE_THRESHOLD)
         result = reflect("prompt", "response", client, ReflectionConfig(depth=1))
         assert len(result.critiques) == 1
-        assert result.critiques[0].score == 8
+        assert result.critiques[0].score == SCORE_THRESHOLD
 
     def test_final_score_reflects_last_critique(self):
-        # Need depth=2 so the second critique (pass_score=9) is actually reached
-        client = _mock_client_failing_then_passing(fail_score=4, pass_score=9)
+        # Need depth=2 so the second critique (pass_score=SCORE_THRESHOLD) is actually reached
+        client = _mock_client_failing_then_passing(fail_score=4, pass_score=SCORE_THRESHOLD)
         result = reflect("prompt", "response", client, ReflectionConfig(depth=2))
-        assert result.final_score == 9
+        assert result.final_score == SCORE_THRESHOLD
 
     def test_original_response_preserved_in_result(self):
         client = _mock_client_failing_then_passing(refined_text="new version")

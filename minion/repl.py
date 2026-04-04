@@ -36,6 +36,7 @@ from .prompts import build_system_prompt
 from .runner import run_prompt
 from .session import list_sessions, load, save
 from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
+from .tracing import get_tracer
 
 # ─── REPL session state ───────────────────────────────────────────────────────
 
@@ -509,6 +510,13 @@ def run_repl(
     project_context = build_project_context(project_cwd)
     base_system_prompt = build_system_prompt(project_context)
 
+    get_tracer().emit(
+        "session_start",
+        model=getattr(client, "model_id", "unknown"),
+        system_prompt=base_system_prompt,
+        cwd=str(project_cwd),
+    )
+
     if project_context.manifest:
         console.print(f"[muted]Project: {project_context.label}[/]\n")
     if project_context.minion_md:
@@ -544,12 +552,15 @@ def run_repl(
             user_input = session.prompt(you_prompt)
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
+            get_tracer().finalize()
             break
 
         user_input = user_input.strip()
         if not user_input:
             console.print()
             continue
+
+        get_tracer().emit("user_turn", text=user_input)
 
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store
@@ -565,6 +576,13 @@ def run_repl(
                 memories = memory_store.retrieve(user_input)
             augmented_prompt = inject_memories(base_system_prompt, memories)
             memory_tokens = (len(augmented_prompt) - len(base_system_prompt)) // 4
+            if memories:
+                get_tracer().emit(
+                    "context_inject",
+                    memory_count=len(memories),
+                    token_estimate=memory_tokens,
+                    memories=[m.content for m in memories],
+                )
 
         if state.debug:
             console.print(f"[muted]── debug: system prompt ───────────────────[/]")
