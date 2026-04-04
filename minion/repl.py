@@ -51,6 +51,8 @@ class ReplState:
     verbose: bool = False     # show critique text and diffs when True
     memory_enabled: bool = True  # False = private mode: skip injection + extraction
     debug: bool = False       # print full system prompt before each LLM call
+    active_plan: Optional[Path] = None         # path to the current plan file
+    active_plan_goal: Optional[str] = None     # goal text stored alongside path
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -73,6 +75,7 @@ REPL_COMMANDS = {
     "/save":    "Save session: /save <name>",
     "/load":    "Load session: /load <name>",
     "/resume":  "Pick a saved session from a dropdown and load it",
+    "/plan":    "Plan a task: /plan <goal> | /plan execute [file] | /plan list | /plan clear",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -209,6 +212,22 @@ def _load_session(name: str, conversation: Conversation) -> None:
         print_error(str(e))
 
 
+def _display_plan(content: str, path: Path) -> None:
+    """Render a plan document in a Rich panel with Markdown formatting."""
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+
+    console.print(
+        Panel(
+            Markdown(content),
+            title=f"[bold {YELLOW}]Mission Plan[/]",
+            subtitle=f"[muted]{path}[/]",
+            expand=False,
+            border_style="dim",
+        )
+    )
+
+
 def _handle_slash_command(
     raw: str,
     client: LLMClient,
@@ -216,6 +235,7 @@ def _handle_slash_command(
     project_context: ProjectContext | None = None,
     state: ReplState | None = None,
     memory_store: MemoryStore | None = None,
+    base_system_prompt: str = "",
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -462,6 +482,110 @@ def _handle_slash_command(
             _load_session(name, conversation)
         return True
 
+    if cmd == "/plan":
+        from .planner import PlanResult, create_plan, execute_plan
+        from .planner.creator import _refine_plan
+        from .planner.storage import list_plans, plans_dir
+
+        # /plan (bare) — show status
+        if not arg:
+            if state and state.active_plan:
+                console.print(f"[{YELLOW}]Active plan:[/] {state.active_plan}")
+                console.print(f"[muted]Goal: {state.active_plan_goal or '(unknown)'}[/]")
+                console.print(f"[muted]Use /plan execute to run · /plan clear to discard.[/]")
+            else:
+                console.print(f"[muted]No active plan. Use /plan <goal> to create one.[/]")
+            return True
+
+        # /plan clear
+        if arg.lower() == "clear":
+            if state:
+                state.active_plan = None
+                state.active_plan_goal = None
+            console.print(f"[muted]Plan cleared.[/]")
+            return True
+
+        # /plan list
+        if arg.lower() == "list":
+            plans = list_plans()
+            if not plans:
+                console.print(f"[muted]No saved plans in {plans_dir()}[/]")
+            else:
+                console.print(f"[{YELLOW}]Saved plans:[/]")
+                for p in plans:
+                    size_kb = p.stat().st_size / 1024
+                    console.print(f"  [{BLUE}]{p.name}[/] [muted]({size_kb:.1f} KB)[/]")
+            return True
+
+        # /plan execute [filename]
+        if arg.lower() == "execute" or arg.lower().startswith("execute "):
+            filename = arg[8:].strip()
+            if filename:
+                plan_path = plans_dir() / filename
+                if not plan_path.exists():
+                    print_error(f"Plan not found: {plan_path}")
+                    return True
+                plan_goal = filename
+            elif state and state.active_plan:
+                plan_path = state.active_plan
+                plan_goal = state.active_plan_goal or str(plan_path.stem)
+            else:
+                print_error("No active plan. Use /plan <goal> to create one first.")
+                return True
+            console.print()
+            execute_plan(plan_path, client, conversation, base_system_prompt, state or ReplState())
+            return True
+
+        # /plan <goal> — create a new plan
+        goal = arg
+        console.print()
+        result = create_plan(goal, client, project_context)
+        if result is None:
+            return True
+
+        if state:
+            state.active_plan = result.path
+            state.active_plan_goal = goal
+
+        _display_plan(result.content, result.path)
+
+        # ── Refinement loop ───────────────────────────────────────────────────
+        refinement_round = 0
+        while True:
+            try:
+                feedback = console.input(f"\n[bold {YELLOW}]refine[/] › ")
+            except (KeyboardInterrupt, EOFError):
+                console.print(f"\n[muted]Plan saved. Use /plan execute to run later.[/]")
+                break
+
+            feedback = feedback.strip()
+            if feedback.lower() in ("ok", "yes", "y", "execute", ""):
+                console.print()
+                execute_plan(result.path, client, conversation, base_system_prompt, state or ReplState())
+                break
+            elif feedback.lower() in ("cancel", "abort", "quit", "q"):
+                console.print(
+                    f"[muted]Plan saved at {result.path}. "
+                    f"Use /plan execute to run later.[/]"
+                )
+                break
+            else:
+                console.print()
+                refinement_round += 1
+                revised = _refine_plan(result.content, feedback, goal, client)
+                if revised:
+                    from .planner.storage import save_plan as _save_plan
+                    _save_plan(revised, goal)
+                    result = PlanResult(path=result.path, content=revised, goal=goal)
+                    _display_plan(revised, result.path)
+                    get_tracer().emit(
+                        "plan_refined",
+                        plan_path=str(result.path),
+                        feedback=feedback,
+                        refinement_round=refinement_round,
+                    )
+        return True
+
     if cmd.startswith("/"):
         console.print(
             f"[muted]Unknown command '{cmd}'. "
@@ -563,7 +687,8 @@ def run_repl(
         get_tracer().emit("user_turn", text=user_input)
 
         if _handle_slash_command(
-            user_input, client, conversation, project_context, state, memory_store
+            user_input, client, conversation, project_context, state, memory_store,
+            base_system_prompt=base_system_prompt,
         ):
             console.print()
             continue
@@ -583,6 +708,16 @@ def run_repl(
                     token_estimate=memory_tokens,
                     memories=[m.content for m in memories],
                 )
+
+        # ── Plan reference injection (lightweight — 3 lines pointing to plan file) ──
+        if state.active_plan and state.active_plan.exists():
+            goal_hint = state.active_plan_goal or state.active_plan.stem
+            augmented_prompt += (
+                f"\n\n## Recently Executed Plan\n"
+                f"Goal: {goal_hint}\n"
+                f"Path: {state.active_plan}\n"
+                f"Use read_file on this path if it is relevant to the current request."
+            )
 
         if state.debug:
             console.print(f"[muted]── debug: system prompt ───────────────────[/]")
