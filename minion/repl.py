@@ -539,7 +539,10 @@ def _handle_slash_command(
         # /plan <goal> — create a new plan
         goal = arg
         console.print()
-        result = create_plan(goal, client, project_context)
+        # Pass recent plain-text messages as context so the planner is aware
+        # of what the user discussed before invoking /plan.
+        recent = [m for m in conversation.messages if isinstance(m.content, str)][-8:]
+        result = create_plan(goal, client, project_context, recent_messages=recent or None)
         if result is None:
             return True
 
@@ -550,40 +553,54 @@ def _handle_slash_command(
         _display_plan(result.content, result.path)
 
         # ── Refinement loop ───────────────────────────────────────────────────
+        import questionary
+
+        _PLAN_CHOICES = ["Execute plan", "Refine plan", "Save without executing"]
         refinement_round = 0
         while True:
             try:
-                feedback = console.input(f"\n[bold {YELLOW}]refine[/] › ")
+                choice = questionary.select(
+                    "What would you like to do?",
+                    choices=_PLAN_CHOICES,
+                ).ask()
             except (KeyboardInterrupt, EOFError):
-                console.print(f"\n[muted]Plan saved. Use /plan execute to run later.[/]")
-                break
+                choice = None
 
-            feedback = feedback.strip()
-            if feedback.lower() in ("ok", "yes", "y", "execute", ""):
-                console.print()
-                execute_plan(result.path, client, conversation, base_system_prompt, state or ReplState())
-                break
-            elif feedback.lower() in ("cancel", "abort", "quit", "q"):
+            if choice is None or choice == "Save without executing":
                 console.print(
                     f"[muted]Plan saved at {result.path}. "
                     f"Use /plan execute to run later.[/]"
                 )
                 break
-            else:
+
+            if choice == "Execute plan":
                 console.print()
-                refinement_round += 1
-                revised = _refine_plan(result.content, feedback, goal, client)
-                if revised:
-                    from .planner.storage import save_plan as _save_plan
-                    _save_plan(revised, goal)
-                    result = PlanResult(path=result.path, content=revised, goal=goal)
-                    _display_plan(revised, result.path)
-                    get_tracer().emit(
-                        "plan_refined",
-                        plan_path=str(result.path),
-                        feedback=feedback,
-                        refinement_round=refinement_round,
-                    )
+                execute_plan(result.path, client, conversation, base_system_prompt, state or ReplState())
+                break
+
+            # "Refine plan" — ask for feedback text
+            try:
+                feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
+            except (KeyboardInterrupt, EOFError):
+                console.print(f"\n[muted]Plan saved. Use /plan execute to run later.[/]")
+                break
+            feedback = feedback.strip()
+            if not feedback:
+                continue
+            console.print()
+            refinement_round += 1
+            revised = _refine_plan(result.content, feedback, goal, client)
+            if revised:
+                from .planner.storage import save_plan as _save_plan
+                _save_plan(revised, goal)
+                result = PlanResult(path=result.path, content=revised, goal=goal)
+                _display_plan(revised, result.path)
+                get_tracer().emit(
+                    "plan_refined",
+                    plan_path=str(result.path),
+                    feedback=feedback,
+                    refinement_round=refinement_round,
+                )
         return True
 
     if cmd.startswith("/"):
