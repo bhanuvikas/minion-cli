@@ -76,12 +76,12 @@ class TestMemoryCommand:
 
     def test_memory_on_sets_flag(self, tmp_path):
         state = ReplState(memory_enabled=False)
-        _dispatch("/memory on", memory_store=_make_store(tmp_path), state=state)
+        _dispatch("/memory --on", memory_store=_make_store(tmp_path), state=state)
         assert state.memory_enabled is True
 
     def test_memory_off_clears_flag(self, tmp_path):
         state = ReplState(memory_enabled=True)
-        _dispatch("/memory off", memory_store=_make_store(tmp_path), state=state)
+        _dispatch("/memory --off", memory_store=_make_store(tmp_path), state=state)
         assert state.memory_enabled is False
 
     def test_memory_no_arg_returns_true(self, tmp_path):

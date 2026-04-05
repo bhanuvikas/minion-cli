@@ -64,10 +64,10 @@ REPL_COMMANDS = {
     "/init":    "Create a MINION.md template in the current directory",
     "/model":   "Interactively change provider, model, and API keys",
     "/context": "Show context window usage and token breakdown",
-    "/reflect": "Self-refine: /reflect on | /reflect 2 | /reflect off | /reflect",
-    "/verbose": "Verbose output: /verbose on | /verbose off | /verbose",
-    "/debug":   "Debug mode: /debug on | /debug off | /debug",
-    "/memory":  "Memory status/toggle: /memory | /memory on | /memory off",
+    "/reflect": "Self-refine: /reflect --on | /reflect 2 | /reflect --off | /reflect",
+    "/verbose": "Verbose output: /verbose --on | /verbose --off | /verbose",
+    "/debug":   "Debug mode: /debug --on | /debug --off | /debug",
+    "/memory":  "Memory status/toggle: /memory | /memory --on | /memory --off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
@@ -75,7 +75,7 @@ REPL_COMMANDS = {
     "/save":    "Save session: /save <name>",
     "/load":    "Load session: /load <name>",
     "/resume":  "Pick a saved session from a dropdown and load it",
-    "/plan":    "Plan a task: /plan <goal> | /plan execute [file] | /plan list | /plan clear",
+    "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -293,10 +293,10 @@ def _handle_slash_command(
             if not arg:
                 status = "off" if state.reflect_depth == 0 else f"on (depth={state.reflect_depth})"
                 console.print(f"[{YELLOW}]Reflection:[/] {status}")
-            elif arg == "off":
+            elif arg == "--off":
                 state.reflect_depth = 0
                 console.print(f"[{YELLOW}]Reflection off.[/]")
-            elif arg == "on":
+            elif arg == "--on":
                 state.reflect_depth = 1
                 console.print(f"[{YELLOW}]Reflection on[/] [muted](depth=1)[/]")
             else:
@@ -306,7 +306,7 @@ def _handle_slash_command(
                         f"[{YELLOW}]Reflection on[/] [muted](depth={state.reflect_depth})[/]"
                     )
                 except ValueError:
-                    print_error("Usage: /reflect [on | off | <depth 1-3>]")
+                    print_error("Usage: /reflect [--on | --off | <depth 1-3>]")
         return True
 
     if cmd == "/verbose":
@@ -314,14 +314,14 @@ def _handle_slash_command(
             if not arg:
                 status = "on" if state.verbose else "off"
                 console.print(f"[{YELLOW}]Verbose:[/] {status}")
-            elif arg == "on":
+            elif arg == "--on":
                 state.verbose = True
                 console.print(f"[{YELLOW}]Verbose on.[/]")
-            elif arg == "off":
+            elif arg == "--off":
                 state.verbose = False
                 console.print(f"[{YELLOW}]Verbose off.[/]")
             else:
-                print_error("Usage: /verbose [on | off]")
+                print_error("Usage: /verbose [--on | --off]")
         return True
 
     if cmd == "/debug":
@@ -329,14 +329,14 @@ def _handle_slash_command(
             if not arg:
                 status = "on" if state.debug else "off"
                 console.print(f"[{YELLOW}]Debug:[/] {status}")
-            elif arg == "on":
+            elif arg == "--on":
                 state.debug = True
                 console.print(f"[{YELLOW}]Debug on.[/] [muted]System prompt and other debug info will be printed each turn.[/]")
-            elif arg == "off":
+            elif arg == "--off":
                 state.debug = False
                 console.print(f"[{YELLOW}]Debug off.[/]")
             else:
-                print_error("Usage: /debug [on | off]")
+                print_error("Usage: /debug [--on | --off]")
         return True
 
     if cmd == "/memory":
@@ -352,14 +352,14 @@ def _handle_slash_command(
                     )
                 else:
                     console.print(f"[{YELLOW}]Memory:[/] {status}")
-            elif arg == "on":
+            elif arg == "--on":
                 state.memory_enabled = True
                 console.print(f"[{YELLOW}]Memory on.[/]")
-            elif arg == "off":
+            elif arg == "--off":
                 state.memory_enabled = False
                 console.print(f"[{YELLOW}]Memory off.[/]")
             else:
-                print_error("Usage: /memory [on | off]")
+                print_error("Usage: /memory [--on | --off]")
         return True
 
     if cmd == "/remember":
@@ -492,21 +492,21 @@ def _handle_slash_command(
             if state and state.active_plan:
                 console.print(f"[{YELLOW}]Active plan:[/] {state.active_plan}")
                 console.print(f"[muted]Goal: {state.active_plan_goal or '(unknown)'}[/]")
-                console.print(f"[muted]Use /plan execute to run · /plan clear to discard.[/]")
+                console.print(f"[muted]Use /plan --execute to run · /plan --clear to discard.[/]")
             else:
                 console.print(f"[muted]No active plan. Use /plan <goal> to create one.[/]")
             return True
 
-        # /plan clear
-        if arg.lower() == "clear":
+        # /plan --clear
+        if arg.lower() == "--clear":
             if state:
                 state.active_plan = None
                 state.active_plan_goal = None
             console.print(f"[muted]Plan cleared.[/]")
             return True
 
-        # /plan list
-        if arg.lower() == "list":
+        # /plan --list
+        if arg.lower() == "--list":
             plans = list_plans()
             if not plans:
                 console.print(f"[muted]No saved plans in {plans_dir()}[/]")
@@ -517,9 +517,9 @@ def _handle_slash_command(
                     console.print(f"  [{BLUE}]{p.name}[/] [muted]({size_kb:.1f} KB)[/]")
             return True
 
-        # /plan execute [filename]
-        if arg.lower() == "execute" or arg.lower().startswith("execute "):
-            filename = arg[8:].strip()
+        # /plan --execute [filename]
+        if arg.lower() == "--execute" or arg.lower().startswith("--execute "):
+            filename = arg[9:].strip()
             if filename:
                 plan_path = plans_dir() / filename
                 if not plan_path.exists():
@@ -569,7 +569,7 @@ def _handle_slash_command(
             if choice is None or choice == "Save without executing":
                 console.print(
                     f"[muted]Plan saved at {result.path}. "
-                    f"Use /plan execute to run later.[/]"
+                    f"Use /plan --execute to run later.[/]"
                 )
                 break
 
@@ -582,7 +582,7 @@ def _handle_slash_command(
             try:
                 feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
             except (KeyboardInterrupt, EOFError):
-                console.print(f"\n[muted]Plan saved. Use /plan execute to run later.[/]")
+                console.print(f"\n[muted]Plan saved. Use /plan --execute to run later.[/]")
                 break
             feedback = feedback.strip()
             if not feedback:
