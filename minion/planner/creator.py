@@ -175,18 +175,40 @@ def create_plan(
     goal: str,
     client: LLMClient,
     project_context=None,
+    recent_messages=None,
 ) -> Optional[PlanResult]:
     """Explore the codebase with read-only tools and produce a markdown plan.
 
     Uses a fresh Conversation isolated from the main REPL history so planner
     tool calls don't pollute the execution context.
+
+    recent_messages: optional list of recent plain-text Message objects from the
+    REPL conversation. Injected as context before the goal so the planner is
+    aware of things the user discussed before invoking /plan.
+
     Returns None if the planner fails or is interrupted.
     """
     t_start = _time.monotonic()
     get_tracer().emit("plan_start", goal=goal)
 
     conv = Conversation()
+
+    context_block = ""
+    if recent_messages:
+        lines = []
+        for m in recent_messages:
+            if isinstance(m.content, str) and m.content.strip():
+                label = "User" if m.role == "user" else "Assistant"
+                lines.append(f"{label}: {m.content.strip()}")
+        if lines:
+            context_block = (
+                "Recent conversation context (may be relevant to your planning):\n"
+                + "\n\n".join(lines)
+                + "\n\n---\n\n"
+            )
+
     user_message = (
+        f"{context_block}"
         f"{goal}\n\n"
         "First, explore the codebase using your available tools. Read relevant "
         "files, list directories, search for patterns. Understand what exists "
