@@ -209,7 +209,7 @@ def create_plan(
 
     user_message = (
         f"{context_block}"
-        f"{goal}\n\n"
+        f"**Planning goal:** {goal}\n\n"
         "First, explore the codebase using your available tools. Read relevant "
         "files, list directories, search for patterns. Understand what exists "
         "before writing anything.\n"
