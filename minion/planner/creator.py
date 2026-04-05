@@ -329,6 +329,7 @@ def execute_plan(
         augmented,
         reflect_config=reflect_config,
         verbose=state.verbose,
+        max_iterations=40,
     )
 
     get_tracer().emit("plan_complete", plan_path=str(plan_path))
