@@ -106,6 +106,29 @@ class TestRunPromptErrorHandling:
             run_prompt("hello", client, Conversation(), _SYSTEM_PROMPT)
         mock_err.assert_called_once_with("ANTHROPIC_API_KEY not set")
 
+    def test_exception_emits_llm_error_trace(self):
+        """A stream exception must emit an llm_error trace event with error text and latency_ms."""
+        client = MagicMock()
+        client.stream.side_effect = RuntimeError("bad API key")
+        ctx = _make_status_ctx()
+        emitted: list[dict] = []
+
+        def _capture_emit(event_type, **kwargs):
+            emitted.append({"type": event_type, **kwargs})
+
+        with patch("minion.runner.console") as mc, \
+             patch("minion.runner.print_error"), \
+             patch("minion.runner.get_tracer") as mock_tracer:
+            mc.status.return_value = ctx
+            mock_tracer.return_value.emit.side_effect = _capture_emit
+            run_prompt("hello", client, Conversation(), _SYSTEM_PROMPT)
+
+        error_events = [e for e in emitted if e["type"] == "llm_error"]
+        assert len(error_events) == 1
+        assert "bad API key" in error_events[0]["error"]
+        assert "latency_ms" in error_events[0]
+        assert isinstance(error_events[0]["latency_ms"], int)
+
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 
