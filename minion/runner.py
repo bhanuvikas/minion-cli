@@ -280,24 +280,26 @@ def run_prompt(
     reflect_config: Optional[ReflectionConfig] = None,
     verbose: bool = False,
     memory_tokens: int = 0,
+    max_iterations: Optional[int] = None,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
-    Loops up to MAX_ITERATIONS. Each iteration is one LLM call; if the model
-    requests tool use the results are observed and the loop continues. The loop
-    exits when the model signals end_turn or dry_run stops it after the first
-    tool-use iteration.
+    Loops up to max_iterations (defaults to MAX_ITERATIONS). Each iteration is
+    one LLM call; if the model requests tool use the results are observed and
+    the loop continues. The loop exits when the model signals end_turn or
+    dry_run stops it after the first tool-use iteration.
 
     When reflect_config is provided and depth > 0, runs the self-refine loop
     after the final end_turn response before returning.
     """
+    limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
     executor = ToolExecutor(dry_run=dry_run)
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
     side_effects_occurred = False
 
-    for _ in range(MAX_ITERATIONS):
+    for _ in range(limit):
         # ── One LLM call ──────────────────────────────────────────────────────
         result = _stream_one_iteration(client, conversation, system_prompt)
         if result is None:
@@ -342,7 +344,7 @@ def run_prompt(
 
     else:
         # for/else fires when the loop exhausted all iterations without a break
-        print_iteration_limit(MAX_ITERATIONS)
+        print_iteration_limit(limit)
 
     # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
     system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
