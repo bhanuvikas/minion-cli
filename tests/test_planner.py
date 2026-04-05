@@ -343,7 +343,7 @@ class TestPlanReplIntegration:
         state.active_plan_goal = "old goal"
 
         with patch("minion.repl.console"):
-            _handle_slash_command("/plan clear", MagicMock(), MagicMock(), state=state)
+            _handle_slash_command("/plan --clear", MagicMock(), MagicMock(), state=state)
 
         assert state.active_plan is None
         assert state.active_plan_goal is None
@@ -356,7 +356,7 @@ class TestPlanReplIntegration:
             patch("minion.repl.console"),
             patch("minion.planner.storage.list_plans", return_value=[]) as mock_list,
         ):
-            _handle_slash_command("/plan list", MagicMock(), MagicMock())
+            _handle_slash_command("/plan --list", MagicMock(), MagicMock())
 
         mock_list.assert_called_once()
 
@@ -376,7 +376,7 @@ class TestPlanReplIntegration:
             patch("minion.planner.creator.run_prompt") as mock_run,
         ):
             _handle_slash_command(
-                "/plan execute",
+                "/plan --execute",
                 MagicMock(),
                 MagicMock(),
                 state=state,
