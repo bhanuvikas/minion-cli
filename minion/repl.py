@@ -12,7 +12,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .skills.registry import SkillRegistry
 
 import typer
 from prompt_toolkit import PromptSession
@@ -236,6 +239,7 @@ def _handle_slash_command(
     state: ReplState | None = None,
     memory_store: MemoryStore | None = None,
     base_system_prompt: str = "",
+    skill_registry: "SkillRegistry | None" = None,
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -603,6 +607,24 @@ def _handle_slash_command(
                 )
         return True
 
+    if cmd == "/skills":
+        if skill_registry:
+            for name, skill in skill_registry.items():
+                console.print(
+                    f"  [bold {BLUE}]/{name:<14}[/] [{skill.source}] {skill.description}"
+                )
+        else:
+            console.print("[muted]No skills loaded.[/]")
+        return True
+
+    # Skill dispatch — check registry before falling through to unknown-command
+    if skill_registry:
+        skill = skill_registry.get(cmd[1:])
+        if skill is not None:
+            from .skills.runner import execute_skill
+            execute_skill(skill, arg, client, conversation, base_system_prompt, skill_registry, state)
+            return True
+
     if cmd.startswith("/"):
         console.print(
             f"[muted]Unknown command '{cmd}'. "
@@ -681,6 +703,15 @@ def run_repl(
         debug=debug,
     )
 
+    # ── Skills setup ──────────────────────────────────────────────────────────
+    from .skills import load_skill_registry
+    skill_registry = load_skill_registry()
+    REPL_COMMANDS["/skills"] = "List all available skills"
+    for _skill_name, _skill in skill_registry.items():
+        _cmd_key = f"/{_skill_name}"
+        if _cmd_key not in REPL_COMMANDS:   # never overwrite built-in commands
+            REPL_COMMANDS[_cmd_key] = f"[skill] {_skill.description}"
+
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(),
@@ -706,6 +737,7 @@ def run_repl(
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,
             base_system_prompt=base_system_prompt,
+            skill_registry=skill_registry,
         ):
             console.print()
             continue

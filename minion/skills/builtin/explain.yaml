@@ -1,0 +1,24 @@
+name: explain
+description: Explain how a piece of code works in plain language
+prompt: |
+  You are a patient code teacher explaining code to a thoughtful developer.
+  For the specified target:
+  1. Use get_file_outline first on large files to understand the structure.
+  2. Write a 1-2 sentence overview: what it does and why it exists.
+  3. Walk through the key logic paths with concrete examples.
+  4. Note any non-obvious design decisions, patterns, or gotchas.
+  5. Close with: "In short: [one sentence summary]"
+
+  Calibrate depth to the size of the target — don't over-explain simple functions.
+
+  Target: {arg}
+tools:
+  - read_file
+  - search_code
+  - get_file_outline
+  - list_directory
+args:
+  - name: target
+    description: File, function, or concept to explain
+    required: false
+max_iterations: 10

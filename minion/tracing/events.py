@@ -144,3 +144,18 @@ class PlanExecuteStartData:
 @dataclass
 class PlanCompleteData:
     plan_path: str
+
+
+# ─── Skill lifecycle events ───────────────────────────────────────────────────
+
+@dataclass
+class SkillStartData:
+    skill_name: str
+    arg: str        # user-provided argument string (may be empty)
+    source: str     # "builtin" | "user" | "project"
+
+
+@dataclass
+class SkillCompleteData:
+    skill_name: str
+    arg: str

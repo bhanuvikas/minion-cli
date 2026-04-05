@@ -115,6 +115,7 @@ def _stream_one_iteration(
     client: LLMClient,
     conversation: Conversation,
     system_prompt: str,
+    tools: Optional[list] = None,
 ) -> Optional[_IterationResult]:
     """Run one LLM streaming call and collect all events into a structured result.
 
@@ -123,18 +124,19 @@ def _stream_one_iteration(
     and pops the pending user message so conversation history stays consistent.
     """
     _llm_start = _time.monotonic()
+    effective_tools = tools if tools is not None else TOOL_DEFINITIONS
     get_tracer().emit(
         "llm_request",
         message_count=len(conversation.messages),
         messages=_serialize_messages(conversation.messages),
         system=system_prompt,
-        tools=TOOL_DEFINITIONS,
-        tool_names=[t["name"] for t in TOOL_DEFINITIONS],
+        tools=effective_tools,
+        tool_names=[t["name"] for t in effective_tools],
         model=getattr(client, "model_id", "unknown"),
         estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
     )
     try:
-        stream = client.stream(conversation.messages, system=system_prompt, tools=TOOL_DEFINITIONS)
+        stream = client.stream(conversation.messages, system=system_prompt, tools=effective_tools)
         with console.status(_SPINNER_LABEL, spinner="dots"):
             first_event = next(stream, None)
     except Exception as e:
@@ -281,6 +283,7 @@ def run_prompt(
     verbose: bool = False,
     memory_tokens: int = 0,
     max_iterations: Optional[int] = None,
+    tools: Optional[list] = None,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -301,7 +304,7 @@ def run_prompt(
 
     for _ in range(limit):
         # ── One LLM call ──────────────────────────────────────────────────────
-        result = _stream_one_iteration(client, conversation, system_prompt)
+        result = _stream_one_iteration(client, conversation, system_prompt, tools=tools)
         if result is None:
             return  # error already displayed and user message popped
 

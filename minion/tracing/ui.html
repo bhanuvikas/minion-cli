@@ -367,6 +367,8 @@ const EVENT_COLORS = {
   plan_refined:         '#eab308',
   plan_execute_start:   '#eab308',
   plan_complete:        '#eab308',
+  skill_start:          '#10b981',
+  skill_complete:       '#10b981',
 };
 
 const EVENT_LABELS = {
@@ -390,10 +392,12 @@ const EVENT_LABELS = {
   plan_refined:         'Plan Refined',
   plan_execute_start:   'Plan Execute',
   plan_complete:        'Plan Complete',
+  skill_start:          'Skill Start',
+  skill_complete:       'Skill Complete',
 };
 
 // Default expansion: LLM and tool cards start open
-const DEFAULT_OPEN = new Set(['llm_request','llm_response','llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start']);
+const DEFAULT_OPEN = new Set(['llm_request','llm_response','llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start','skill_start']);
 
 let allEvents = [];
 let filters = {};  // event_type -> bool (shown)
@@ -551,6 +555,13 @@ function buildCardBody(ev) {
     parts.push(fieldRow('plan length', `${fmtNum(d.plan_length_chars)} chars`));
   } else if (t === 'plan_complete') {
     parts.push(fieldRow('path', escHtml(d.plan_path||'')));
+  } else if (t === 'skill_start') {
+    parts.push(fieldRow('skill', `<strong>/${escHtml(d.skill_name||'')}</strong>`));
+    parts.push(fieldRow('source', escHtml(d.source||'')));
+    if (d.arg) parts.push(fieldRow('target', `<pre>${escHtml(d.arg)}</pre>`));
+  } else if (t === 'skill_complete') {
+    parts.push(fieldRow('skill', `<strong>/${escHtml(d.skill_name||'')}</strong>`));
+    if (d.arg) parts.push(fieldRow('target', escHtml(d.arg)));
   } else {
     parts.push(`<pre>${escHtml(JSON.stringify(d, null, 2))}</pre>`);
   }
@@ -595,6 +606,15 @@ function buildCardHeader(ev) {
   else if (t === 'plan_refined')       title = `round ${d.refinement_round} · ${escHtml((d.feedback||'').slice(0,60))}`;
   else if (t === 'plan_execute_start') title = escHtml((d.plan_path||'').split('/').pop()||'');
   else if (t === 'plan_complete')      title = escHtml((d.plan_path||'').split('/').pop()||'');
+  else if (t === 'skill_start') {
+    title = `/${escHtml(d.skill_name||'')}`;
+    if (d.arg) title += ` · ${escHtml(d.arg.slice(0,60))}`;
+    meta = `<span style="color:#10b981;font-size:11px;padding:1px 6px;background:rgba(16,185,129,0.1);border-radius:3px">${escHtml(d.source||'builtin')}</span>`;
+  }
+  else if (t === 'skill_complete') {
+    title = `/${escHtml(d.skill_name||'')}`;
+    meta = `<span style="color:#10b981;font-size:11px;padding:1px 6px;background:rgba(16,185,129,0.1);border-radius:3px">✓ done</span>`;
+  }
   else if (t === 'session_end') title = `${fmtNum(d.total_turns)} turns · ${d.duration_seconds}s`;
 
   return `${badge}
