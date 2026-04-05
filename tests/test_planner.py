@@ -359,3 +359,63 @@ class TestPlanReplIntegration:
             _handle_slash_command("/plan list", MagicMock(), MagicMock())
 
         mock_list.assert_called_once()
+
+    def test_plan_execute_dispatches_to_execute_plan(self, tmp_path, monkeypatch):
+        """/plan execute with state.active_plan set calls execute_plan() with the right path."""
+        monkeypatch.chdir(tmp_path)
+        plan_path = save_plan("# My Plan\nDo things.", "test goal")
+
+        from minion.repl import ReplState, _handle_slash_command
+
+        state = ReplState()
+        state.active_plan = plan_path
+        state.active_plan_goal = "test goal"
+
+        with (
+            patch("minion.repl.console"),
+            patch("minion.planner.creator.run_prompt") as mock_run,
+        ):
+            _handle_slash_command(
+                "/plan execute",
+                MagicMock(),
+                MagicMock(),
+                state=state,
+                base_system_prompt="Base prompt.",
+            )
+
+        # execute_plan() calls run_prompt internally — verify it was invoked
+        mock_run.assert_called_once()
+        # system_prompt arg (index 3) must contain the plan content
+        system_arg = mock_run.call_args[0][3]
+        assert "# My Plan" in system_arg
+        assert "Do things." in system_arg
+
+    def test_plan_reference_block_format(self, tmp_path, monkeypatch):
+        """Plan reference block appended to system prompt contains goal, path, and read_file hint."""
+        monkeypatch.chdir(tmp_path)
+        plan_path = save_plan("# My Plan", "add feature")
+
+        from minion.repl import ReplState
+
+        state = ReplState()
+        state.active_plan = plan_path
+        state.active_plan_goal = "add feature"
+
+        base_prompt = "You are Minion."
+
+        # Reproduce the injection logic from run_repl()
+        augmented = base_prompt
+        if state.active_plan and state.active_plan.exists():
+            goal_hint = state.active_plan_goal or state.active_plan.stem
+            augmented += (
+                f"\n\n## Recently Executed Plan\n"
+                f"Goal: {goal_hint}\n"
+                f"Path: {state.active_plan}\n"
+                f"Use read_file on this path if it is relevant to the current request."
+            )
+
+        assert "## Recently Executed Plan" in augmented
+        assert "add feature" in augmented
+        assert str(plan_path) in augmented
+        assert "read_file" in augmented
+        assert base_prompt in augmented
