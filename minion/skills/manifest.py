@@ -33,6 +33,8 @@ class SkillManifest:
     steps: list[str] = field(default_factory=list)   # skill chaining
     max_iterations: int = 20
     source: str = "builtin"                # "builtin" | "user" | "project"
+    output_format: str = "stream"          # "stream" (live) | "markdown" (collect then render)
+    thinking_label: str = ""               # spinner text shown while collecting (output_format=markdown)
 
 
 def load_manifest(path: Path, source: str = "builtin") -> SkillManifest:
@@ -71,4 +73,6 @@ def load_manifest(path: Path, source: str = "builtin") -> SkillManifest:
         steps=data.get("steps") or [],
         max_iterations=data.get("max_iterations", 20),
         source=source,
+        output_format=data.get("output_format", "stream"),
+        thinking_label=data.get("thinking_label", ""),
     )

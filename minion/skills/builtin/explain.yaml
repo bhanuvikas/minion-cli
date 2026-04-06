@@ -22,3 +22,5 @@ args:
     description: File, function, or concept to explain
     required: false
 max_iterations: 10
+output_format: markdown
+thinking_label: "Reading and explaining"

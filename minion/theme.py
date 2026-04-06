@@ -138,7 +138,7 @@ def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[
         f"{snapshot.input_tokens:,} in / {snapshot.output_tokens:,} out  ·  "
         f"context: {snapshot.current_context_tokens:,}/{snapshot.context_limit:,} "
         f"({snapshot.context_pct:.1f}%)  ·  "
-        f"session total: {snapshot.session_total:,}[/]"
+        f"billed: {snapshot.session_total:,}[/]"
     )
 
 
@@ -176,7 +176,7 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
     # ── Session ────────────────────────────────────────────────────────────────
     turn_word = "turn" if snapshot.turn_count == 1 else "turns"
     console.print(
-        f"  Session total: [{YELLOW}]{snapshot.session_total:,}[/] tokens  "
+        f"  Billed (cumulative): [{YELLOW}]{snapshot.session_total:,}[/] tokens  "
         f"[muted]({snapshot.turn_count} {turn_word})[/]"
     )
 

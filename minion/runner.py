@@ -116,12 +116,20 @@ def _stream_one_iteration(
     conversation: Conversation,
     system_prompt: str,
     tools: Optional[list] = None,
+    silent: bool = False,
+    spinner_label: Optional[str] = None,
 ) -> Optional[_IterationResult]:
     """Run one LLM streaming call and collect all events into a structured result.
 
-    Shows the spinner while waiting for the first event. Writes TextChunk text
-    directly to stdout as it arrives. Returns None on error (already displayed)
-    and pops the pending user message so conversation history stays consistent.
+    When silent=False (default): shows spinner until first token, then streams
+    text directly to stdout as it arrives.
+
+    When silent=True: suppresses all stdout output and keeps the spinner active
+    for the full stream duration. Used by skills with output_format=markdown so
+    the response can be collected and rendered as rich Markdown after the loop.
+
+    Returns None on error (already displayed) and pops the pending user message
+    so conversation history stays consistent.
     """
     _llm_start = _time.monotonic()
     effective_tools = tools if tools is not None else TOOL_DEFINITIONS
@@ -135,9 +143,10 @@ def _stream_one_iteration(
         model=getattr(client, "model_id", "unknown"),
         estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
     )
+    effective_spinner = spinner_label or _SPINNER_LABEL
     try:
         stream = client.stream(conversation.messages, system=system_prompt, tools=effective_tools)
-        with console.status(_SPINNER_LABEL, spinner="dots"):
+        with console.status(effective_spinner, spinner="dots"):
             first_event = next(stream, None)
     except Exception as e:
         get_tracer().emit(
@@ -163,11 +172,12 @@ def _stream_one_iteration(
     def _process(event) -> None:
         nonlocal printed_prefix, stop_reason, usage
         if isinstance(event, TextChunk):
-            if not printed_prefix:
-                console.print(f"[bold {BLUE}]minion[/] › ", end="")
-                printed_prefix = True
-            sys.stdout.write(event.text)
-            sys.stdout.flush()
+            if not silent:
+                if not printed_prefix:
+                    console.print(f"[bold {BLUE}]minion[/] › ", end="")
+                    printed_prefix = True
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
             text_chunks.append(event.text)
         elif isinstance(event, ToolUseBlock):
             tool_blocks.append(event)
@@ -189,14 +199,31 @@ def _stream_one_iteration(
                 latency_ms=int((_time.monotonic() - _llm_start) * 1000),
             )
 
-    _process(first_event)
-    try:
-        for event in stream:
-            _process(event)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C mid-stream — stop cleanly, no traceback
+    if silent:
+        # Spinner covers the full LLM streaming call.
+        # Narration text is collected but not printed yet — we decide after:
+        #   tool_use turn → flush narration so user sees LLM's reasoning
+        #   end_turn      → suppress (the markdown Panel replaces it)
+        with console.status(effective_spinner, spinner="dots"):
+            _process(first_event)
+            try:
+                for event in stream:
+                    _process(event)
+            except KeyboardInterrupt:
+                pass
+        if stop_reason == "tool_use" and text_chunks:
+            console.print(f"[bold {BLUE}]minion[/] › ", end="")
+            sys.stdout.write("".join(text_chunks))
+            print()
+    else:
+        _process(first_event)
+        try:
+            for event in stream:
+                _process(event)
+        except KeyboardInterrupt:
+            pass  # Ctrl+C mid-stream — stop cleanly, no traceback
 
-    if text_chunks:
+    if text_chunks and not silent:
         print()  # newline after streamed text
 
     return _IterationResult(
@@ -284,6 +311,9 @@ def run_prompt(
     memory_tokens: int = 0,
     max_iterations: Optional[int] = None,
     tools: Optional[list] = None,
+    render_markdown: bool = False,
+    markdown_title: str = "",
+    spinner_label: Optional[str] = None,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -304,7 +334,10 @@ def run_prompt(
 
     for _ in range(limit):
         # ── One LLM call ──────────────────────────────────────────────────────
-        result = _stream_one_iteration(client, conversation, system_prompt, tools=tools)
+        result = _stream_one_iteration(
+            client, conversation, system_prompt, tools=tools,
+            silent=render_markdown, spinner_label=spinner_label,
+        )
         if result is None:
             return  # error already displayed and user message popped
 
@@ -314,6 +347,17 @@ def run_prompt(
         # ── End turn: model finished responding ───────────────────────────────
         if result.stop_reason == "end_turn":
             conversation.add_assistant(result.full_text, result.usage)
+            if render_markdown and result.full_text:
+                from rich.markdown import Markdown
+                from rich.panel import Panel
+                console.print(
+                    Panel(
+                        Markdown(result.full_text),
+                        title=f"[bold {YELLOW}]{markdown_title or 'Response'}[/]",
+                        expand=False,
+                        border_style="dim",
+                    )
+                )
             if reflect_config and reflect_config.depth > 0:
                 if side_effects_occurred:
                     console.print("[muted]  ↳ reflection skipped (side-effecting tools were used)[/]")

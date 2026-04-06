@@ -13,7 +13,7 @@ import questionary
 
 from ..config import MINION_STYLE
 from ..llm.base import ToolUseBlock
-from ..theme import print_tool_call, print_tool_error, print_tool_result
+from ..theme import console, print_tool_call, print_tool_error, print_tool_result
 from ..tracing import get_tracer
 from .definitions import DANGEROUS_TOOLS
 from .implementations import (
@@ -24,6 +24,15 @@ from .implementations import (
     search_code,
     write_file,
 )
+
+_TOOL_SPINNER_LABELS: dict[str, str] = {
+    "write_file":       "[muted]writing...[/]",
+    "run_shell":        "[muted]running...[/]",
+    "read_file":        "[muted]reading...[/]",
+    "list_directory":   "[muted]listing...[/]",
+    "search_code":      "[muted]searching...[/]",
+    "get_file_outline": "[muted]analyzing...[/]",
+}
 
 _DISPATCH: dict = {
     "read_file":        read_file,
@@ -74,7 +83,9 @@ class ToolExecutor:
 
         get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
-            result = fn(**inputs)
+            spinner_label = _TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
+            with console.status(spinner_label, spinner="dots"):
+                result = fn(**inputs)
             print_tool_result(result)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result

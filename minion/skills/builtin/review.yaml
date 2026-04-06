@@ -23,3 +23,5 @@ args:
     description: File path or directory to review
     required: false
 max_iterations: 15
+output_format: markdown
+thinking_label: "Reviewing code"

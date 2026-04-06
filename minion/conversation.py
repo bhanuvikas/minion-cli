@@ -33,6 +33,7 @@ MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "claude-3-5-haiku":  200_000,
     "claude-3-haiku":    200_000,
     "claude-sonnet-4":   200_000,
+    "claude-haiku-4":    200_000,
     "claude-opus-4":     200_000,
     "gpt-4o":            128_000,
     "gpt-4o-mini":       128_000,

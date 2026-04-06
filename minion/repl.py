@@ -8,6 +8,7 @@ The actual LLM call is delegated to runner.run_prompt() so this file
 stays focused on input/UX concerns.
 """
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.lexers import Lexer
+from prompt_toolkit.styles import Style
 
 from .config import MINION_STYLE, run_model_config
 from .reflection import ReflectionConfig
@@ -100,6 +103,49 @@ class _SlashCompleter(Completer):
                     display=cmd,
                     display_meta=description,
                 )
+
+
+# ─── Input syntax highlighting ────────────────────────────────────────────────
+
+_MENTION_RE = re.compile(r'@[\w./\-]+')
+
+class _InputLexer(Lexer):
+    """Highlight /commands (yellow) and @file mentions (blue) as the user types."""
+
+    def lex_document(self, document):
+        text = document.text
+
+        def get_line(lineno):
+            tokens = []
+            pos = 0
+
+            # Highlight the leading /command token (up to first whitespace)
+            if text.startswith('/'):
+                m = re.match(r'/\S*', text)
+                if m:
+                    tokens.append(('class:slash-command', m.group()))
+                    pos = m.end()
+
+            # Scan the remainder for @path mentions
+            remaining = text[pos:]
+            cursor = 0
+            for m in _MENTION_RE.finditer(remaining):
+                if m.start() > cursor:
+                    tokens.append(('', remaining[cursor:m.start()]))
+                tokens.append(('class:at-mention', m.group()))
+                cursor = m.end()
+            if cursor < len(remaining):
+                tokens.append(('', remaining[cursor:]))
+
+            return tokens
+
+        return get_line
+
+
+_INPUT_STYLE = Style.from_dict({
+    'slash-command': f'bold {YELLOW}',   # /command → gold, matches "you ›" prompt
+    'at-mention':    f'bold {BLUE}',     # @file.py → blue, matches "minion ›" prefix
+})
 
 
 # ─── Key bindings ─────────────────────────────────────────────────────────────
@@ -695,7 +741,7 @@ def run_repl(
         embedder=embedder,
     )
 
-    conversation = Conversation()
+    conversation = Conversation(model=client.model_id)
     state = ReplState(
         reflect_depth=reflect_depth,
         verbose=verbose,
@@ -716,6 +762,8 @@ def run_repl(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(),
         key_bindings=_kb,
+        lexer=_InputLexer(),
+        style=_INPUT_STYLE,
     )
     you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
 
@@ -791,7 +839,8 @@ def run_repl(
         if state.memory_enabled:
             last_response = _get_last_response_text(conversation)
             if last_response:
-                extracted = memory_store.maybe_extract(user_input, last_response)
+                with console.status("[muted]saving memories...[/]", spinner="dots"):
+                    extracted = memory_store.maybe_extract(user_input, last_response)
                 if extracted and state.verbose:
                     console.print(
                         f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]"

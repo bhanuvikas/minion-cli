@@ -82,6 +82,13 @@ def execute_skill(
 
     get_tracer().emit("skill_start", skill_name=skill.name, arg=arg, source=skill.source)
 
+    render_markdown = skill.output_format == "markdown"
+    spinner_label = (
+        f"[yellow]🍌  {skill.thinking_label}...[/]"
+        if skill.thinking_label
+        else None
+    )
+
     run_prompt(
         user_msg,
         client,
@@ -91,6 +98,9 @@ def execute_skill(
         verbose=state.verbose if state else False,
         tools=_resolve_tools(skill.tools),
         max_iterations=skill.max_iterations,
+        render_markdown=render_markdown,
+        markdown_title=f"/{skill.name}",
+        spinner_label=spinner_label,
     )
 
     get_tracer().emit("skill_complete", skill_name=skill.name, arg=arg)

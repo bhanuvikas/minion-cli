@@ -121,15 +121,21 @@ def _stream_planner_iteration(
     client: LLMClient,
     conv: Conversation,
     tools: Optional[list],
+    spinner_label: str = "",
 ) -> tuple[str, list[ToolUseBlock], str]:
     """Run one planner streaming call.
+
+    Always collects the response silently — the plan document is rendered as a
+    Rich Markdown panel by the caller after the full loop completes, so streaming
+    the raw text to stdout would just produce redundant noise before the panel.
 
     Returns (full_text, tool_blocks, stop_reason).
     Raises on stream error (let caller handle).
     """
+    effective_spinner = spinner_label or f"[{YELLOW}]🍌  Planning...[/]"
     try:
         stream = client.stream(conv.messages, system=PLANNER_SYSTEM_PROMPT, tools=tools)
-        with console.status(f"[{YELLOW}]planning...[/]", spinner="dots"):
+        with console.status(effective_spinner, spinner="dots"):
             first_event = next(stream, None)
     except Exception:
         raise
@@ -140,30 +146,29 @@ def _stream_planner_iteration(
     text_chunks: list[str] = []
     tool_blocks: list[ToolUseBlock] = []
     stop_reason = "end_turn"
-    printed_prefix = False
 
     def _process(event) -> None:
-        nonlocal printed_prefix, stop_reason
+        nonlocal stop_reason
         if isinstance(event, TextChunk):
-            if not printed_prefix:
-                console.print(f"[bold {YELLOW}]planning[/] › ", end="")
-                printed_prefix = True
-            sys.stdout.write(event.text)
-            sys.stdout.flush()
             text_chunks.append(event.text)
         elif isinstance(event, ToolUseBlock):
             tool_blocks.append(event)
         elif isinstance(event, StreamComplete):
             stop_reason = event.stop_reason
 
-    _process(first_event)
-    try:
-        for event in stream:
-            _process(event)
-    except KeyboardInterrupt:
-        pass
+    with console.status(effective_spinner, spinner="dots"):
+        _process(first_event)
+        try:
+            for event in stream:
+                _process(event)
+        except KeyboardInterrupt:
+            pass
 
-    if text_chunks:
+    # Flush narration for tool-use turns so user sees LLM's reasoning.
+    # Final end_turn text is suppressed — the caller renders the markdown Panel.
+    if tool_blocks and text_chunks:
+        console.print(f"[bold {YELLOW}]planning[/] › ", end="")
+        sys.stdout.write("".join(text_chunks))
         print()
 
     return "".join(text_chunks), tool_blocks, stop_reason

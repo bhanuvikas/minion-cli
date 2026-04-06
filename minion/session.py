@@ -19,9 +19,12 @@ Session file format (version 1):
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Union
 
 from .conversation import Conversation
-from .llm.base import Message
+from .llm.base import (
+    ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock, Message,
+)
 
 SESSIONS_DIR = Path.home() / ".minion" / "sessions"
 
@@ -29,6 +32,45 @@ SESSIONS_DIR = Path.home() / ".minion" / "sessions"
 def _sessions_dir() -> Path:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     return SESSIONS_DIR
+
+
+def _serialize_content(content: Union[str, list]) -> Union[str, list]:
+    """Convert message content to a JSON-serializable form.
+
+    Plain-text content passes through unchanged. Content-block lists are
+    converted to typed dicts so json.dumps() can encode them.
+    """
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for block in content:
+        if isinstance(block, ContentTextBlock):
+            blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, ContentToolUseBlock):
+            blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        elif isinstance(block, ContentToolResultBlock):
+            blocks.append({"type": "tool_result", "tool_use_id": block.tool_use_id, "content": block.content})
+        else:
+            blocks.append(str(block))
+    return blocks
+
+
+def _deserialize_content(content: Union[str, list]) -> Union[str, list]:
+    """Reconstruct typed ContentBlocks from the serialized dict form."""
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for item in content:
+        t = item.get("type", "")
+        if t == "text":
+            blocks.append(ContentTextBlock(text=item["text"]))
+        elif t == "tool_use":
+            blocks.append(ContentToolUseBlock(id=item["id"], name=item["name"], input=item.get("input", {})))
+        elif t == "tool_result":
+            blocks.append(ContentToolResultBlock(tool_use_id=item["tool_use_id"], content=item["content"]))
+        else:
+            blocks.append(item)  # unknown type — keep as dict; tolerated by adapter
+    return blocks
 
 
 def save(conversation: Conversation, name: str) -> Path:
@@ -43,7 +85,7 @@ def save(conversation: Conversation, name: str) -> Path:
         "total_tokens": conversation.total_tokens,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "messages": [
-            {"role": m.role, "content": m.content}
+            {"role": m.role, "content": _serialize_content(m.content)}
             for m in conversation.messages
         ],
     }
@@ -61,7 +103,7 @@ def load(name: str) -> Conversation:
     conversation = Conversation(model=data.get("model", ""))
     conversation.total_tokens = data.get("total_tokens", 0)
     conversation.messages = [
-        Message(role=m["role"], content=m["content"])
+        Message(role=m["role"], content=_deserialize_content(m["content"]))
         for m in data.get("messages", [])
     ]
     return conversation
