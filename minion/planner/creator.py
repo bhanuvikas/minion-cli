@@ -96,9 +96,19 @@ _PLAN_INJECTION_HEADER = """
 ## Active Mission Plan
 
 The following plan has been approved by the user. Execute it step by step.
-Read each section carefully before beginning. Do not skip steps. After completing
-all implementation steps, confirm what was done and run any verification commands
-listed in the plan.
+Read each section carefully before beginning. Do not skip steps.
+
+Execution discipline — follow these strictly:
+- Work through each section in order. Do not skip or reorder steps.
+- Run each verification command from the plan's Verification section ONCE.
+  If a test passes, move on. Do not re-run tests that have already passed.
+- Do NOT create summary documents, README files, or /tmp files unless the
+  plan explicitly lists them as a deliverable.
+- Once verification passes, stop and report the outcome in one short paragraph.
+  Do not loop back for "one final check" after already confirming success.
+- If the user asks you to commit: run git add + git commit, show the commit
+  hash and the list of changed files, then stop. Do not write a commit
+  summary document — the plan already captures what changed and why.
 
 ---
 
