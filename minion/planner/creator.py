@@ -72,19 +72,26 @@ Match the goal to one of two document types:
     ## File Map
     (every file to be created or modified, one line each: `filename` — what changes)
     ## Implementation Order
-    (numbered steps in exact sequence, with specific function/line references)
+    (numbered steps as coarse-grained phases, not micro-tasks — e.g. "Add
+    HighScoreManager class", "Integrate with game loop", "Write tests".
+    Each step is a meaningful milestone. Include specific function/line references.)
     ## Key Design Decisions
     (choices made during planning and why — table or bullets)
     ## Gotchas
     (things that could go wrong, things to watch for during implementation)
     ## Verification
-    (commands to run, things to check to confirm the implementation works)
+    (2–4 specific commands only — e.g. run tests, import the module, smoke-test
+    the feature. Do not pad with exhaustive test matrices or repeat passing checks.)
+    ## Summary Document
+    (path where the executor should write a brief post-execution summary, e.g.
+    `IMPLEMENTATION_NOTES.md`. One file, written once after verification passes.)
 
 QUALITY RULES (apply to all documents):
 - Be self-contained. A reader should understand completely without additional context.
 - Use exact file paths (relative to project root), function names, and line numbers.
 - Never write "TODO: figure this out" or equivalent implementation placeholders.
 - Write in the third person: "The implementation adds..." not "I will add...".
+- Implementation Order steps are coarse phases, not a micro-task checklist.
 - Deferred work must be listed explicitly in a Deferred or Out of Scope section.
 - The document ends when it ends — no trailing commentary or sign-off.
 """
@@ -102,13 +109,14 @@ Execution discipline — follow these strictly:
 - Work through each section in order. Do not skip or reorder steps.
 - Run each verification command from the plan's Verification section ONCE.
   If a test passes, move on. Do not re-run tests that have already passed.
-- Do NOT create summary documents, README files, or /tmp files unless the
-  plan explicitly lists them as a deliverable.
-- Once verification passes, stop and report the outcome in one short paragraph.
-  Do not loop back for "one final check" after already confirming success.
+- Once verification passes, write ONE brief execution summary (what was built,
+  how to run it, any known caveats) at the path the plan specifies — or at
+  IMPLEMENTATION_NOTES.md if the plan does not name one. Write it once, then stop.
+- Never write to /tmp/ or create duplicate summary files.
+- Do not loop back for "one final check" after already confirming success.
 - If the user asks you to commit: run git add + git commit, show the commit
-  hash and the list of changed files, then stop. Do not write a commit
-  summary document — the plan already captures what changed and why.
+  hash and the list of changed files, then stop. The summary doc and the plan
+  already capture what changed — do not write a separate commit summary.
 
 ---
 
