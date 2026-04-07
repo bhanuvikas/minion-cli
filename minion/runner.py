@@ -197,6 +197,7 @@ def _stream_one_iteration(
                 output_tokens=event.output_tokens,
                 model=event.model,
                 latency_ms=int((_time.monotonic() - _llm_start) * 1000),
+                tool_calls=[{"name": tb.name, "input": tb.input} for tb in tool_blocks],
             )
 
     if silent:

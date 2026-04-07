@@ -756,7 +756,7 @@ def run_repl(
     for _skill_name, _skill in skill_registry.items():
         _cmd_key = f"/{_skill_name}"
         if _cmd_key not in REPL_COMMANDS:   # never overwrite built-in commands
-            REPL_COMMANDS[_cmd_key] = f"[skill] {_skill.description}"
+            REPL_COMMANDS[_cmd_key] = _skill.description
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
