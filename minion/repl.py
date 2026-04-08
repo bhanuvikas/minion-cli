@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from .mcp.manager import MCPManager
     from .skills.registry import SkillRegistry
 
 import typer
@@ -82,6 +83,7 @@ REPL_COMMANDS = {
     "/load":    "Load session: /load <name>",
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
+    "/mcp":     "MCP servers: /mcp or /mcp list",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -681,6 +683,37 @@ def _handle_slash_command(
     return False
 
 
+# ─── /mcp command handler ────────────────────────────────────────────────────
+
+def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> None:
+    """Handle the /mcp slash command — lists connected servers and their tools."""
+    from collections import defaultdict
+
+    parts = raw.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if arg not in ("", "list", "status"):
+        console.print(f"[muted]Usage: /mcp [list|status][/]")
+        return
+
+    summary = mcp_manager.server_summary()
+    if not summary:
+        console.print(
+            f"[muted]No MCP tools connected. "
+            f"Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
+        )
+        return
+
+    total = sum(len(tools) for _, tools in summary)
+    console.print(f"[bold {YELLOW}]MCP servers[/] [muted]({total} tools total):[/]")
+    for server_name, tool_names in summary:
+        console.print(
+            f"  [bold {BLUE}]{server_name}[/] [muted]({len(tool_names)} tools)[/]"
+        )
+        for t in tool_names:
+            console.print(f"    [muted]·[/] {t}")
+
+
 # ─── REPL entry point ─────────────────────────────────────────────────────────
 
 def _get_last_response_text(conversation: Conversation) -> Optional[str]:
@@ -758,6 +791,17 @@ def run_repl(
         if _cmd_key not in REPL_COMMANDS:   # never overwrite built-in commands
             REPL_COMMANDS[_cmd_key] = _skill.description
 
+    # ── MCP setup ─────────────────────────────────────────────────────────────
+    from .mcp import load_mcp_manager
+    mcp_manager = load_mcp_manager(project_cwd)
+    if mcp_manager.has_tools():
+        tool_count = len(mcp_manager.get_tool_definitions())
+        server_count = len(mcp_manager.server_summary())
+        console.print(
+            f"[muted]MCP: {tool_count} tool(s) from {server_count} server(s). "
+            f"Type /mcp to list.[/]\n"
+        )
+
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(),
@@ -772,6 +816,7 @@ def run_repl(
             user_input = session.prompt(you_prompt)
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
+            mcp_manager.shutdown()
             get_tracer().finalize()
             break
 
@@ -781,6 +826,13 @@ def run_repl(
             continue
 
         get_tracer().emit("user_turn", text=user_input)
+
+        # /mcp is handled inline so it can access mcp_manager without threading
+        # it through _handle_slash_command's already-long signature.
+        if user_input.startswith("/mcp"):
+            _handle_mcp_command(user_input, mcp_manager)
+            console.print()
+            continue
 
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,
@@ -832,6 +884,7 @@ def run_repl(
             reflect_config=reflect_config,
             verbose=state.verbose,
             memory_tokens=memory_tokens,
+            mcp_manager=mcp_manager,
         )
         console.print()
 

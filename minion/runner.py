@@ -315,6 +315,7 @@ def run_prompt(
     render_markdown: bool = False,
     markdown_title: str = "",
     spinner_label: Optional[str] = None,
+    mcp_manager=None,
 ) -> None:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -327,7 +328,16 @@ def run_prompt(
     after the final end_turn response before returning.
     """
     limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
-    executor = ToolExecutor(dry_run=dry_run)
+
+    # Build effective tool list.  MCP tools are only appended when tools=None
+    # (all-tools mode).  Skills that declare an explicit tool subset are
+    # intentionally not given MCP tools — they opted into a specific capability.
+    if tools is None and mcp_manager is not None and mcp_manager.has_tools():
+        effective_tools: Optional[list] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
+    else:
+        effective_tools = tools  # None → _stream_one_iteration uses TOOL_DEFINITIONS
+
+    executor = ToolExecutor(dry_run=dry_run, mcp_manager=mcp_manager)
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
@@ -336,7 +346,7 @@ def run_prompt(
     for _ in range(limit):
         # ── One LLM call ──────────────────────────────────────────────────────
         result = _stream_one_iteration(
-            client, conversation, system_prompt, tools=tools,
+            client, conversation, system_prompt, tools=effective_tools,
             silent=render_markdown, spinner_label=spinner_label,
         )
         if result is None:
@@ -384,7 +394,9 @@ def run_prompt(
                 break
 
             for tb in result.tool_blocks:
-                if tb.name in SIDE_EFFECTING_TOOLS:
+                # MCP tools are conservatively treated as side-effecting to
+                # prevent reflection from running after unknown operations.
+                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name:
                     side_effects_occurred = True
 
             _execute_tools(result.tool_blocks, executor, conversation)

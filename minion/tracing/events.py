@@ -159,3 +159,40 @@ class SkillStartData:
 class SkillCompleteData:
     skill_name: str
     arg: str
+
+
+# ─── MCP lifecycle events ─────────────────────────────────────────────────────
+
+@dataclass
+class MCPServerConnectData:
+    server_name: str
+    command: list[str]      # subprocess argv (no secrets)
+    tool_count: int         # 0 on failure
+    success: bool
+    latency_ms: int
+    error: Optional[str] = None
+
+
+@dataclass
+class MCPToolCallData:
+    server_name: str        # extracted from namespaced name (before __)
+    tool_name: str          # raw tool name (after __)
+    namespaced_name: str    # full "server__tool" as seen by executor
+    inputs: dict
+
+
+@dataclass
+class MCPToolResultData:
+    server_name: str
+    tool_name: str
+    output: str             # full result text
+    success: bool
+    latency_ms: int
+
+
+@dataclass
+class MCPErrorData:
+    server_name: str        # "" if not server-specific
+    tool_name: str          # "" if not tool-specific
+    error: str
+    context: str = ""       # "connect" | "call" | "shutdown"

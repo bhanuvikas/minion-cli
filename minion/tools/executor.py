@@ -48,11 +48,17 @@ class ToolExecutor:
     """Executes tool calls from the agent loop.
 
     dry_run=True: prints what would run but never calls implementations.
-    Confirmation is requested for DANGEROUS_TOOLS before executing.
+    Confirmation is requested for DANGEROUS_TOOLS and dangerous MCP tools.
+
+    mcp_manager: if provided, tool names containing '__' are routed to the
+    matching MCP server rather than the native _DISPATCH table. Tools flagged
+    as destructive (via MCP annotations or confirm_all server config) receive
+    the same confirmation prompt as native DANGEROUS_TOOLS.
     """
 
-    def __init__(self, dry_run: bool = False) -> None:
+    def __init__(self, dry_run: bool = False, mcp_manager=None) -> None:
         self.dry_run = dry_run
+        self._mcp_manager = mcp_manager  # type: MCPManager | None
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -77,6 +83,24 @@ class ToolExecutor:
 
         fn = _DISPATCH.get(name)
         if fn is None:
+            # MCP tool: namespaced as "server__tool"
+            if "__" in name and self._mcp_manager is not None:
+                if self._mcp_manager.is_dangerous(name):
+                    confirmed = questionary.confirm(
+                        f"  Allow {name}?",
+                        default=False,
+                        style=MINION_STYLE,
+                    ).ask()
+                    if not confirmed:
+                        result = "User declined tool execution."
+                        print_tool_result(result)
+                        return result
+                try:
+                    result = self._mcp_manager.call_tool(name, inputs)
+                except Exception as e:
+                    result = f"Error: {e}"
+                print_tool_result(result)
+                return result
             error = f"Unknown tool: '{name}'"
             print_tool_error(error)
             return f"Error: {error}"

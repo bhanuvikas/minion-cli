@@ -145,3 +145,42 @@ def _list_skills() -> None:
     registry = load_skill_registry()
     for name, skill in registry.items():
         console.print(f"  [bold {YELLOW}]/{name:<14}[/] [{skill.source}] {skill.description}")
+
+
+# ─── `minion mcp` subcommand ──────────────────────────────────────────────────
+
+_mcp_app = typer.Typer(name="mcp", help="Manage MCP server connections.", add_completion=False)
+app.add_typer(_mcp_app, name="mcp")
+
+
+@_mcp_app.callback(invoke_without_command=True)
+def _mcp_main(ctx: typer.Context) -> None:
+    """List MCP-connected servers and tools. Run without subcommand to list all."""
+    if ctx.invoked_subcommand is None:
+        _list_mcp()
+
+
+@_mcp_app.command("list")
+def mcp_list() -> None:
+    """List all MCP servers and their tools (from ~/.minion/mcp.json and .minion/mcp.json)."""
+    _list_mcp()
+
+
+def _list_mcp() -> None:
+    from .mcp import load_mcp_manager
+    manager = load_mcp_manager(Path.cwd())
+    summary = manager.server_summary()
+    if not summary:
+        console.print(
+            "[muted]No MCP tools connected. "
+            "Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
+        )
+        manager.shutdown()
+        return
+    total = sum(len(tools) for _, tools in summary)
+    console.print(f"[bold {YELLOW}]MCP servers[/] [muted]({total} tools total):[/]")
+    for server_name, tool_names in summary:
+        console.print(f"  [bold {YELLOW}]{server_name}[/] [muted]({len(tool_names)} tools)[/]")
+        for t in tool_names:
+            console.print(f"    · {t}")
+    manager.shutdown()
