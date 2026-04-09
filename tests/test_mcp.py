@@ -455,45 +455,58 @@ def _prompt_get_response(messages: list[dict], req_id: int) -> dict:
 
 
 class TestMCPClientResources:
-    def test_connect_discovers_resources_when_capability_present(self):
-        """Client calls resources/list when server advertises 'resources' capability."""
+    def test_connect_sets_has_resources_capability_when_present(self):
+        """connect() sets _has_resources_capability=True when server advertises it."""
         process = _mock_process([
             _initialize_response_with_capabilities(req_id=1),
             _tools_list_response([], req_id=2),
-            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
-            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
+            _prompts_list_response([], req_id=3),
         ])
         with patch("subprocess.Popen", return_value=process):
             client = MCPClient("notes", _server_config(name="notes"))
             client.connect()
 
-        assert len(client.resources) == 2
-        assert client.resources[0].uri == "notes://ideas"
-        assert client.resources[1].name == "todo"
-        assert client.resources[0].server_name == "notes"
+        assert client._has_resources_capability is True
 
     def test_connect_skips_resources_when_capability_absent(self):
-        """Client must NOT call resources/list if server doesn't advertise resources."""
+        """Client does NOT set _has_resources_capability when server omits it."""
         process = _mock_process([
             _initialize_response_with_capabilities(req_id=1, capabilities={"tools": {}}),
             _tools_list_response([], req_id=2),
-            # No resources/list or prompts/list responses — if client calls them, readline would return EOF
+            # No resources/list or prompts/list — if client calls them, readline returns EOF
         ])
         with patch("subprocess.Popen", return_value=process):
             client = MCPClient("notes", _server_config(name="notes"))
             client.connect()
 
-        assert client.resources == []
+        assert client._has_resources_capability is False
         assert client.prompts == []
+
+    def test_list_resources_returns_live_resource_list(self):
+        """list_resources() calls resources/list fresh and returns MCPResource objects."""
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _prompts_list_response([], req_id=3),
+            _resources_list_response(_SAMPLE_RESOURCES, req_id=4),  # live call
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+            resources = client.list_resources()
+
+        assert len(resources) == 2
+        assert resources[0].uri == "notes://ideas"
+        assert resources[1].name == "todo"
+        assert resources[0].server_name == "notes"
 
     def test_read_resource_returns_text_content(self):
         """resources/read response is correctly parsed into a plain string."""
         process = _mock_process([
             _initialize_response_with_capabilities(req_id=1),
             _tools_list_response([], req_id=2),
-            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
-            _prompts_list_response([], req_id=4),
-            _resource_read_response("notes://ideas", "Build a banana OS", req_id=5),
+            _prompts_list_response([], req_id=3),
+            _resource_read_response("notes://ideas", "Build a banana OS", req_id=4),
         ])
         with patch("subprocess.Popen", return_value=process):
             client = MCPClient("notes", _server_config(name="notes"))
@@ -504,17 +517,11 @@ class TestMCPClientResources:
 
     def test_read_resource_returns_error_string_on_dead_process(self):
         """If the process dies mid-call, read_resource returns an error string (not raises)."""
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
-            _prompts_list_response([], req_id=4),
-        ])
+        process = _mock_process([])
         process.stdout.readline = MagicMock(side_effect=[
             _make_line(_initialize_response_with_capabilities(req_id=1)),
             _make_line(_tools_list_response([], req_id=2)),
-            _make_line(_resources_list_response(_SAMPLE_RESOURCES, req_id=3)),
-            _make_line(_prompts_list_response([], req_id=4)),
+            _make_line(_prompts_list_response([], req_id=3)),
             b"",  # EOF on resources/read request
         ])
         with patch("subprocess.Popen", return_value=process):
@@ -529,11 +536,11 @@ class TestMCPClientResources:
 
 class TestMCPClientPrompts:
     def test_connect_discovers_prompts_when_capability_present(self):
+        # connect() calls: initialize (id=1), tools/list (id=2), prompts/list (id=3)
         process = _mock_process([
             _initialize_response_with_capabilities(req_id=1),
             _tools_list_response([], req_id=2),
-            _resources_list_response([], req_id=3),
-            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
+            _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
         ])
         with patch("subprocess.Popen", return_value=process):
             client = MCPClient("notes", _server_config(name="notes"))
@@ -549,12 +556,12 @@ class TestMCPClientPrompts:
 
     def test_get_prompt_returns_messages(self):
         messages = [{"role": "user", "content": {"type": "text", "text": "Summarize my notes please."}}]
+        # connect() sequence + prompts/get call (id=4)
         process = _mock_process([
             _initialize_response_with_capabilities(req_id=1),
             _tools_list_response([], req_id=2),
-            _resources_list_response([], req_id=3),
-            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
-            _prompt_get_response(messages, req_id=5),
+            _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
+            _prompt_get_response(messages, req_id=4),
         ])
         with patch("subprocess.Popen", return_value=process):
             client = MCPClient("notes", _server_config(name="notes"))
@@ -575,19 +582,21 @@ class TestMCPManagerResources:
         client = MagicMock(spec=MCPClient)
         client.name = "notes"
         client.tools = []
-        client.resources = [
-            MCPResource(uri="notes://ideas", name="ideas", server_name="notes"),
-        ]
+        client._has_resources_capability = True
         client.prompts = [
             MCPPrompt(name="summarize_notes", server_name="notes"),
         ]
         client.get_tool_definitions.return_value = []
+        # list_resources() returns live data (dynamic)
+        client.list_resources.return_value = [
+            MCPResource(uri="notes://ideas", name="ideas", server_name="notes"),
+        ]
         client.read_resource.return_value = "Build a banana OS"
         client.get_prompt.return_value = [{"role": "user", "content": {"type": "text", "text": "Summarize…"}}]
         manager._clients["notes"] = client
         return manager
 
-    def test_has_resources_true_when_client_has_resources(self):
+    def test_has_resources_true_when_client_has_capability(self):
         manager = self._manager_with_resources()
         assert manager.has_resources() is True
 

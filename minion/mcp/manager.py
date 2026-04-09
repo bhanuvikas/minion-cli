@@ -87,8 +87,8 @@ class MCPManager:
         return any(client.tools for client in self._clients.values())
 
     def has_resources(self) -> bool:
-        """True if at least one connected server has at least one resource."""
-        return any(client.resources for client in self._clients.values())
+        """True if at least one connected server advertises the resources capability."""
+        return any(client._has_resources_capability for client in self._clients.values())
 
     def has_prompts(self) -> bool:
         """True if at least one connected server has at least one prompt template."""
@@ -173,11 +173,16 @@ class MCPManager:
     def read_resource(self, uri: str) -> str:
         """Read a resource by URI, routing to whichever server owns it.
 
-        Ownership is determined by which connected client's resource list
-        contains a matching URI. Returns an error string if no server owns it.
+        Ownership is determined by fetching a fresh resources/list from each
+        client that supports resources. This ensures newly created resources
+        (e.g. notes written during the session) are always findable.
+        Returns an error string if no server owns the URI.
         """
         for name, client in self._clients.items():
-            if any(r.uri == uri for r in client.resources):
+            if not client._has_resources_capability:
+                continue
+            live_resources = client.list_resources()
+            if any(r.uri == uri for r in live_resources):
                 get_tracer().emit("mcp_resource_read", server_name=name, uri=uri)
                 t0 = time.monotonic()
                 result = client.read_resource(uri)
@@ -224,17 +229,19 @@ class MCPManager:
         """Return a list of server info dicts for display.
 
         Each dict has keys: name, tools, resources, prompts.
-        tools/resources/prompts are lists of name strings (or URIs for resources).
+        Resources are fetched live (they change as files are created/deleted).
+        Prompts and tools are cached schema definitions fetched at connect time.
         """
-        return [
-            {
+        result = []
+        for name, client in self._clients.items():
+            live_resources = client.list_resources()  # fresh RPC call — reflects current state
+            result.append({
                 "name": name,
                 "tools": [t.name for t in client.tools],
-                "resources": [{"uri": r.uri, "name": r.name, "description": r.description} for r in client.resources],
+                "resources": [{"uri": r.uri, "name": r.name, "description": r.description} for r in live_resources],
                 "prompts": [{"name": p.name, "description": p.description, "arguments": [{"name": a.name, "required": a.required} for a in p.arguments]} for p in client.prompts],
-            }
-            for name, client in self._clients.items()
-        ]
+            })
+        return result
 
 
 def load_mcp_manager(cwd: Path | None = None) -> "MCPManager":

@@ -115,10 +115,10 @@ class MCPClient:
         self.config = config
         self._process: Optional[subprocess.Popen] = None
         self._next_id: int = 1
-        self.tools: list[MCPTool] = []          # populated by connect()
-        self.resources: list[MCPResource] = []  # populated by connect() if server supports resources
-        self.prompts: list[MCPPrompt] = []      # populated by connect() if server supports prompts
-        self._capabilities: dict = {}           # server-reported capabilities from initialize
+        self.tools: list[MCPTool] = []      # populated by connect()
+        self.prompts: list[MCPPrompt] = []  # populated by connect() (prompts are static schema)
+        self._capabilities: dict = {}       # server-reported capabilities from initialize
+        self._has_resources_capability: bool = False  # resources/list is supported
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -153,6 +153,7 @@ class MCPClient:
         if "serverInfo" not in init_result:
             raise RuntimeError("server did not return serverInfo in initialize response")
         self._capabilities = init_result.get("capabilities", {})
+        self._has_resources_capability = "resources" in self._capabilities
 
         # Notify server that initialization is complete (no response expected)
         self._send_notification("notifications/initialized")
@@ -162,13 +163,11 @@ class MCPClient:
         raw_tools = tools_resp.get("result", {}).get("tools", [])
         self.tools = [self._parse_tool(t) for t in raw_tools if isinstance(t, dict)]
 
-        # Discover resources if server advertises the capability
-        if "resources" in self._capabilities:
-            resources_resp = self._send_request("resources/list")
-            raw_resources = resources_resp.get("result", {}).get("resources", [])
-            self.resources = [self._parse_resource(r) for r in raw_resources if isinstance(r, dict)]
+        # Resources are NOT fetched here — they're dynamic (files get created/deleted).
+        # Call list_resources() on demand instead of caching a stale snapshot.
 
-        # Discover prompts if server advertises the capability
+        # Discover prompts if server advertises the capability.
+        # Prompts are static schema definitions (like tools), so caching is fine.
         if "prompts" in self._capabilities:
             prompts_resp = self._send_request("prompts/list")
             raw_prompts = prompts_resp.get("result", {}).get("prompts", [])
@@ -212,6 +211,22 @@ class MCPClient:
     def get_tool_definitions(self) -> list[dict]:
         """Return Anthropic-schema tool dicts with namespaced names."""
         return [t.to_anthropic_schema() for t in self.tools]
+
+    def list_resources(self) -> list[MCPResource]:
+        """Fetch the current resource list live from the server.
+
+        Resources are dynamic (notes get created and deleted), so we never
+        cache them. Each call issues a fresh resources/list RPC.
+        Returns [] if the server doesn't support resources or the call fails.
+        """
+        if not self._has_resources_capability:
+            return []
+        try:
+            resp = self._send_request("resources/list")
+            raw = resp.get("result", {}).get("resources", [])
+            return [self._parse_resource(r) for r in raw if isinstance(r, dict)]
+        except (IOError, RuntimeError):
+            return []
 
     def read_resource(self, uri: str) -> str:
         """Read a resource by URI and return its content as a string.
