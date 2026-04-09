@@ -395,3 +395,246 @@ class TestMCPAwareExecutor:
         executor = ToolExecutor(mcp_manager=None)
         result = executor.execute(self._tool_block("totally_unknown_tool", {}))
         assert "Unknown tool" in result or "Error" in result
+
+
+# ── TestMCPClientResources ────────────────────────────────────────────────────
+
+_SAMPLE_RESOURCES = [
+    {"uri": "notes://ideas", "name": "ideas", "description": "Note: ideas", "mimeType": "text/plain"},
+    {"uri": "notes://todo", "name": "todo", "description": "Note: todo", "mimeType": "text/plain"},
+]
+
+_SAMPLE_PROMPTS = [
+    {
+        "name": "summarize_notes",
+        "description": "Summarize all notes",
+        "arguments": [],
+    },
+    {
+        "name": "find_related",
+        "description": "Find related notes",
+        "arguments": [{"name": "topic", "description": "Topic", "required": True}],
+    },
+]
+
+
+def _initialize_response_with_capabilities(req_id: int = 1, capabilities: dict | None = None) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": capabilities if capabilities is not None else {"tools": {}, "resources": {}, "prompts": {}},
+            "serverInfo": {"name": "test-server", "version": "0.2.0"},
+        },
+    }
+
+
+def _resources_list_response(resources: list[dict], req_id: int) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": resources}}
+
+
+def _prompts_list_response(prompts: list[dict], req_id: int) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": prompts}}
+
+
+def _resource_read_response(uri: str, text: str, req_id: int) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]},
+    }
+
+
+def _prompt_get_response(messages: list[dict], req_id: int) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"description": "test prompt", "messages": messages},
+    }
+
+
+class TestMCPClientResources:
+    def test_connect_discovers_resources_when_capability_present(self):
+        """Client calls resources/list when server advertises 'resources' capability."""
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
+            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+
+        assert len(client.resources) == 2
+        assert client.resources[0].uri == "notes://ideas"
+        assert client.resources[1].name == "todo"
+        assert client.resources[0].server_name == "notes"
+
+    def test_connect_skips_resources_when_capability_absent(self):
+        """Client must NOT call resources/list if server doesn't advertise resources."""
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1, capabilities={"tools": {}}),
+            _tools_list_response([], req_id=2),
+            # No resources/list or prompts/list responses — if client calls them, readline would return EOF
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+
+        assert client.resources == []
+        assert client.prompts == []
+
+    def test_read_resource_returns_text_content(self):
+        """resources/read response is correctly parsed into a plain string."""
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
+            _prompts_list_response([], req_id=4),
+            _resource_read_response("notes://ideas", "Build a banana OS", req_id=5),
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+            result = client.read_resource("notes://ideas")
+
+        assert result == "Build a banana OS"
+
+    def test_read_resource_returns_error_string_on_dead_process(self):
+        """If the process dies mid-call, read_resource returns an error string (not raises)."""
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _resources_list_response(_SAMPLE_RESOURCES, req_id=3),
+            _prompts_list_response([], req_id=4),
+        ])
+        process.stdout.readline = MagicMock(side_effect=[
+            _make_line(_initialize_response_with_capabilities(req_id=1)),
+            _make_line(_tools_list_response([], req_id=2)),
+            _make_line(_resources_list_response(_SAMPLE_RESOURCES, req_id=3)),
+            _make_line(_prompts_list_response([], req_id=4)),
+            b"",  # EOF on resources/read request
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+            result = client.read_resource("notes://ideas")
+
+        assert result.startswith("Error")
+
+
+# ── TestMCPClientPrompts ──────────────────────────────────────────────────────
+
+class TestMCPClientPrompts:
+    def test_connect_discovers_prompts_when_capability_present(self):
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _resources_list_response([], req_id=3),
+            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+
+        assert len(client.prompts) == 2
+        assert client.prompts[0].name == "summarize_notes"
+        assert client.prompts[0].namespaced_name == "notes__summarize_notes"
+        find = client.prompts[1]
+        assert find.name == "find_related"
+        assert len(find.arguments) == 1
+        assert find.arguments[0].required is True
+
+    def test_get_prompt_returns_messages(self):
+        messages = [{"role": "user", "content": {"type": "text", "text": "Summarize my notes please."}}]
+        process = _mock_process([
+            _initialize_response_with_capabilities(req_id=1),
+            _tools_list_response([], req_id=2),
+            _resources_list_response([], req_id=3),
+            _prompts_list_response(_SAMPLE_PROMPTS, req_id=4),
+            _prompt_get_response(messages, req_id=5),
+        ])
+        with patch("subprocess.Popen", return_value=process):
+            client = MCPClient("notes", _server_config(name="notes"))
+            client.connect()
+            result = client.get_prompt("summarize_notes")
+
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert "Summarize" in result[0]["content"]["text"]
+
+
+# ── TestMCPManagerResources ───────────────────────────────────────────────────
+
+class TestMCPManagerResources:
+    def _manager_with_resources(self) -> MCPManager:
+        from minion.mcp.client import MCPResource, MCPPrompt
+        manager = MCPManager()
+        client = MagicMock(spec=MCPClient)
+        client.name = "notes"
+        client.tools = []
+        client.resources = [
+            MCPResource(uri="notes://ideas", name="ideas", server_name="notes"),
+        ]
+        client.prompts = [
+            MCPPrompt(name="summarize_notes", server_name="notes"),
+        ]
+        client.get_tool_definitions.return_value = []
+        client.read_resource.return_value = "Build a banana OS"
+        client.get_prompt.return_value = [{"role": "user", "content": {"type": "text", "text": "Summarize…"}}]
+        manager._clients["notes"] = client
+        return manager
+
+    def test_has_resources_true_when_client_has_resources(self):
+        manager = self._manager_with_resources()
+        assert manager.has_resources() is True
+
+    def test_has_prompts_true_when_client_has_prompts(self):
+        manager = self._manager_with_resources()
+        assert manager.has_prompts() is True
+
+    def test_read_resource_routes_to_owning_client(self):
+        manager = self._manager_with_resources()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            mock_tracer.return_value.emit = MagicMock()
+            result = manager.read_resource("notes://ideas")
+        manager._clients["notes"].read_resource.assert_called_once_with("notes://ideas")
+        assert result == "Build a banana OS"
+
+    def test_read_resource_unknown_uri_returns_error_string(self):
+        manager = self._manager_with_resources()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            mock_tracer.return_value.emit = MagicMock()
+            result = manager.read_resource("notes://nonexistent")
+        assert "Error" in result
+        assert "nonexistent" in result
+
+    def test_get_prompt_routes_to_correct_client(self):
+        manager = self._manager_with_resources()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            mock_tracer.return_value.emit = MagicMock()
+            result = manager.get_prompt("notes__summarize_notes")
+        manager._clients["notes"].get_prompt.assert_called_once_with("summarize_notes", None)
+        assert result[0]["role"] == "user"
+
+    def test_get_prompt_unknown_server_returns_error_messages(self):
+        manager = self._manager_with_resources()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            mock_tracer.return_value.emit = MagicMock()
+            result = manager.get_prompt("badserver__some_prompt")
+        assert len(result) == 1
+        assert "Error" in result[0]["content"]["text"]
+        assert "badserver" in result[0]["content"]["text"]
+
+    def test_server_summary_includes_resources_and_prompts(self):
+        manager = self._manager_with_resources()
+        summary = manager.server_summary()
+        assert len(summary) == 1
+        s = summary[0]
+        assert s["name"] == "notes"
+        assert len(s["resources"]) == 1
+        assert s["resources"][0]["uri"] == "notes://ideas"
+        assert len(s["prompts"]) == 1
+        assert s["prompts"][0]["name"] == "summarize_notes"

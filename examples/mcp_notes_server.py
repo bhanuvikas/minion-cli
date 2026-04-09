@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Example MCP server — notes storage.
 
-A self-contained MCP server that exposes four tools for reading and writing
-simple text notes to ~/.minion/notes/. Implements the MCP stdio transport
-(JSON-RPC 2.0 over stdin/stdout) with no external dependencies.
+A self-contained MCP server that exposes:
+  - 4 tools for reading and writing notes to ~/.minion/notes/
+  - Resources: each saved note is a URI-addressable resource (notes://title)
+  - Prompt templates: reusable prompts that inject note context into conversations
 
-This file is designed to be read alongside minion/mcp/client.py so you can
-see both sides of the protocol in the same codebase.
+Implements the MCP stdio transport (JSON-RPC 2.0 over stdin/stdout) with no
+external dependencies. Designed to be read alongside minion/mcp/client.py so
+you can see both sides of the protocol.
 
 Usage:
     # Register in .minion/mcp.json:
     {
       "servers": {
         "notes": {
-          "command": ["python", "examples/mcp_notes_server.py"],
+          "command": ["python", "/absolute/path/to/examples/mcp_notes_server.py"],
           "env": {}
         }
       }
@@ -24,7 +26,13 @@ Usage:
     > List all my notes
     > Read the note called "ideas"
 
-How the protocol works (MCP over stdio):
+    # Use MCP commands to browse resources and invoke prompt templates:
+    > /mcp
+    > /mcp resource notes://ideas
+    > /mcp prompt notes__summarize_notes
+    > /mcp prompt notes__find_related topic=AI
+
+MCP protocol summary (stdio transport):
     1. minion spawns this process as a subprocess
     2. minion writes JSON-RPC requests to our stdin (one per line)
     3. we write JSON-RPC responses to stdout (one per line)
@@ -32,16 +40,22 @@ How the protocol works (MCP over stdio):
 
 Initialize handshake:
     minion → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
-    us     → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":...,"serverInfo":...}}
-    minion → {"jsonrpc":"2.0","method":"notifications/initialized"}   (no id = notification)
-    [no response needed for notifications]
+    us     → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":...,"serverInfo":...,"capabilities":{...}}}
+    minion → {"jsonrpc":"2.0","method":"notifications/initialized"}
     minion → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
     us     → {"jsonrpc":"2.0","id":2,"result":{"tools":[...]}}
+    minion → {"jsonrpc":"2.0","id":3,"method":"resources/list"}
+    us     → {"jsonrpc":"2.0","id":3,"result":{"resources":[...]}}
+    minion → {"jsonrpc":"2.0","id":4,"method":"prompts/list"}
+    us     → {"jsonrpc":"2.0","id":4,"result":{"prompts":[...]}}
 
-Tool call:
-    minion → {"jsonrpc":"2.0","id":3,"method":"tools/call",
-               "params":{"name":"create_note","arguments":{"title":"ideas","content":"..."}}}
-    us     → {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Created!"}],"isError":false}}
+Resource read:
+    minion → {"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"uri":"notes://ideas"}}
+    us     → {"jsonrpc":"2.0","id":5,"result":{"contents":[{"uri":"notes://ideas","mimeType":"text/plain","text":"..."}]}}
+
+Prompt get:
+    minion → {"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name":"summarize_notes","arguments":{}}}
+    us     → {"jsonrpc":"2.0","id":6,"result":{"messages":[{"role":"user","content":{"type":"text","text":"..."}}]}}
 """
 
 import json
@@ -52,7 +66,11 @@ from pathlib import Path
 
 NOTES_DIR = Path.home() / ".minion" / "notes"
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "minion-notes", "version": "0.1.0"}
+SERVER_INFO = {"name": "minion-notes", "version": "0.2.0"}
+
+# Advertise tools, resources, and prompts capabilities.
+# minion's client only calls resources/list and prompts/list if these keys are present.
+CAPABILITIES = {"tools": {}, "resources": {}, "prompts": {}}
 
 
 def _slug(title: str) -> str:
@@ -94,6 +112,132 @@ def delete_note(title: str) -> str:
         return f"Note '{title}' not found."
     path.unlink()
     return f"Deleted note '{title}'."
+
+
+# ── Resource implementations ───────────────────────────────────────────────────
+
+def list_resources() -> list[dict]:
+    """Return MCP resource descriptors for all saved notes.
+
+    Each note is exposed as a URI-addressable resource:
+        notes://ideas  →  the note saved as ideas.txt
+    Resources are read-only data; the LLM reads them for context without calling a tool.
+    """
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(NOTES_DIR.glob("*.txt"))
+    return [
+        {
+            "uri": f"notes://{f.stem}",
+            "name": f.stem,
+            "description": f"Note: {f.stem}",
+            "mimeType": "text/plain",
+        }
+        for f in files
+    ]
+
+
+def read_resource(uri: str) -> tuple[str, bool]:
+    """Read a note resource by URI. Returns (content, is_error)."""
+    if not uri.startswith("notes://"):
+        return f"Unsupported URI scheme: '{uri}' (expected notes://title)", True
+    title = uri[len("notes://"):]
+    if not title:
+        return "Empty note title in URI", True
+    path = _note_path(title)
+    if not path.exists():
+        return f"Note '{title}' not found. Use list_notes to see available notes.", True
+    return path.read_text(encoding="utf-8"), False
+
+
+# ── Prompt templates (returned by prompts/list) ───────────────────────────────
+# Prompt templates let this server inject canned LLM instructions with dynamic
+# content. The client calls prompts/get with the template name and arguments;
+# we return a list of messages that the client injects into the conversation.
+
+PROMPTS = [
+    {
+        "name": "summarize_notes",
+        "description": "Ask the LLM to summarize all your saved notes in a structured way.",
+        "arguments": [],
+    },
+    {
+        "name": "find_related",
+        "description": "Ask the LLM to find notes related to a given topic.",
+        "arguments": [
+            {
+                "name": "topic",
+                "description": "Topic or keyword to search for across notes",
+                "required": True,
+            }
+        ],
+    },
+    {
+        "name": "draft_note",
+        "description": "Ask the LLM to draft a new note on a subject, optionally with extra context.",
+        "arguments": [
+            {"name": "title", "description": "Title for the new note", "required": True},
+            {"name": "context", "description": "Background context or key points to include", "required": False},
+        ],
+    },
+]
+
+
+def get_prompt(name: str, arguments: dict) -> tuple[list[dict], bool]:
+    """Build MCP messages for a prompt template. Returns (messages, is_error)."""
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+
+    if name == "summarize_notes":
+        files = sorted(NOTES_DIR.glob("*.txt"))
+        if not files:
+            note_list = "(no notes saved yet)"
+        else:
+            note_list = "\n".join(
+                f"- {f.stem}: {f.read_text(encoding='utf-8')[:120].strip()}..."
+                if len(f.read_text(encoding="utf-8")) > 120
+                else f"- {f.stem}: {f.read_text(encoding='utf-8').strip()}"
+                for f in files
+            )
+        text = (
+            f"I have the following notes saved:\n\n{note_list}\n\n"
+            "Please summarize these notes in a clear, structured way. "
+            "Group related ideas together and highlight any key action items or insights."
+        )
+        return [{"role": "user", "content": {"type": "text", "text": text}}], False
+
+    elif name == "find_related":
+        topic = arguments.get("topic", "").strip()
+        if not topic:
+            return [], True  # missing required arg — caller returns an error
+        files = sorted(NOTES_DIR.glob("*.txt"))
+        if not files:
+            note_list = "(no notes saved yet)"
+        else:
+            note_list = "\n\n".join(
+                f"### {f.stem}\n{f.read_text(encoding='utf-8').strip()}" for f in files
+            )
+        text = (
+            f"Topic I'm interested in: **{topic}**\n\n"
+            f"My saved notes:\n\n{note_list}\n\n"
+            f"Which of these notes are related to '{topic}'? "
+            "List the relevant ones and explain the connection for each."
+        )
+        return [{"role": "user", "content": {"type": "text", "text": text}}], False
+
+    elif name == "draft_note":
+        title = arguments.get("title", "").strip()
+        if not title:
+            return [], True
+        context = arguments.get("context", "").strip()
+        context_line = f"\n\nContext / key points to include:\n{context}" if context else ""
+        text = (
+            f"Please draft a concise, well-structured note titled '{title}'.{context_line}\n\n"
+            "Write it in plain text, suitable for saving as a personal note. "
+            "Keep it focused and useful."
+        )
+        return [{"role": "user", "content": {"type": "text", "text": text}}], False
+
+    else:
+        return [], True  # unknown prompt name
 
 
 # ── Tool schema (returned by tools/list) ──────────────────────────────────────
@@ -217,7 +361,7 @@ def main() -> None:
         if method == "initialize":
             _respond(req_id, {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
+                "capabilities": CAPABILITIES,
                 "serverInfo": SERVER_INFO,
             })
 
@@ -226,6 +370,36 @@ def main() -> None:
 
         elif method == "tools/list":
             _respond(req_id, {"tools": TOOLS})
+
+        elif method == "resources/list":
+            _respond(req_id, {"resources": list_resources()})
+
+        elif method == "resources/read":
+            params = req.get("params", {})
+            uri = params.get("uri", "")
+            content, is_error = read_resource(uri)
+            if is_error:
+                _error(req_id, -32602, content)
+            else:
+                _respond(req_id, {
+                    "contents": [{"uri": uri, "mimeType": "text/plain", "text": content}]
+                })
+
+        elif method == "prompts/list":
+            _respond(req_id, {"prompts": PROMPTS})
+
+        elif method == "prompts/get":
+            params = req.get("params", {})
+            prompt_name = params.get("name", "")
+            arguments = params.get("arguments", {}) or {}
+            messages, is_error = get_prompt(prompt_name, arguments)
+            if is_error:
+                _error(req_id, -32602, f"Unknown prompt or missing required argument: '{prompt_name}'")
+            else:
+                _respond(req_id, {
+                    "description": next((p["description"] for p in PROMPTS if p["name"] == prompt_name), ""),
+                    "messages": messages,
+                })
 
         elif method == "tools/call":
             params = req.get("params", {})

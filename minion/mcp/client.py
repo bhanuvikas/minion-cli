@@ -10,10 +10,20 @@ MCP initialization sequence:
     Client → notifications/initialized  (no id, no response)
     Client → tools/list (id=2)
     Server → result with tool schemas
+    Client → resources/list (id=3)  # only if server advertises "resources" capability
+    Client → prompts/list   (id=4)  # only if server advertises "prompts" capability
 
 Tool call sequence:
     Client → tools/call (id=N, params={name, arguments})
     Server → result with content list and isError flag
+
+Resource read sequence:
+    Client → resources/read (id=N, params={uri})
+    Server → result with contents list
+
+Prompt get sequence:
+    Client → prompts/get (id=N, params={name, arguments})
+    Server → result with messages list
 
 Tool annotations (MCP 2025 revision):
     Each tool schema may include an "annotations" object with:
@@ -59,6 +69,37 @@ class MCPTool:
         }
 
 
+@dataclass
+class MCPResource:
+    """A resource (URI-addressable data) discovered from an MCP server."""
+    uri: str                # e.g. "notes://ideas" or "file:///tmp/data.csv"
+    name: str               # human-readable label
+    description: str = ""
+    mime_type: str = "text/plain"
+    server_name: str = ""
+
+
+@dataclass
+class MCPPromptArg:
+    """One argument definition for an MCP prompt template."""
+    name: str
+    description: str = ""
+    required: bool = False
+
+
+@dataclass
+class MCPPrompt:
+    """A prompt template discovered from an MCP server."""
+    name: str
+    description: str = ""
+    arguments: list[MCPPromptArg] = field(default_factory=list)
+    server_name: str = ""
+
+    @property
+    def namespaced_name(self) -> str:
+        return f"{self.server_name}__{self.name}"
+
+
 class MCPClient:
     """Manages a single MCP server subprocess connection.
 
@@ -74,7 +115,10 @@ class MCPClient:
         self.config = config
         self._process: Optional[subprocess.Popen] = None
         self._next_id: int = 1
-        self.tools: list[MCPTool] = []  # populated by connect()
+        self.tools: list[MCPTool] = []          # populated by connect()
+        self.resources: list[MCPResource] = []  # populated by connect() if server supports resources
+        self.prompts: list[MCPPrompt] = []      # populated by connect() if server supports prompts
+        self._capabilities: dict = {}           # server-reported capabilities from initialize
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -105,16 +149,30 @@ class MCPClient:
                 "clientInfo": _CLIENT_INFO,
             },
         )
-        if "serverInfo" not in resp.get("result", {}):
+        init_result = resp.get("result", {})
+        if "serverInfo" not in init_result:
             raise RuntimeError("server did not return serverInfo in initialize response")
+        self._capabilities = init_result.get("capabilities", {})
 
         # Notify server that initialization is complete (no response expected)
         self._send_notification("notifications/initialized")
 
-        # Discover tools
+        # Discover tools (always supported)
         tools_resp = self._send_request("tools/list")
         raw_tools = tools_resp.get("result", {}).get("tools", [])
         self.tools = [self._parse_tool(t) for t in raw_tools if isinstance(t, dict)]
+
+        # Discover resources if server advertises the capability
+        if "resources" in self._capabilities:
+            resources_resp = self._send_request("resources/list")
+            raw_resources = resources_resp.get("result", {}).get("resources", [])
+            self.resources = [self._parse_resource(r) for r in raw_resources if isinstance(r, dict)]
+
+        # Discover prompts if server advertises the capability
+        if "prompts" in self._capabilities:
+            prompts_resp = self._send_request("prompts/list")
+            raw_prompts = prompts_resp.get("result", {}).get("prompts", [])
+            self.prompts = [self._parse_prompt(p) for p in raw_prompts if isinstance(p, dict)]
 
     def call_tool(self, tool_name: str, arguments: dict) -> str:
         """Call a tool by its raw (un-prefixed) server name.
@@ -154,6 +212,49 @@ class MCPClient:
     def get_tool_definitions(self) -> list[dict]:
         """Return Anthropic-schema tool dicts with namespaced names."""
         return [t.to_anthropic_schema() for t in self.tools]
+
+    def read_resource(self, uri: str) -> str:
+        """Read a resource by URI and return its content as a string.
+
+        The MCP resources/read response contains a 'contents' list where each
+        item has a 'type' ("text" or "blob") and a 'text' or 'blob' field.
+        We join all text items; blobs are noted but not decoded.
+        """
+        try:
+            resp = self._send_request("resources/read", {"uri": uri})
+        except (IOError, RuntimeError) as e:
+            return f"Error reading resource '{uri}': {e}"
+
+        contents = resp.get("result", {}).get("contents", [])
+        parts: list[str] = []
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type", "text")
+            if item_type == "text" or "text" in item:
+                parts.append(str(item.get("text", "")))
+            elif item_type == "blob":
+                mime = item.get("mimeType", "unknown")
+                parts.append(f"[binary content, mimeType: {mime}]")
+        return "\n".join(parts) if parts else "(empty resource)"
+
+    def get_prompt(self, prompt_name: str, arguments: dict | None = None) -> list[dict]:
+        """Get a prompt template by name, optionally with arguments.
+
+        Returns a list of MCP message dicts:
+            [{"role": "user"|"assistant", "content": {"type": "text", "text": "..."}}]
+
+        The caller (MCPManager / REPL) is responsible for extracting the text
+        and injecting it into the conversation.
+        """
+        params: dict = {"name": prompt_name}
+        if arguments:
+            params["arguments"] = arguments
+        try:
+            resp = self._send_request("prompts/get", params)
+        except (IOError, RuntimeError) as e:
+            return [{"role": "user", "content": {"type": "text", "text": f"Error getting prompt '{prompt_name}': {e}"}}]
+        return resp.get("result", {}).get("messages", [])
 
     def is_dangerous(self, namespaced_name: str) -> bool:
         """True if the tool has destructiveHint=True or confirm_all is set on this server."""
@@ -250,4 +351,31 @@ class MCPClient:
             input_schema=raw.get("inputSchema", {"type": "object", "properties": {}}),
             server_name=self.name,
             destructive=destructive,
+        )
+
+    def _parse_resource(self, raw: dict) -> MCPResource:
+        """Parse a raw resource dict from resources/list into an MCPResource."""
+        return MCPResource(
+            uri=raw.get("uri", ""),
+            name=raw.get("name", ""),
+            description=raw.get("description", ""),
+            mime_type=raw.get("mimeType", "text/plain"),
+            server_name=self.name,
+        )
+
+    def _parse_prompt(self, raw: dict) -> MCPPrompt:
+        """Parse a raw prompt dict from prompts/list into an MCPPrompt."""
+        args: list[MCPPromptArg] = []
+        for arg in raw.get("arguments", []):
+            if isinstance(arg, dict):
+                args.append(MCPPromptArg(
+                    name=arg.get("name", ""),
+                    description=arg.get("description", ""),
+                    required=bool(arg.get("required", False)),
+                ))
+        return MCPPrompt(
+            name=raw.get("name", ""),
+            description=raw.get("description", ""),
+            arguments=args,
+            server_name=self.name,
         )

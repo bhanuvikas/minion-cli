@@ -172,15 +172,27 @@ def _list_mcp() -> None:
     summary = manager.server_summary()
     if not summary:
         console.print(
-            "[muted]No MCP tools connected. "
+            "[muted]No MCP servers connected. "
             "Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
         )
         manager.shutdown()
         return
-    total = sum(len(tools) for _, tools in summary)
-    console.print(f"[bold {YELLOW}]MCP servers[/] [muted]({total} tools total):[/]")
-    for server_name, tool_names in summary:
-        console.print(f"  [bold {YELLOW}]{server_name}[/] [muted]({len(tool_names)} tools)[/]")
-        for t in tool_names:
-            console.print(f"    · {t}")
+    total_tools = sum(len(s["tools"]) for s in summary)
+    total_resources = sum(len(s["resources"]) for s in summary)
+    total_prompts = sum(len(s["prompts"]) for s in summary)
+    console.print(
+        f"[bold {YELLOW}]MCP servers[/] [muted]("
+        f"{total_tools} tools, {total_resources} resources, {total_prompts} prompts):[/]"
+    )
+    for s in summary:
+        console.print(
+            f"  [bold {YELLOW}]{s['name']}[/]  "
+            f"[muted]{len(s['tools'])}t · {len(s['resources'])}r · {len(s['prompts'])}p[/]"
+        )
+        for t in s["tools"]:
+            console.print(f"    · tool     {t}")
+        for r in s["resources"]:
+            console.print(f"    · resource {r['uri']}")
+        for p in s["prompts"]:
+            console.print(f"    · prompt   {s['name']}__{p['name']}")
     manager.shutdown()

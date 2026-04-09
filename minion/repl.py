@@ -685,33 +685,116 @@ def _handle_slash_command(
 
 # ─── /mcp command handler ────────────────────────────────────────────────────
 
-def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> None:
-    """Handle the /mcp slash command — lists connected servers and their tools."""
-    from collections import defaultdict
+def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
+    """Handle the /mcp slash command family.
 
-    parts = raw.split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
+    Subcommands:
+        /mcp [list|status]           — list servers, tools, resources, prompt templates
+        /mcp resource <uri>          — read and display a resource by URI
+        /mcp prompt <name> [k=v ...] — get a prompt template and inject it as the next LLM turn
 
-    if arg not in ("", "list", "status"):
-        console.print(f"[muted]Usage: /mcp [list|status][/]")
-        return
+    Returns None normally. Returns a string if the user invoked /mcp prompt — the
+    returned string becomes the next run_prompt() input (prompt injection).
+    """
+    parts = raw.split(maxsplit=2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+
+    # ── /mcp resource <uri> ──────────────────────────────────────────────────
+    if sub == "resource":
+        if len(parts) < 3:
+            console.print("[muted]Usage: /mcp resource <uri>  (e.g. /mcp resource notes://ideas)[/]")
+            return None
+        uri = parts[2].strip()
+        content = mcp_manager.read_resource(uri)
+        console.print(f"[bold {YELLOW}]Resource:[/] [bold]{uri}[/]")
+        console.print(content)
+        return None
+
+    # ── /mcp prompt <name> [key=value ...] ──────────────────────────────────
+    if sub == "prompt":
+        if len(parts) < 3:
+            console.print(
+                "[muted]Usage: /mcp prompt <server__name> [key=value ...]\n"
+                "       e.g.  /mcp prompt notes__summarize_notes\n"
+                "             /mcp prompt notes__find_related topic=AI[/]"
+            )
+            return None
+        rest = parts[2].strip().split()
+        namespaced_name = rest[0]
+        arguments: dict = {}
+        for pair in rest[1:]:
+            if "=" in pair:
+                k, _, v = pair.partition("=")
+                arguments[k.strip()] = v.strip()
+            else:
+                console.print(f"[muted]Ignoring malformed argument '{pair}' (expected key=value)[/]")
+
+        messages = mcp_manager.get_prompt(namespaced_name, arguments or None)
+        if not messages:
+            console.print(f"[muted]Prompt '{namespaced_name}' returned no messages.[/]")
+            return None
+
+        # Extract text from the first user message to inject into the REPL
+        injected: list[str] = []
+        for msg in messages:
+            content = msg.get("content", {})
+            if isinstance(content, dict) and content.get("type") == "text":
+                injected.append(content.get("text", ""))
+            elif isinstance(content, str):
+                injected.append(content)
+
+        prompt_text = "\n\n".join(injected).strip()
+        if not prompt_text:
+            console.print(f"[muted]Prompt '{namespaced_name}' contained no text content.[/]")
+            return None
+
+        console.print(f"[muted]Injecting prompt from '{namespaced_name}'…[/]")
+        return prompt_text  # caller feeds this to run_prompt()
+
+    # ── /mcp [list|status] ───────────────────────────────────────────────────
+    if sub not in ("", "list", "status"):
+        console.print(
+            "[muted]Usage:\n"
+            "  /mcp [list|status]              — list servers and capabilities\n"
+            "  /mcp resource <uri>             — read a resource\n"
+            "  /mcp prompt <name> [key=value]  — inject a prompt template[/]"
+        )
+        return None
 
     summary = mcp_manager.server_summary()
     if not summary:
         console.print(
-            f"[muted]No MCP tools connected. "
-            f"Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
+            "[muted]No MCP servers connected. "
+            "Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
         )
-        return
+        return None
 
-    total = sum(len(tools) for _, tools in summary)
-    console.print(f"[bold {YELLOW}]MCP servers[/] [muted]({total} tools total):[/]")
-    for server_name, tool_names in summary:
+    total_tools = sum(len(s["tools"]) for s in summary)
+    total_resources = sum(len(s["resources"]) for s in summary)
+    total_prompts = sum(len(s["prompts"]) for s in summary)
+    console.print(
+        f"[bold {YELLOW}]MCP servers[/] [muted]("
+        f"{total_tools} tools, {total_resources} resources, {total_prompts} prompts):[/]"
+    )
+    for s in summary:
         console.print(
-            f"  [bold {BLUE}]{server_name}[/] [muted]({len(tool_names)} tools)[/]"
+            f"  [bold {BLUE}]{s['name']}[/]  "
+            f"[muted]{len(s['tools'])}t · {len(s['resources'])}r · {len(s['prompts'])}p[/]"
         )
-        for t in tool_names:
-            console.print(f"    [muted]·[/] {t}")
+        for t in s["tools"]:
+            console.print(f"    [muted]tool[/]   {t}")
+        for r in s["resources"]:
+            label = f" — {r['description']}" if r.get("description") else ""
+            console.print(f"    [muted]resource[/] {r['uri']}{label}")
+        for p in s["prompts"]:
+            args_str = ""
+            if p.get("arguments"):
+                args_str = "  [muted](" + ", ".join(
+                    a["name"] + ("*" if a.get("required") else "") for a in p["arguments"]
+                ) + ")[/]"
+            console.print(f"    [muted]prompt[/]  {s['name']}__{p['name']}{args_str}")
+
+    return None
 
 
 # ─── REPL entry point ─────────────────────────────────────────────────────────
@@ -829,10 +912,14 @@ def run_repl(
 
         # /mcp is handled inline so it can access mcp_manager without threading
         # it through _handle_slash_command's already-long signature.
+        # Returns a string only for /mcp prompt — we inject it as the next LLM turn.
         if user_input.startswith("/mcp"):
-            _handle_mcp_command(user_input, mcp_manager)
+            injected = _handle_mcp_command(user_input, mcp_manager)
             console.print()
-            continue
+            if injected:
+                user_input = injected
+            else:
+                continue
 
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,

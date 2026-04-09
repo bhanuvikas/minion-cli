@@ -196,3 +196,25 @@ class MCPErrorData:
     tool_name: str          # "" if not tool-specific
     error: str
     context: str = ""       # "connect" | "call" | "shutdown"
+
+
+@dataclass
+class MCPResourceReadData:
+    server_name: str
+    uri: str                # full resource URI, e.g. "notes://ideas"
+
+
+@dataclass
+class MCPResourceResultData:
+    server_name: str
+    uri: str
+    content_length: int     # byte length of returned content
+    success: bool
+    latency_ms: int
+
+
+@dataclass
+class MCPPromptGetData:
+    server_name: str
+    prompt_name: str        # raw (un-namespaced) prompt name
+    arguments: dict         # arguments passed to prompts/get

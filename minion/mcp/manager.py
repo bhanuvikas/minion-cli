@@ -86,6 +86,14 @@ class MCPManager:
         """True if at least one connected server has at least one tool."""
         return any(client.tools for client in self._clients.values())
 
+    def has_resources(self) -> bool:
+        """True if at least one connected server has at least one resource."""
+        return any(client.resources for client in self._clients.values())
+
+    def has_prompts(self) -> bool:
+        """True if at least one connected server has at least one prompt template."""
+        return any(client.prompts for client in self._clients.values())
+
     def get_tool_definitions(self) -> list[dict]:
         """Return merged list of all tool definitions from all connected clients.
 
@@ -162,12 +170,69 @@ class MCPManager:
 
         return result
 
+    def read_resource(self, uri: str) -> str:
+        """Read a resource by URI, routing to whichever server owns it.
+
+        Ownership is determined by which connected client's resource list
+        contains a matching URI. Returns an error string if no server owns it.
+        """
+        for name, client in self._clients.items():
+            if any(r.uri == uri for r in client.resources):
+                get_tracer().emit("mcp_resource_read", server_name=name, uri=uri)
+                t0 = time.monotonic()
+                result = client.read_resource(uri)
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                success = not result.startswith("Error:")
+                get_tracer().emit(
+                    "mcp_resource_result",
+                    server_name=name,
+                    uri=uri,
+                    content_length=len(result),
+                    success=success,
+                    latency_ms=latency_ms,
+                )
+                return result
+        return f"Error: No MCP server owns resource URI '{uri}'"
+
+    def get_prompt(self, namespaced_name: str, arguments: dict | None = None) -> list[dict]:
+        """Get a prompt template by namespaced name ('server__prompt_name').
+
+        Returns a list of MCP message dicts. The REPL extracts text from them
+        and injects into the conversation. Returns a single error message dict
+        if the server is not connected or the name is malformed.
+        """
+        parts = namespaced_name.split("__", 1)
+        if len(parts) != 2:
+            return [{"role": "user", "content": {"type": "text", "text": f"Error: malformed prompt name '{namespaced_name}'"}}]
+
+        server_name, prompt_name = parts
+        client = self._clients.get(server_name)
+        if client is None:
+            return [{"role": "user", "content": {"type": "text", "text": f"Error: MCP server '{server_name}' is not connected"}}]
+
+        get_tracer().emit(
+            "mcp_prompt_get",
+            server_name=server_name,
+            prompt_name=prompt_name,
+            arguments=arguments or {},
+        )
+        return client.get_prompt(prompt_name, arguments)
+
     # ── Display helpers ───────────────────────────────────────────────────────
 
-    def server_summary(self) -> list[tuple[str, list[str]]]:
-        """Return list of (server_name, [tool_name, ...]) for display."""
+    def server_summary(self) -> list[dict]:
+        """Return a list of server info dicts for display.
+
+        Each dict has keys: name, tools, resources, prompts.
+        tools/resources/prompts are lists of name strings (or URIs for resources).
+        """
         return [
-            (name, [t.name for t in client.tools])
+            {
+                "name": name,
+                "tools": [t.name for t in client.tools],
+                "resources": [{"uri": r.uri, "name": r.name, "description": r.description} for r in client.resources],
+                "prompts": [{"name": p.name, "description": p.description, "arguments": [{"name": a.name, "required": a.required} for a in p.arguments]} for p in client.prompts],
+            }
             for name, client in self._clients.items()
         ]
 
