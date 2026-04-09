@@ -200,6 +200,25 @@ class MCPManager:
                 return result
         return f"Error: No MCP server owns resource URI '{uri}'"
 
+    def get_prompt_info(self, namespaced_name: str) -> "MCPPrompt | None":
+        """Return the MCPPrompt definition for a namespaced name, or None if not found.
+
+        Used by the REPL to discover required arguments before calling get_prompt(),
+        so it can interactively collect missing args rather than letting the server error.
+        """
+        from .client import MCPPrompt  # local import avoids circular at module level
+        parts = namespaced_name.split("__", 1)
+        if len(parts) != 2:
+            return None
+        server_name, prompt_name = parts
+        client = self._clients.get(server_name)
+        if client is None:
+            return None
+        for p in client.prompts:
+            if p.name == prompt_name:
+                return p
+        return None
+
     def get_prompt(self, namespaced_name: str, arguments: dict | None = None) -> list[dict]:
         """Get a prompt template by namespaced name ('server__prompt_name').
 

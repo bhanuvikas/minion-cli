@@ -742,6 +742,27 @@ def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
         if current_key is not None:
             arguments[current_key] = " ".join(current_val_parts)
 
+        # Collect missing required arguments interactively before calling the server
+        prompt_info = mcp_manager.get_prompt_info(namespaced_name)
+        if prompt_info is not None:
+            import questionary
+            from .config import MINION_STYLE
+            for arg in prompt_info.arguments:
+                if arg.required and arg.name not in arguments:
+                    desc = f" ({arg.description})" if arg.description else ""
+                    value = questionary.text(
+                        f"  {arg.name}{desc}:",
+                        style=MINION_STYLE,
+                    ).ask()
+                    if value is None:  # Ctrl+C
+                        console.print("[muted]Cancelled.[/]")
+                        return None
+                    value = value.strip()
+                    if not value:
+                        console.print(f"[red]Required argument '{arg.name}' cannot be empty.[/]")
+                        return None
+                    arguments[arg.name] = value
+
         messages = mcp_manager.get_prompt(namespaced_name, arguments or None)
         if not messages:
             console.print(f"[muted]Prompt '{namespaced_name}' returned no messages.[/]")
