@@ -683,18 +683,41 @@ def _handle_slash_command(
     return False
 
 
+# ─── /mcp helpers ────────────────────────────────────────────────────────────
+
+def _extract_mcp_text(msg: dict) -> str:
+    """Extract plain text from an MCP message dict."""
+    content = msg.get("content", {})
+    if isinstance(content, dict) and content.get("type") == "text":
+        return content.get("text", "")
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _inject_mcp_message(msg: dict, conversation: Conversation) -> None:
+    """Inject one MCP message into the conversation at the correct role."""
+    text = _extract_mcp_text(msg)
+    role = msg.get("role", "user")
+    if role == "user":
+        conversation.add_user(text)
+    elif role == "assistant":
+        conversation.add_assistant(text, usage=None)
+
+
 # ─── /mcp command handler ────────────────────────────────────────────────────
 
-def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
+def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[list[dict]]:
     """Handle the /mcp slash command family.
 
     Subcommands:
         /mcp [list|status]           — list servers, tools, resources, prompt templates
         /mcp resource <uri>          — read and display a resource by URI
-        /mcp prompt <name> [k=v ...] — get a prompt template and inject it as the next LLM turn
+        /mcp prompt <name> [k=v ...] — get a prompt template and inject it
 
-    Returns None normally. Returns a string if the user invoked /mcp prompt — the
-    returned string becomes the next run_prompt() input (prompt injection).
+    Returns None normally. Returns the raw MCP messages list when /mcp prompt
+    succeeds — the REPL loop injects prefix messages into conversation history
+    and uses the last user-role message as the run_prompt() input.
     """
     parts = raw.split(maxsplit=2)
     sub = parts[1].strip() if len(parts) > 1 else ""
@@ -775,27 +798,18 @@ def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
             console.print(f"[muted]Prompt '{namespaced_name}' returned no messages.[/]")
             return None
 
-        # Extract text from all user messages to inject
-        injected: list[str] = []
-        for msg in messages:
-            content = msg.get("content", {})
-            if isinstance(content, dict) and content.get("type") == "text":
-                injected.append(content.get("text", ""))
-            elif isinstance(content, str):
-                injected.append(content)
-
-        prompt_text = "\n\n".join(injected).strip()
-        if not prompt_text:
-            console.print(f"[muted]Prompt '{namespaced_name}' contained no text content.[/]")
+        # Guard: if the server returned an error message, show it — don't inject into LLM.
+        # Error messages come back as a single message whose text starts with "Error".
+        if len(messages) == 1 and _extract_mcp_text(messages[0]).startswith("Error"):
+            console.print(f"[red]Prompt error:[/] {_extract_mcp_text(messages[0])}")
             return None
 
-        # Guard: if the server returned an error message, show it — don't inject into LLM
-        if prompt_text.startswith("Error"):
-            console.print(f"[red]Prompt error:[/] {prompt_text}")
-            return None
-
-        console.print(f"[muted]Injecting prompt from '{namespaced_name}'…[/]")
-        return prompt_text  # caller feeds this to run_prompt()
+        n = len(messages)
+        console.print(
+            f"[muted]Injecting {n} message{'s' if n > 1 else ''} "
+            f"from '{namespaced_name}'…[/]"
+        )
+        return messages  # REPL loop handles role-aware injection
 
     # ── /mcp [list|status] ───────────────────────────────────────────────────
     if sub not in ("", "list", "status"):
@@ -956,15 +970,35 @@ def run_repl(
 
         get_tracer().emit("user_turn", text=user_input)
 
-        # /mcp is handled inline so it can access mcp_manager without threading
-        # it through _handle_slash_command's already-long signature.
-        # Returns a string only for /mcp prompt — we inject it as the next LLM turn.
+        # /mcp is handled inline so it can access mcp_manager + conversation.
+        # Returns None (command handled, no LLM call) or a list of MCP message
+        # dicts for /mcp prompt (multi-turn injection).
         if user_input.startswith("/mcp"):
-            injected = _handle_mcp_command(user_input, mcp_manager)
+            mcp_messages = _handle_mcp_command(user_input, mcp_manager)
             console.print()
-            if injected:
-                user_input = injected
+            if mcp_messages is None:
+                continue
+
+            # Inject all prefix messages (everything except the last) into
+            # conversation history at their declared roles. This is the
+            # multi-turn priming path: user→assistant→user patterns are
+            # faithfully reconstructed in the conversation before the LLM call.
+            for msg in mcp_messages[:-1]:
+                _inject_mcp_message(msg, conversation)
+
+            last = mcp_messages[-1]
+            if last.get("role") == "user":
+                # Last message is a user turn — use it as the run_prompt() input.
+                user_input = _extract_mcp_text(last)
+                # falls through to run_prompt() below
             else:
+                # Last message is assistant-role — conversation is primed.
+                # Inject it into history and wait for the user's follow-up.
+                _inject_mcp_message(last, conversation)
+                console.print(
+                    "[muted]Conversation primed with prompt template. "
+                    "Ask a follow-up to continue.[/]"
+                )
                 continue
 
         if _handle_slash_command(
