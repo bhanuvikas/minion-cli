@@ -218,3 +218,13 @@ class MCPPromptGetData:
     server_name: str
     prompt_name: str        # raw (un-namespaced) prompt name
     arguments: dict         # arguments passed to prompts/get
+
+
+@dataclass
+class MCPPromptResultData:
+    server_name: str
+    prompt_name: str
+    injected_text: str      # the text that will be sent to the LLM (truncated to 1000 chars)
+    message_count: int      # number of MCP messages in the response
+    success: bool
+    latency_ms: int

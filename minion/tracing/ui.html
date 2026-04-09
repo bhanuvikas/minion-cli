@@ -407,6 +407,7 @@ const EVENT_COLORS = {
   mcp_resource_read:        '#818cf8',
   mcp_resource_result:      '#818cf8',
   mcp_prompt_get:           '#a78bfa',
+  mcp_prompt_result:        '#a78bfa',
   mcp_error:                '#ef4444',
 };
 
@@ -441,13 +442,14 @@ const EVENT_LABELS = {
   mcp_resource_read:    'MCP Resource Read',
   mcp_resource_result:  'MCP Resource Result',
   mcp_prompt_get:       'MCP Prompt Get',
+  mcp_prompt_result:    'MCP Prompt Result',
   mcp_error:            'MCP Error',
 };
 
 // Default expansion: LLM and tool cards start open
 // llm_request and llm_response are collapsed by default — their headers now
 // show enough context (narration / response snippet) to read the flow at a glance.
-const DEFAULT_OPEN = new Set(['llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start','skill_start','mcp_server_connect','mcp_tool_call','mcp_error','mcp_resource_read','mcp_prompt_get']);
+const DEFAULT_OPEN = new Set(['llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start','skill_start','mcp_server_connect','mcp_tool_call','mcp_error','mcp_resource_read','mcp_prompt_get','mcp_prompt_result']);
 
 let allEvents = [];
 let filters = {};  // event_type -> bool (shown)
@@ -658,6 +660,15 @@ function buildCardBody(ev) {
     if (d.arguments && Object.keys(d.arguments).length) {
       parts.push(fieldRow('arguments', `<pre>${escHtml(JSON.stringify(d.arguments, null, 2))}</pre>`));
     }
+  } else if (t === 'mcp_prompt_result') {
+    parts.push(fieldRow('server', `<span class="pill" style="color:#a78bfa">${escHtml(d.server_name||'')}</span>`));
+    parts.push(fieldRow('prompt', `<strong>${escHtml(d.prompt_name||'')}</strong>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ success</span>'
+      : '<span class="error-badge">✗ error</span>'));
+    parts.push(fieldRow('messages', `${fmtNum(d.message_count)}`));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)}ms`));
+    if (d.injected_text) parts.push(fieldRow('injected', `<pre>${escHtml(d.injected_text)}</pre>`));
   } else if (t === 'mcp_error') {
     if (d.server_name) parts.push(fieldRow('server', escHtml(d.server_name)));
     if (d.tool_name) parts.push(fieldRow('tool', escHtml(d.tool_name)));
@@ -763,6 +774,11 @@ function buildCardHeader(ev) {
     title = `<span style="color:#a78bfa">${escHtml(d.server_name||'')}</span> · <strong>${escHtml(d.prompt_name||'')}</strong>`;
     const argKeys = Object.keys(d.arguments || {});
     if (argKeys.length) meta = `<span style="color:var(--muted);font-size:11px">${argKeys.map(k=>`${escHtml(k)}=<em>${escHtml(String(d.arguments[k]).slice(0,30))}</em>`).join(' ')}</span>`;
+  } else if (t === 'mcp_prompt_result') {
+    title = `<span style="color:#a78bfa">${escHtml(d.server_name||'')}</span> · <strong>${escHtml(d.prompt_name||'')}</strong>`;
+    meta = d.success
+      ? `<span class="success-badge">✓ ${fmtNum(d.message_count)} msg</span> <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`
+      : '<span class="error-badge">✗ error</span>';
   } else if (t === 'mcp_error') {
     title = `${escHtml(d.server_name||'')} · ${escHtml((d.error||'').slice(0,60))}`;
     meta  = `<span class="error-badge">✗ ${escHtml(d.context||'error')}</span>`;

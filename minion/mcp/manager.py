@@ -222,7 +222,31 @@ class MCPManager:
             prompt_name=prompt_name,
             arguments=arguments or {},
         )
-        return client.get_prompt(prompt_name, arguments)
+        t0 = time.monotonic()
+        messages = client.get_prompt(prompt_name, arguments)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        # Extract injected text (same logic as REPL) so the trace shows what the LLM sees
+        text_parts: list[str] = []
+        for msg in messages:
+            content = msg.get("content", {})
+            if isinstance(content, dict) and content.get("type") == "text":
+                text_parts.append(str(content.get("text", "")))
+            elif isinstance(content, str):
+                text_parts.append(content)
+        injected_text = "\n\n".join(text_parts).strip()
+        success = not injected_text.startswith("Error")
+
+        get_tracer().emit(
+            "mcp_prompt_result",
+            server_name=server_name,
+            prompt_name=prompt_name,
+            injected_text=injected_text[:1000],
+            message_count=len(messages),
+            success=success,
+            latency_ms=latency_ms,
+        )
+        return messages
 
     # ── Display helpers ───────────────────────────────────────────────────────
 
