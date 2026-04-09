@@ -716,25 +716,38 @@ def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
             console.print(
                 "[muted]Usage: /mcp prompt <server__name> [key=value ...]\n"
                 "       e.g.  /mcp prompt notes__summarize_notes\n"
-                "             /mcp prompt notes__find_related topic=AI[/]"
+                "             /mcp prompt notes__find_related topic=AI\n"
+                "             /mcp prompt notes__draft_note title=arch context=microkernel design[/]"
             )
             return None
-        rest = parts[2].strip().split()
-        namespaced_name = rest[0]
+        tokens = parts[2].strip().split()
+        namespaced_name = tokens[0]
+
+        # Smarter arg parsing: words after a key= are accumulated as the value
+        # until the next key= token. This lets multi-word values work without quotes.
+        # e.g.  context=microkernel design  →  {"context": "microkernel design"}
         arguments: dict = {}
-        for pair in rest[1:]:
-            if "=" in pair:
-                k, _, v = pair.partition("=")
-                arguments[k.strip()] = v.strip()
-            else:
-                console.print(f"[muted]Ignoring malformed argument '{pair}' (expected key=value)[/]")
+        current_key: Optional[str] = None
+        current_val_parts: list[str] = []
+        for token in tokens[1:]:
+            if "=" in token:
+                if current_key is not None:
+                    arguments[current_key] = " ".join(current_val_parts)
+                k, _, v = token.partition("=")
+                current_key = k.strip()
+                current_val_parts = [v] if v else []
+            elif current_key is not None:
+                current_val_parts.append(token)
+            # tokens before the first key= are silently ignored (shouldn't happen)
+        if current_key is not None:
+            arguments[current_key] = " ".join(current_val_parts)
 
         messages = mcp_manager.get_prompt(namespaced_name, arguments or None)
         if not messages:
             console.print(f"[muted]Prompt '{namespaced_name}' returned no messages.[/]")
             return None
 
-        # Extract text from the first user message to inject into the REPL
+        # Extract text from all user messages to inject
         injected: list[str] = []
         for msg in messages:
             content = msg.get("content", {})
@@ -746,6 +759,11 @@ def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
         prompt_text = "\n\n".join(injected).strip()
         if not prompt_text:
             console.print(f"[muted]Prompt '{namespaced_name}' contained no text content.[/]")
+            return None
+
+        # Guard: if the server returned an error message, show it — don't inject into LLM
+        if prompt_text.startswith("Error"):
+            console.print(f"[red]Prompt error:[/] {prompt_text}")
             return None
 
         console.print(f"[muted]Injecting prompt from '{namespaced_name}'…[/]")

@@ -198,7 +198,7 @@ def get_prompt(name: str, arguments: dict) -> tuple[list[dict], bool]:
                 for f in files
             )
         text = (
-            f"I have the following notes saved:\n\n{note_list}\n\n"
+            f"Here are the user's saved notes:\n\n{note_list}\n\n"
             "Please summarize these notes in a clear, structured way. "
             "Group related ideas together and highlight any key action items or insights."
         )
@@ -216,10 +216,11 @@ def get_prompt(name: str, arguments: dict) -> tuple[list[dict], bool]:
                 f"### {f.stem}\n{f.read_text(encoding='utf-8').strip()}" for f in files
             )
         text = (
-            f"Topic I'm interested in: **{topic}**\n\n"
-            f"My saved notes:\n\n{note_list}\n\n"
-            f"Which of these notes are related to '{topic}'? "
-            "List the relevant ones and explain the connection for each."
+            f"Topic: **{topic}**\n\n"
+            f"The user's saved notes:\n\n{note_list}\n\n"
+            f"List only the notes that are directly relevant to '{topic}'. "
+            "For each relevant note, briefly explain the connection. "
+            "Skip notes that are not related."
         )
         return [{"role": "user", "content": {"type": "text", "text": text}}], False
 

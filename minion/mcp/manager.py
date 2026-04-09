@@ -193,6 +193,7 @@ class MCPManager:
                     server_name=name,
                     uri=uri,
                     content_length=len(result),
+                    content=result[:500] if success else "",
                     success=success,
                     latency_ms=latency_ms,
                 )
