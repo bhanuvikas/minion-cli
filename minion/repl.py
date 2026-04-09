@@ -742,25 +742,32 @@ def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[str]:
         if current_key is not None:
             arguments[current_key] = " ".join(current_val_parts)
 
-        # Collect missing required arguments interactively before calling the server
+        # Collect missing arguments interactively before calling the server.
+        # Required args must have a non-empty value; optional args can be skipped with Enter.
         prompt_info = mcp_manager.get_prompt_info(namespaced_name)
         if prompt_info is not None:
             import questionary
             from .config import MINION_STYLE
             for arg in prompt_info.arguments:
-                if arg.required and arg.name not in arguments:
-                    desc = f" ({arg.description})" if arg.description else ""
-                    value = questionary.text(
-                        f"  {arg.name}{desc}:",
-                        style=MINION_STYLE,
-                    ).ask()
-                    if value is None:  # Ctrl+C
-                        console.print("[muted]Cancelled.[/]")
-                        return None
-                    value = value.strip()
-                    if not value:
+                if arg.name in arguments:
+                    continue  # already provided on the command line
+                desc = f" ({arg.description})" if arg.description else ""
+                label = f"  {arg.name}{desc}"
+                if arg.required:
+                    label += " [required]"
+                else:
+                    label += " [optional, Enter to skip]"
+                value = questionary.text(f"{label}:", style=MINION_STYLE).ask()
+                if value is None:  # Ctrl+C
+                    console.print("[muted]Cancelled.[/]")
+                    return None
+                value = value.strip()
+                if not value:
+                    if arg.required:
                         console.print(f"[red]Required argument '{arg.name}' cannot be empty.[/]")
                         return None
+                    # optional — skip it (don't add to arguments dict)
+                else:
                     arguments[arg.name] = value
 
         messages = mcp_manager.get_prompt(namespaced_name, arguments or None)
