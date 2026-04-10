@@ -409,6 +409,7 @@ const EVENT_COLORS = {
   mcp_prompt_get:           '#a78bfa',
   mcp_prompt_result:        '#a78bfa',
   mcp_error:                '#ef4444',
+  mcp_log:                  '#94a3b8',
 };
 
 const EVENT_LABELS = {
@@ -444,6 +445,7 @@ const EVENT_LABELS = {
   mcp_prompt_get:       'MCP Prompt Get',
   mcp_prompt_result:    'MCP Prompt Result',
   mcp_error:            'MCP Error',
+  mcp_log:              'MCP Log',
 };
 
 // Default expansion: LLM and tool cards start open
@@ -457,6 +459,15 @@ let sessionEnded = false;
 
 function colorFor(t) { return EVENT_COLORS[t] || '#888'; }
 function labelFor(t) { return EVENT_LABELS[t] || t; }
+
+// mcp_log cards open by default only for warning+ severity levels
+function isDefaultOpen(ev) {
+  if (DEFAULT_OPEN.has(ev.event_type)) return true;
+  if (ev.event_type === 'mcp_log') {
+    return ['warning','error','critical','alert','emergency'].includes((ev.data||{}).level||'');
+  }
+  return false;
+}
 
 function fmtTime(ts) {
   try {
@@ -674,6 +685,14 @@ function buildCardBody(ev) {
     if (d.tool_name) parts.push(fieldRow('tool', escHtml(d.tool_name)));
     if (d.context) parts.push(fieldRow('context', `<span class="pill">${escHtml(d.context)}</span>`));
     if (d.error) parts.push(fieldRow('error', `<pre style="color:#ef4444">${escHtml(d.error)}</pre>`));
+  } else if (t === 'mcp_log') {
+    const lvl = d.level || 'info';
+    const isWarn = ['warning','error','critical','alert','emergency'].includes(lvl);
+    const lvlColor = isWarn ? (lvl === 'warning' ? '#f59e0b' : '#ef4444') : '#94a3b8';
+    parts.push(fieldRow('server', escHtml(d.server_name||'')));
+    parts.push(fieldRow('level', `<span style="color:${lvlColor};font-weight:600">${escHtml(lvl)}</span>`));
+    if (d.logger) parts.push(fieldRow('logger', `<span style="color:var(--muted)">${escHtml(d.logger)}</span>`));
+    if (d.data !== undefined) parts.push(fieldRow('message', `<pre>${escHtml(String(d.data))}</pre>`));
   } else {
     parts.push(`<pre>${escHtml(JSON.stringify(d, null, 2))}</pre>`);
   }
@@ -782,6 +801,17 @@ function buildCardHeader(ev) {
   } else if (t === 'mcp_error') {
     title = `${escHtml(d.server_name||'')} · ${escHtml((d.error||'').slice(0,60))}`;
     meta  = `<span class="error-badge">✗ ${escHtml(d.context||'error')}</span>`;
+  } else if (t === 'mcp_log') {
+    const lvl = d.level || 'info';
+    const isWarn = ['warning','error','critical','alert','emergency'].includes(lvl);
+    const isErr  = ['error','critical','alert','emergency'].includes(lvl);
+    color = isErr ? '#ef4444' : isWarn ? '#f59e0b' : '#94a3b8';
+    title = escHtml((d.data||'').slice(0, 80));
+    const lvlBadge = isErr  ? `<span class="error-badge">${escHtml(lvl)}</span>`
+                  : isWarn ? `<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:11px;padding:1px 6px;border-radius:3px">${escHtml(lvl)}</span>`
+                           : `<span class="pill" style="color:#94a3b8">${escHtml(lvl)}</span>`;
+    meta = lvlBadge;
+    if (d.logger) meta += ` <span style="color:var(--muted);font-size:11px">${escHtml(d.logger)}</span>`;
   } else if (t === 'session_end') title = `${fmtNum(d.total_turns)} turns · ${d.duration_seconds}s`;
 
   const badge = `<span class="card-type-badge" style="color:${color}">${badgeText}</span>`;
@@ -789,7 +819,7 @@ function buildCardHeader(ev) {
     <span class="card-title">${title}</span>
     ${meta}
     <span class="card-time">${fmtTime(ev.timestamp)}</span>
-    <span class="card-chevron ${DEFAULT_OPEN.has(t)?'open':''}">▶</span>`;
+    <span class="card-chevron ${isDefaultOpen(ev)?'open':''}">▶</span>`;
 }
 
 // Creates the companion "Minion" (end_turn) or "Thinking" (tool_use) text card
@@ -845,7 +875,7 @@ function createCard(ev, idx) {
   header.innerHTML = buildCardHeader(ev);
 
   const body = document.createElement('div');
-  body.className = 'card-body' + (DEFAULT_OPEN.has(t) ? ' visible' : '');
+  body.className = 'card-body' + (isDefaultOpen(ev) ? ' visible' : '');
   body.innerHTML = buildCardBody(ev);
 
   header.addEventListener('click', () => {

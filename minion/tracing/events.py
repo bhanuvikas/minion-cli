@@ -228,3 +228,11 @@ class MCPPromptResultData:
     message_count: int      # number of MCP messages in the response
     success: bool
     latency_ms: int
+
+
+@dataclass
+class MCPLogData:
+    server_name: str
+    level: str              # MCP syslog severity: debug/info/notice/warning/error/critical/alert/emergency
+    logger: str             # logger name from server (may be empty string)
+    data: str               # the log message text

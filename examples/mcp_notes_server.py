@@ -82,20 +82,45 @@ def _note_path(title: str) -> Path:
     return NOTES_DIR / f"{_slug(title)}.txt"
 
 
+# ── Logging helper ────────────────────────────────────────────────────────────
+
+def _log(level: str, message: str) -> None:
+    """Send a logging notification to the MCP client.
+
+    The client declared {"logging":{}} capability in its initialize request,
+    which tells us it can receive notifications/message events. These are
+    unsolicited server→client notifications (no id, no response expected).
+    The client's background reader thread picks them up and routes them to
+    the application (in minion's case, emitting an mcp_log trace event).
+
+    Level follows MCP's syslog scale:
+        debug, info, notice, warning, error, critical, alert, emergency
+    """
+    _write({"jsonrpc": "2.0", "method": "notifications/message", "params": {
+        "level": level,
+        "logger": SERVER_INFO["name"],
+        "data": message,
+    }})
+
+
 # ── Tool implementations ───────────────────────────────────────────────────────
 
 def create_note(title: str, content: str) -> str:
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
     path = _note_path(title)
     path.write_text(content, encoding="utf-8")
+    _log("info", f"Created note '{title}' at {path}")
     return f"Created note '{title}' at {path}"
 
 
 def read_note(title: str) -> str:
     path = _note_path(title)
     if not path.exists():
+        _log("warning", f"Note '{title}' not found")
         return f"Note '{title}' not found. Use list_notes to see available notes."
-    return path.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8")
+    _log("debug", f"Read note '{title}' ({len(content)} chars)")
+    return content
 
 
 def list_notes() -> str:
@@ -103,14 +128,17 @@ def list_notes() -> str:
     files = sorted(NOTES_DIR.glob("*.txt"))
     if not files:
         return "No notes found. Create one with create_note."
+    _log("debug", f"Listed {len(files)} note(s)")
     return "\n".join(f.stem for f in files)
 
 
 def delete_note(title: str) -> str:
     path = _note_path(title)
     if not path.exists():
+        _log("warning", f"Delete failed: note '{title}' not found")
         return f"Note '{title}' not found."
     path.unlink()
+    _log("info", f"Deleted note '{title}'")
     return f"Deleted note '{title}'."
 
 

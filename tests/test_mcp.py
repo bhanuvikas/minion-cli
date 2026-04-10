@@ -1,22 +1,21 @@
 """Tests for the MCP (Model Context Protocol) client system.
 
-All tests are fully offline — no real subprocess is spawned. MCPClient's
-subprocess is mocked via unittest.mock.patch("subprocess.Popen"), with the
-mock process's stdin/stdout providing pre-canned JSON-RPC responses.
-
-Test groups:
-    TestMCPConfig       — config loading, two-tier merge, error handling
-    TestMCPClient       — connect handshake, tool listing, tool calling, annotations
-    TestMCPManager      — multi-server orchestration, routing, shutdown
-    TestMCPAwareExecutor — ToolExecutor MCP routing and confirmation bypass
+Strategy:
+- Tests that exercise business logic (connect handshake, tool/resource/prompt parsing,
+  routing) mock _send_request directly. This keeps tests focused on what they actually
+  test and avoids needing a realistic thread/process mock.
+- Tests for dead-process detection use a real thread with an EOF-returning mock stdout,
+  then join the thread before asserting.
+- Notification dispatch tests call _handle_notification() directly — no thread or
+  subprocess needed to verify the callback contract.
+- Manager and executor tests inject mock MCPClient instances directly.
 """
 
 from __future__ import annotations
 
 import json
-from io import BytesIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -29,19 +28,16 @@ from minion.llm.base import ToolUseBlock
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_line(obj: dict) -> bytes:
-    """Encode a JSON-RPC object as a newline-terminated bytes line."""
-    return (json.dumps(obj) + "\n").encode()
+def _mock_process_eof():
+    """Mock Popen process whose stdout returns EOF immediately.
 
-
-def _mock_process(responses: list[dict]):
-    """Build a mock Popen process whose stdout returns the given responses in order."""
+    Used for tests that mock _send_request: the reader thread starts, sees EOF,
+    and exits cleanly without interfering with the patched _send_request calls.
+    """
     process = MagicMock()
     process.stdin = MagicMock()
-
-    lines = [_make_line(r) for r in responses]
     process.stdout = MagicMock()
-    process.stdout.readline = MagicMock(side_effect=lines + [b""])  # EOF after all lines
+    process.stdout.readline.return_value = b""
     process.returncode = None
     return process
 
@@ -55,13 +51,13 @@ def _server_config(name: str = "test", command: list | None = None) -> MCPServer
     )
 
 
-def _initialize_response(req_id: int = 1) -> dict:
+def _initialize_response(req_id: int = 1, capabilities: dict | None = None) -> dict:
     return {
         "jsonrpc": "2.0",
         "id": req_id,
         "result": {
             "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
+            "capabilities": capabilities if capabilities is not None else {"tools": {}},
             "serverInfo": {"name": "test-server", "version": "0.1.0"},
         },
     }
@@ -76,6 +72,30 @@ def _tool_call_response(text: str, req_id: int = 3, is_error: bool = False) -> d
         "jsonrpc": "2.0",
         "id": req_id,
         "result": {"content": [{"type": "text", "text": text}], "isError": is_error},
+    }
+
+
+def _resources_list_response(resources: list[dict], req_id: int) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": resources}}
+
+
+def _prompts_list_response(prompts: list[dict], req_id: int) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": prompts}}
+
+
+def _resource_read_response(uri: str, text: str, req_id: int) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]},
+    }
+
+
+def _prompt_get_response(messages: list[dict], req_id: int) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"description": "test prompt", "messages": messages},
     }
 
 
@@ -96,6 +116,27 @@ _SAMPLE_TOOLS = [
         "annotations": {"destructiveHint": True},
     },
 ]
+
+_SAMPLE_RESOURCES = [
+    {"uri": "notes://ideas", "name": "ideas", "description": "Note: ideas", "mimeType": "text/plain"},
+    {"uri": "notes://todo", "name": "todo", "description": "Note: todo", "mimeType": "text/plain"},
+]
+
+_SAMPLE_PROMPTS = [
+    {
+        "name": "summarize_notes",
+        "description": "Summarize all notes",
+        "arguments": [],
+    },
+    {
+        "name": "find_related",
+        "description": "Find related notes",
+        "arguments": [{"name": "topic", "description": "Topic", "required": True}],
+    },
+]
+
+# Capabilities dict advertised by a server that supports tools + resources + prompts
+_FULL_CAPS = {"tools": {}, "resources": {}, "prompts": {}}
 
 
 # ── TestMCPConfig ─────────────────────────────────────────────────────────────
@@ -144,7 +185,6 @@ class TestMCPConfig:
             "servers": {"notes": {"command": ["python", "project_notes.py"]}}
         }))
         result = load_mcp_config(cwd=tmp_path)
-        # Project config shadows user config for the same server name
         assert result["notes"].command == ["python", "project_notes.py"]
 
     def test_load_config_malformed_json_warns_and_skips_tier(self, tmp_path, monkeypatch, capsys):
@@ -159,22 +199,34 @@ class TestMCPConfig:
             "servers": {"good": {"command": ["echo"]}}
         }))
         result = load_mcp_config(cwd=tmp_path)
-        # Malformed user tier is skipped; project tier still loads
         assert "good" in result
 
 
 # ── TestMCPClient ─────────────────────────────────────────────────────────────
 
 class TestMCPClient:
-    def test_connect_sends_initialize_and_lists_tools(self):
-        process = _mock_process([
-            _initialize_response(req_id=1),
-            _tools_list_response(_SAMPLE_TOOLS, req_id=2),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("test", _server_config())
-            client.connect()
+    """Tests for MCPClient connect handshake, tool parsing, and tool calling.
 
+    All tests mock _send_request directly. The reader thread starts and sees
+    EOF immediately (from _mock_process_eof), so it exits without interfering.
+    """
+
+    def _connected_client(self, name="test", send_request_responses=None, capabilities=None):
+        """Connect a client using mocked _send_request responses."""
+        caps = capabilities or {"tools": {}}
+        responses = send_request_responses or [
+            _initialize_response(req_id=1, capabilities=caps),
+            _tools_list_response(_SAMPLE_TOOLS, req_id=2),
+        ]
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
+            client = MCPClient(name, _server_config(name=name))
+            with patch.object(client, "_send_request", side_effect=responses), \
+                 patch.object(client, "_send_notification"):
+                client.connect()
+        return client
+
+    def test_connect_sends_initialize_and_lists_tools(self):
+        client = self._connected_client()
         assert len(client.tools) == 2
         assert client.tools[0].name == "read_file"
         assert client.tools[1].name == "delete_file"
@@ -186,97 +238,67 @@ class TestMCPClient:
                 client.connect()
 
     def test_connect_raises_on_bad_initialize_response(self):
-        # Response missing 'serverInfo'
         bad_init = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05"}}
-        process = _mock_process([bad_init])
-        with patch("subprocess.Popen", return_value=process):
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("test", _server_config())
-            with pytest.raises(RuntimeError, match="serverInfo"):
-                client.connect()
+            with patch.object(client, "_send_request", side_effect=[bad_init]), \
+                 patch.object(client, "_send_notification"):
+                with pytest.raises(RuntimeError, match="serverInfo"):
+                    client.connect()
 
     def test_get_tool_definitions_prefixes_names(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("myserver", _server_config(name="myserver"))
-            client.connect()
-
-        defs = client.get_tool_definitions()
-        names = [d["name"] for d in defs]
+        client = self._connected_client(name="myserver")
+        names = [d["name"] for d in client.get_tool_definitions()]
         assert "myserver__read_file" in names
         assert "myserver__delete_file" in names
 
     def test_get_tool_definitions_maps_input_schema_key(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("srv", _server_config(name="srv"))
-            client.connect()
-
-        defs = client.get_tool_definitions()
-        for d in defs:
-            # Must use snake_case 'input_schema', not camelCase 'inputSchema'
+        client = self._connected_client(name="srv")
+        for d in client.get_tool_definitions():
             assert "input_schema" in d
             assert "inputSchema" not in d
 
     def test_call_tool_sends_request_and_returns_text(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
+        client = self._connected_client(name="srv", send_request_responses=[
+            _initialize_response(req_id=1),
+            _tools_list_response(_SAMPLE_TOOLS, req_id=2),
             _tool_call_response("file contents here", req_id=3),
         ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("srv", _server_config(name="srv"))
-            client.connect()
+        with patch.object(client, "_send_request",
+                          return_value=_tool_call_response("file contents here", req_id=3)):
             result = client.call_tool("read_file", {"path": "/tmp/test.txt"})
-
         assert result == "file contents here"
 
     def test_call_tool_returns_error_text_on_is_error_true(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
-            _tool_call_response("file not found", req_id=3, is_error=True),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("srv", _server_config(name="srv"))
-            client.connect()
+        with patch.object(
+            MCPClient, "_send_request",
+            return_value=_tool_call_response("file not found", req_id=3, is_error=True),
+        ):
+            client = self._connected_client(name="srv")
             result = client.call_tool("read_file", {"path": "/does/not/exist"})
-
         assert result.startswith("Error:")
         assert "file not found" in result
 
     def test_call_tool_returns_error_string_on_dead_process(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
-        ])
-        # Simulate dead process: stdout.readline returns b"" (EOF)
-        process.stdout.readline = MagicMock(side_effect=[
-            _make_line(_initialize_response()),
-            _make_line(_tools_list_response(_SAMPLE_TOOLS)),
-            b"",  # EOF — server died
-        ])
-        with patch("subprocess.Popen", return_value=process):
+        """When the reader thread has exited (server dead), call_tool returns an error string."""
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("srv", _server_config(name="srv"))
-            client.connect()
-            result = client.call_tool("read_file", {"path": "/tmp/test.txt"})
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1),
+                _tools_list_response(_SAMPLE_TOOLS, req_id=2),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
 
+        # Thread sees EOF immediately; join to confirm _thread_exited is set
+        client._read_thread.join(timeout=1)
+        assert client._thread_exited
+
+        # Real _send_request now hits _thread_exited=True → IOError → error string
+        result = client.call_tool("read_file", {"path": "/tmp/test.txt"})
         assert "Error:" in result
 
     def test_annotation_destructive_hint_parsed(self):
-        process = _mock_process([
-            _initialize_response(),
-            _tools_list_response(_SAMPLE_TOOLS),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("srv", _server_config(name="srv"))
-            client.connect()
-
+        client = self._connected_client()
         read_tool = next(t for t in client.tools if t.name == "read_file")
         delete_tool = next(t for t in client.tools if t.name == "delete_file")
         assert read_tool.destructive is False
@@ -314,13 +336,12 @@ class TestMCPManager:
         configs = {
             "bad": MCPServerConfig("bad", command=["nonexistent"], env={}, confirm_all=False),
         }
-        # connect() raises RuntimeError for bad server — manager should warn, not crash
         with patch("minion.mcp.manager.MCPClient") as MockClient:
             instance = MockClient.return_value
             instance.connect.side_effect = RuntimeError("command not found")
             manager.connect_all(configs)
 
-        assert len(manager._clients) == 0  # bad server not stored
+        assert len(manager._clients) == 0
 
     def test_connect_all_stores_connected_clients(self):
         manager = MCPManager()
@@ -337,8 +358,7 @@ class TestMCPManager:
 
     def test_get_tool_definitions_merges_all_clients(self):
         manager = self._connected_manager(["server_a", "server_b"])
-        defs = manager.get_tool_definitions()
-        names = [d["name"] for d in defs]
+        names = [d["name"] for d in manager.get_tool_definitions()]
         assert "server_a__tool_a" in names
         assert "server_b__tool_a" in names
 
@@ -357,9 +377,6 @@ class TestMCPManager:
     def test_shutdown_calls_all_clients(self):
         manager = self._connected_manager(["a", "b"])
         manager.shutdown()
-        manager._clients.get("a") or True  # clients cleared
-        # Verify shutdown was called on each mock before clear
-        # (we check has_tools() is False after shutdown)
         assert not manager.has_tools()
 
 
@@ -372,7 +389,6 @@ class TestMCPAwareExecutor:
     def test_execute_native_tool_still_works_with_mcp_manager_present(self):
         mock_manager = MagicMock()
         executor = ToolExecutor(mcp_manager=mock_manager)
-        # read_file is a native tool — should not go to MCP
         result = executor.execute(self._tool_block("read_file", {"path": __file__}))
         mock_manager.call_tool.assert_not_called()
         assert isinstance(result, str)
@@ -399,136 +415,66 @@ class TestMCPAwareExecutor:
 
 # ── TestMCPClientResources ────────────────────────────────────────────────────
 
-_SAMPLE_RESOURCES = [
-    {"uri": "notes://ideas", "name": "ideas", "description": "Note: ideas", "mimeType": "text/plain"},
-    {"uri": "notes://todo", "name": "todo", "description": "Note: todo", "mimeType": "text/plain"},
-]
-
-_SAMPLE_PROMPTS = [
-    {
-        "name": "summarize_notes",
-        "description": "Summarize all notes",
-        "arguments": [],
-    },
-    {
-        "name": "find_related",
-        "description": "Find related notes",
-        "arguments": [{"name": "topic", "description": "Topic", "required": True}],
-    },
-]
-
-
-def _initialize_response_with_capabilities(req_id: int = 1, capabilities: dict | None = None) -> dict:
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": capabilities if capabilities is not None else {"tools": {}, "resources": {}, "prompts": {}},
-            "serverInfo": {"name": "test-server", "version": "0.2.0"},
-        },
-    }
-
-
-def _resources_list_response(resources: list[dict], req_id: int) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": resources}}
-
-
-def _prompts_list_response(prompts: list[dict], req_id: int) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": prompts}}
-
-
-def _resource_read_response(uri: str, text: str, req_id: int) -> dict:
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]},
-    }
-
-
-def _prompt_get_response(messages: list[dict], req_id: int) -> dict:
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "result": {"description": "test prompt", "messages": messages},
-    }
-
-
 class TestMCPClientResources:
-    def test_connect_sets_has_resources_capability_when_present(self):
-        """connect() sets _has_resources_capability=True when server advertises it."""
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _prompts_list_response([], req_id=3),
-        ])
-        with patch("subprocess.Popen", return_value=process):
+    def _client_with_resources(self):
+        """Connect a client that advertises tools + resources + prompts."""
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1, capabilities=_FULL_CAPS),
+                _tools_list_response([], req_id=2),
+                _prompts_list_response([], req_id=3),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
+        return client
 
+    def test_connect_sets_has_resources_capability_when_present(self):
+        client = self._client_with_resources()
         assert client._has_resources_capability is True
 
     def test_connect_skips_resources_when_capability_absent(self):
-        """Client does NOT set _has_resources_capability when server omits it."""
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1, capabilities={"tools": {}}),
-            _tools_list_response([], req_id=2),
-            # No resources/list or prompts/list — if client calls them, readline returns EOF
-        ])
-        with patch("subprocess.Popen", return_value=process):
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
-
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1, capabilities={"tools": {}}),
+                _tools_list_response([], req_id=2),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
         assert client._has_resources_capability is False
         assert client.prompts == []
 
     def test_list_resources_returns_live_resource_list(self):
-        """list_resources() calls resources/list fresh and returns MCPResource objects."""
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _prompts_list_response([], req_id=3),
-            _resources_list_response(_SAMPLE_RESOURCES, req_id=4),  # live call
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
+        client = self._client_with_resources()
+        with patch.object(client, "_send_request",
+                          return_value=_resources_list_response(_SAMPLE_RESOURCES, req_id=4)):
             resources = client.list_resources()
-
         assert len(resources) == 2
         assert resources[0].uri == "notes://ideas"
         assert resources[1].name == "todo"
         assert resources[0].server_name == "notes"
 
     def test_read_resource_returns_text_content(self):
-        """resources/read response is correctly parsed into a plain string."""
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _prompts_list_response([], req_id=3),
-            _resource_read_response("notes://ideas", "Build a banana OS", req_id=4),
-        ])
-        with patch("subprocess.Popen", return_value=process):
-            client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
+        client = self._client_with_resources()
+        with patch.object(client, "_send_request",
+                          return_value=_resource_read_response("notes://ideas", "Build a banana OS", req_id=4)):
             result = client.read_resource("notes://ideas")
-
         assert result == "Build a banana OS"
 
     def test_read_resource_returns_error_string_on_dead_process(self):
-        """If the process dies mid-call, read_resource returns an error string (not raises)."""
-        process = _mock_process([])
-        process.stdout.readline = MagicMock(side_effect=[
-            _make_line(_initialize_response_with_capabilities(req_id=1)),
-            _make_line(_tools_list_response([], req_id=2)),
-            _make_line(_prompts_list_response([], req_id=3)),
-            b"",  # EOF on resources/read request
-        ])
-        with patch("subprocess.Popen", return_value=process):
+        """When the reader thread has exited, read_resource returns an error string."""
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
-            result = client.read_resource("notes://ideas")
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1, capabilities=_FULL_CAPS),
+                _tools_list_response([], req_id=2),
+                _prompts_list_response([], req_id=3),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
 
+        client._read_thread.join(timeout=1)
+        assert client._thread_exited
+
+        result = client.read_resource("notes://ideas")
         assert result.startswith("Error")
 
 
@@ -536,15 +482,14 @@ class TestMCPClientResources:
 
 class TestMCPClientPrompts:
     def test_connect_discovers_prompts_when_capability_present(self):
-        # connect() calls: initialize (id=1), tools/list (id=2), prompts/list (id=3)
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
-        ])
-        with patch("subprocess.Popen", return_value=process):
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1, capabilities=_FULL_CAPS),
+                _tools_list_response([], req_id=2),
+                _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
 
         assert len(client.prompts) == 2
         assert client.prompts[0].name == "summarize_notes"
@@ -556,17 +501,17 @@ class TestMCPClientPrompts:
 
     def test_get_prompt_returns_messages(self):
         messages = [{"role": "user", "content": {"type": "text", "text": "Summarize my notes please."}}]
-        # connect() sequence + prompts/get call (id=4)
-        process = _mock_process([
-            _initialize_response_with_capabilities(req_id=1),
-            _tools_list_response([], req_id=2),
-            _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
-            _prompt_get_response(messages, req_id=4),
-        ])
-        with patch("subprocess.Popen", return_value=process):
+        with patch("subprocess.Popen", return_value=_mock_process_eof()):
             client = MCPClient("notes", _server_config(name="notes"))
-            client.connect()
-            result = client.get_prompt("summarize_notes")
+            with patch.object(client, "_send_request", side_effect=[
+                _initialize_response(req_id=1, capabilities=_FULL_CAPS),
+                _tools_list_response([], req_id=2),
+                _prompts_list_response(_SAMPLE_PROMPTS, req_id=3),
+            ]), patch.object(client, "_send_notification"):
+                client.connect()
+            with patch.object(client, "_send_request",
+                               return_value=_prompt_get_response(messages, req_id=4)):
+                result = client.get_prompt("summarize_notes")
 
         assert len(result) == 1
         assert result[0]["role"] == "user"
@@ -587,7 +532,6 @@ class TestMCPManagerResources:
             MCPPrompt(name="summarize_notes", server_name="notes"),
         ]
         client.get_tool_definitions.return_value = []
-        # list_resources() returns live data (dynamic)
         client.list_resources.return_value = [
             MCPResource(uri="notes://ideas", name="ideas", server_name="notes"),
         ]
@@ -597,12 +541,10 @@ class TestMCPManagerResources:
         return manager
 
     def test_has_resources_true_when_client_has_capability(self):
-        manager = self._manager_with_resources()
-        assert manager.has_resources() is True
+        assert self._manager_with_resources().has_resources() is True
 
     def test_has_prompts_true_when_client_has_prompts(self):
-        manager = self._manager_with_resources()
-        assert manager.has_prompts() is True
+        assert self._manager_with_resources().has_prompts() is True
 
     def test_read_resource_routes_to_owning_client(self):
         manager = self._manager_with_resources()
@@ -647,3 +589,111 @@ class TestMCPManagerResources:
         assert s["resources"][0]["uri"] == "notes://ideas"
         assert len(s["prompts"]) == 1
         assert s["prompts"][0]["name"] == "summarize_notes"
+
+
+# ── TestMCPNotifications ──────────────────────────────────────────────────────
+
+class TestMCPNotifications:
+    """Tests for notification dispatch and manager logging integration.
+
+    Notification delivery is tested by calling _handle_notification() directly —
+    no subprocess or thread needed to verify the callback contract.
+    """
+
+    def test_notification_delivered_to_callback(self):
+        """notifications/message is routed to notification_callback."""
+        client = MCPClient("notes", _server_config(name="notes"))
+        received: list[tuple] = []
+        client.notification_callback = lambda s, p: received.append((s, p))
+
+        client._handle_notification({
+            "method": "notifications/message",
+            "params": {"level": "info", "logger": "test-server", "data": "Tool executed"},
+        })
+
+        assert len(received) == 1
+        server_name, params = received[0]
+        assert server_name == "notes"
+        assert params["level"] == "info"
+        assert params["data"] == "Tool executed"
+
+    def test_notification_without_callback_does_not_crash(self):
+        """Notifications with no callback set are silently ignored."""
+        client = MCPClient("notes", _server_config())
+        # notification_callback is None by default — should not raise
+        client._handle_notification({
+            "method": "notifications/message",
+            "params": {"level": "warning", "data": "disk full"},
+        })
+
+    def test_unknown_notification_method_ignored(self):
+        """Notification methods other than notifications/message are silently ignored."""
+        client = MCPClient("notes", _server_config())
+        called = []
+        client.notification_callback = lambda s, p: called.append(p)
+
+        client._handle_notification({"method": "notifications/resources/changed", "params": {}})
+
+        assert called == []
+
+    def test_multiple_notifications_all_delivered_in_order(self):
+        """Multiple _handle_notification calls deliver in call order."""
+        client = MCPClient("notes", _server_config())
+        received: list[str] = []
+        client.notification_callback = lambda s, p: received.append(p["data"])
+
+        for msg in ["first", "second", "third"]:
+            client._handle_notification({
+                "method": "notifications/message",
+                "params": {"level": "info", "data": msg},
+            })
+
+        assert received == ["first", "second", "third"]
+
+    def test_manager_on_notification_emits_mcp_log_event(self):
+        """MCPManager._on_notification() emits an mcp_log trace event."""
+        manager = MCPManager()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            emit = MagicMock()
+            mock_tracer.return_value.emit = emit
+            manager._on_notification("notes", {
+                "level": "warning",
+                "logger": "minion-notes",
+                "data": "Note not found",
+            })
+        emit.assert_called_once_with(
+            "mcp_log",
+            server_name="notes",
+            level="warning",
+            logger="minion-notes",
+            data="Note not found",
+        )
+
+    def test_manager_on_notification_defaults_missing_fields(self):
+        """Missing level/logger/data in params use safe defaults."""
+        manager = MCPManager()
+        with patch("minion.mcp.manager.get_tracer") as mock_tracer:
+            emit = MagicMock()
+            mock_tracer.return_value.emit = emit
+            manager._on_notification("srv", {})
+        emit.assert_called_once_with(
+            "mcp_log",
+            server_name="srv",
+            level="info",
+            logger="",
+            data="",
+        )
+
+    def test_connect_all_wires_notification_callback(self):
+        """connect_all() sets notification_callback on each MCPClient before connect."""
+        manager = MCPManager()
+        configs = {
+            "notes": MCPServerConfig("notes", command=["python", "notes.py"], env={}, confirm_all=False),
+        }
+        with patch("minion.mcp.manager.MCPClient") as MockClient:
+            instance = MockClient.return_value
+            instance.connect.return_value = None
+            instance.tools = []
+            manager.connect_all(configs)
+
+        assert instance.notification_callback == manager._on_notification

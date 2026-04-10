@@ -39,6 +39,7 @@ class MCPManager:
         """
         for name, config in configs.items():
             client = MCPClient(name, config)
+            client.notification_callback = self._on_notification
             t0 = time.monotonic()
             try:
                 client.connect()
@@ -266,6 +267,26 @@ class MCPManager:
             latency_ms=latency_ms,
         )
         return messages
+
+    # ── Notification handling ─────────────────────────────────────────────────
+
+    def _on_notification(self, server_name: str, params: dict) -> None:
+        """Handle a server-sent notifications/message event.
+
+        Called from the MCPClient background reader thread whenever the server
+        sends a log notification. Emits an mcp_log trace event so Nefario can
+        display server-side logs alongside the conversation trace.
+
+        MCP log levels (syslog severity): debug, info, notice, warning, error,
+        critical, alert, emergency.
+        """
+        get_tracer().emit(
+            "mcp_log",
+            server_name=server_name,
+            level=params.get("level", "info"),
+            logger=params.get("logger", ""),
+            data=str(params.get("data", "")),
+        )
 
     # ── Display helpers ───────────────────────────────────────────────────────
 

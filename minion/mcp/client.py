@@ -4,6 +4,17 @@ Implements the MCP client side of the stdio transport. The server is a subproces
 we write JSON-RPC requests to its stdin and read responses from its stdout.
 Each message is a single newline-terminated JSON object.
 
+Background reader thread:
+    A daemon thread reads stdout continuously. When it sees a response (has "id"),
+    it routes to the matching queue registered by _send_request(). When it sees a
+    notification (no "id"), it dispatches to _handle_notification(). This design
+    correctly handles server-initiated messages (e.g. logging notifications) that
+    can arrive at any time, between or interleaved with request/response pairs.
+
+    Race-free response routing: _send_request() registers the response queue under
+    a lock before writing the request, so the thread can never deliver a response
+    before the queue exists.
+
 MCP initialization sequence:
     Client → initialize (id=1)
     Server → result with serverInfo + capabilities
@@ -25,6 +36,10 @@ Prompt get sequence:
     Client → prompts/get (id=N, params={name, arguments})
     Server → result with messages list
 
+Logging notifications (server → client, unsolicited):
+    Server → {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","logger":"...","data":"..."}}
+    Client declares {"logging":{}} capability so servers know we support it.
+
 Tool annotations (MCP 2025 revision):
     Each tool schema may include an "annotations" object with:
         readOnlyHint:   bool  — tool does not modify external state
@@ -37,9 +52,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import MCPServerConfig
 
@@ -105,9 +122,10 @@ class MCPClient:
 
     Lifecycle:
         client = MCPClient("notes", config)
-        client.connect()           # spawns process, handshake, fetches tools
+        client.notification_callback = some_fn   # optional
+        client.connect()           # spawns process, starts reader thread, handshake
         result = client.call_tool("create_note", {"title": "...", "content": "..."})
-        client.shutdown()          # terminates subprocess
+        client.shutdown()          # terminates subprocess, joins reader thread
     """
 
     def __init__(self, name: str, config: MCPServerConfig) -> None:
@@ -120,10 +138,23 @@ class MCPClient:
         self._capabilities: dict = {}       # server-reported capabilities from initialize
         self._has_resources_capability: bool = False  # resources/list is supported
 
+        # Background reader thread state
+        self._read_thread: Optional[threading.Thread] = None
+        self._response_queues: dict[int, queue.Queue] = {}  # id → queue for in-flight requests
+        self._thread_exited: bool = False                   # set when reader thread exits
+        self._state_lock = threading.Lock()                 # guards _response_queues + _thread_exited
+
+        # Optional callback for server-sent notifications (e.g. logging/message)
+        # Signature: (server_name: str, params: dict) -> None
+        self.notification_callback: Optional[Callable[[str, dict], None]] = None
+
     # ── Public interface ──────────────────────────────────────────────────────
 
     def connect(self) -> None:
         """Spawn server subprocess and complete the MCP initialize handshake.
+
+        Starts the background reader thread before sending any requests so that
+        server notifications (e.g. logging) can be received at any time.
 
         Raises RuntimeError with a human-readable message if any step fails.
         MCPManager.connect_all() catches this and warns instead of crashing.
@@ -140,12 +171,19 @@ class MCPClient:
         except (FileNotFoundError, PermissionError, OSError) as e:
             raise RuntimeError(f"failed to start '{self.config.command[0]}': {e}") from e
 
-        # Initialize handshake
+        # Start background reader thread BEFORE sending any requests.
+        # The thread reads stdout and dispatches responses/notifications concurrently.
+        self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._read_thread.name = f"mcp-reader-{self.name}"
+        self._read_thread.start()
+
+        # Initialize handshake — declare logging capability so servers know we
+        # can receive notifications/message events.
         resp = self._send_request(
             "initialize",
             {
                 "protocolVersion": _PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": {"logging": {}},
                 "clientInfo": _CLIENT_INFO,
             },
         )
@@ -271,6 +309,18 @@ class MCPClient:
             return [{"role": "user", "content": {"type": "text", "text": f"Error getting prompt '{prompt_name}': {e}"}}]
         return resp.get("result", {}).get("messages", [])
 
+    def set_log_level(self, level: str) -> None:
+        """Ask the server to filter log notifications at the given level.
+
+        Level is one of: "debug", "info", "notice", "warning", "error",
+        "critical", "alert", "emergency" (MCP syslog severity scale).
+        Silently ignores errors — the server may not support logging/setLevel.
+        """
+        try:
+            self._send_request("logging/setLevel", {"level": level})
+        except (IOError, RuntimeError):
+            pass  # best-effort: server may not implement setLevel
+
     def is_dangerous(self, namespaced_name: str) -> bool:
         """True if the tool has destructiveHint=True or confirm_all is set on this server."""
         if self.config.confirm_all:
@@ -282,7 +332,7 @@ class MCPClient:
         return False
 
     def shutdown(self) -> None:
-        """Terminate the server subprocess cleanly. Never raises."""
+        """Terminate the server subprocess and join the reader thread. Never raises."""
         if self._process is None:
             return
         try:
@@ -296,18 +346,97 @@ class MCPClient:
             pass
         finally:
             self._process = None
+        # Reader thread is daemon=True so it won't block exit, but join for cleanliness.
+        if self._read_thread is not None:
+            self._read_thread.join(timeout=2)
+            self._read_thread = None
+
+    # ── Background reader thread ──────────────────────────────────────────────
+
+    def _read_loop(self) -> None:
+        """Background thread: continuously read stdout and dispatch messages.
+
+        Responses (have "id") are routed to the queue registered by _send_request().
+        Notifications (no "id") are dispatched to _handle_notification().
+        The thread exits on EOF (process died) or any read exception.
+        """
+        while True:
+            if self._process is None or self._process.stdout is None:
+                break
+            try:
+                line = self._process.stdout.readline()
+            except Exception:
+                break
+            if not line:
+                break  # EOF — subprocess exited
+            try:
+                parsed = json.loads(line.decode())
+            except json.JSONDecodeError:
+                continue  # malformed line — skip
+
+            msg_id = parsed.get("id")
+            if msg_id is not None:
+                q = self._response_queues.get(msg_id)
+                if q is not None:
+                    q.put(parsed)
+            else:
+                # Notification (no id) — server-initiated, no response needed
+                self._handle_notification(parsed)
+
+        # EOF or error: signal all currently-waiting requests that the server is gone
+        with self._state_lock:
+            self._thread_exited = True
+            queues_to_notify = list(self._response_queues.values())
+        for q in queues_to_notify:
+            q.put(None)  # sentinel: main thread raises IOError on None
+
+    def _handle_notification(self, msg: dict) -> None:
+        """Dispatch a server-sent notification to the registered callback.
+
+        Currently handles notifications/message (MCP logging). Other notification
+        types (e.g. notifications/resources/changed) are silently ignored.
+        """
+        method = msg.get("method", "")
+        params = msg.get("params", {}) or {}
+        if method == "notifications/message":
+            if self.notification_callback is not None:
+                self.notification_callback(self.name, params)
 
     # ── Private protocol helpers ──────────────────────────────────────────────
 
     def _send_request(self, method: str, params: dict | None = None) -> dict:
-        """Send a JSON-RPC request and return the parsed response dict."""
+        """Send a JSON-RPC request and return the parsed response dict.
+
+        Registers a response queue before writing so the reader thread can
+        deliver the response under any scheduling. Uses _state_lock to make
+        "check thread alive + register queue" atomic — prevents the thread from
+        exiting (and missing our queue) between those two operations.
+        """
         req_id = self._next_id
         self._next_id += 1
         payload: dict = {"jsonrpc": "2.0", "id": req_id, "method": method}
         if params is not None:
             payload["params"] = params
+        q: queue.Queue = queue.Queue()
+
+        with self._state_lock:
+            if self._thread_exited:
+                raise IOError("server closed stdout unexpectedly")
+            self._response_queues[req_id] = q
+
         self._write(payload)
-        return self._read_response(req_id)
+        try:
+            response = q.get(timeout=30)
+        finally:
+            self._response_queues.pop(req_id, None)
+
+        if response is None:
+            raise IOError("server closed stdout unexpectedly")
+        if "error" in response:
+            err = response["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"server error: {msg}")
+        return response
 
     def _send_notification(self, method: str, params: dict | None = None) -> None:
         """Send a JSON-RPC notification (no id, no response expected)."""
@@ -323,33 +452,6 @@ class MCPClient:
         line = json.dumps(obj, separators=(",", ":")) + "\n"
         self._process.stdin.write(line.encode())
         self._process.stdin.flush()
-
-    def _read_response(self, expected_id: int) -> dict:
-        """Read one line from stdout and return the parsed JSON object.
-
-        Raises:
-            IOError: if stdout is closed (server process died)
-            RuntimeError: if the response id doesn't match or contains an error
-        """
-        if self._process is None or self._process.stdout is None:
-            raise IOError("server process is not running")
-        line = self._process.stdout.readline()
-        if not line:
-            raise IOError("server closed stdout unexpectedly")
-        try:
-            parsed = json.loads(line.decode())
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"invalid JSON from server: {e}") from e
-
-        if parsed.get("id") != expected_id:
-            raise RuntimeError(
-                f"id mismatch: expected {expected_id}, got {parsed.get('id')}"
-            )
-        if "error" in parsed:
-            err = parsed["error"]
-            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-            raise RuntimeError(f"server error: {msg}")
-        return parsed
 
     def _parse_tool(self, raw: dict) -> MCPTool:
         """Parse a raw tool dict from tools/list into an MCPTool.
