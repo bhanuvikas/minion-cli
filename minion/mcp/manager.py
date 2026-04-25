@@ -16,18 +16,27 @@ from typing import TYPE_CHECKING
 
 from ..theme import console
 from ..tracing import get_tracer
+from .base import MCPClientBase
 from .client import MCPClient
 from .config import MCPServerConfig, load_mcp_config
+from .http_client import MCPHTTPClient
 
 if TYPE_CHECKING:
     pass
+
+
+def _make_client(name: str, config: MCPServerConfig) -> MCPClientBase:
+    """Factory: return the correct transport client for this config."""
+    if config.transport == "http":
+        return MCPHTTPClient(name, config)
+    return MCPClient(name, config)
 
 
 class MCPManager:
     """Manages multiple MCP server connections for the duration of a session."""
 
     def __init__(self) -> None:
-        self._clients: dict[str, MCPClient] = {}  # keyed by server name
+        self._clients: dict[str, MCPClientBase] = {}  # keyed by server name
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -38,7 +47,7 @@ class MCPManager:
         config never prevents minion from starting.
         """
         for name, config in configs.items():
-            client = MCPClient(name, config)
+            client = _make_client(name, config)
             client.notification_callback = self._on_notification
             t0 = time.monotonic()
             try:
@@ -271,22 +280,26 @@ class MCPManager:
     # ── Notification handling ─────────────────────────────────────────────────
 
     def _on_notification(self, server_name: str, params: dict) -> None:
-        """Handle a server-sent notifications/message event.
+        """Handle any server-sent notification forwarded by the transport client.
 
-        Called from the MCPClient background reader thread whenever the server
-        sends a log notification. Emits an mcp_log trace event so Nefario can
-        display server-side logs alongside the conversation trace.
+        Called from the background reader/stream thread. Only emits an mcp_log
+        trace event for MCP standard logging notifications (those that carry a
+        "level" field). Custom server notification types (e.g. file change events
+        from the workspace server) are silently ignored here — add handling below
+        when minion needs to act on them.
 
         MCP log levels (syslog severity): debug, info, notice, warning, error,
         critical, alert, emergency.
         """
-        get_tracer().emit(
-            "mcp_log",
-            server_name=server_name,
-            level=params.get("level", "info"),
-            logger=params.get("logger", ""),
-            data=str(params.get("data", "")),
-        )
+        if "level" in params:
+            # Standard MCP logging notification (notifications/message)
+            get_tracer().emit(
+                "mcp_log",
+                server_name=server_name,
+                level=params.get("level", "info"),
+                logger=params.get("logger", ""),
+                data=str(params.get("data", "")),
+            )
 
     # ── Display helpers ───────────────────────────────────────────────────────
 

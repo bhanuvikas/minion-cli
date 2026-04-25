@@ -626,15 +626,19 @@ class TestMCPNotifications:
             "params": {"level": "warning", "data": "disk full"},
         })
 
-    def test_unknown_notification_method_ignored(self):
-        """Notification methods other than notifications/message are silently ignored."""
+    def test_unknown_notification_method_dispatched_to_callback(self):
+        """All notification methods (not just notifications/message) are forwarded to callback."""
         client = MCPClient("notes", _server_config())
         called = []
         client.notification_callback = lambda s, p: called.append(p)
 
-        client._handle_notification({"method": "notifications/resources/changed", "params": {}})
+        client._handle_notification({
+            "method": "notifications/resources/changed",
+            "params": {"uri": "notes://todo"},
+        })
 
-        assert called == []
+        assert len(called) == 1
+        assert called[0]["uri"] == "notes://todo"
 
     def test_multiple_notifications_all_delivered_in_order(self):
         """Multiple _handle_notification calls deliver in call order."""
@@ -669,20 +673,14 @@ class TestMCPNotifications:
             data="Note not found",
         )
 
-    def test_manager_on_notification_defaults_missing_fields(self):
-        """Missing level/logger/data in params use safe defaults."""
+    def test_manager_on_notification_non_logging_not_emitted(self):
+        """Params without a 'level' field are NOT emitted as mcp_log (custom server events)."""
         manager = MCPManager()
         with patch("minion.mcp.manager.get_tracer") as mock_tracer:
             emit = MagicMock()
             mock_tracer.return_value.emit = emit
-            manager._on_notification("srv", {})
-        emit.assert_called_once_with(
-            "mcp_log",
-            server_name="srv",
-            level="info",
-            logger="",
-            data="",
-        )
+            manager._on_notification("srv", {"path": "foo.py", "event": "modified"})
+        emit.assert_not_called()
 
     def test_connect_all_wires_notification_callback(self):
         """connect_all() sets notification_callback on each MCPClient before connect."""

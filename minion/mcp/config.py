@@ -3,7 +3,7 @@
 Two-tier loading (user → project). Project server names shadow user server names.
 If neither file exists, returns an empty dict — MCP is simply disabled.
 
-Config format:
+Config format — stdio server:
     {
       "servers": {
         "notes": {
@@ -14,11 +14,26 @@ Config format:
       }
     }
 
-Fields:
-    command      — subprocess argv list (required)
-    env          — extra environment variables merged into os.environ (optional)
+Config format — Streamable HTTP server:
+    {
+      "servers": {
+        "workspace": {
+          "url": "http://localhost:9000/mcp",
+          "confirm_all": false
+        }
+      }
+    }
+
+Fields (all servers):
     confirm_all  — if true, every tool on this server requires user confirmation
                    regardless of its destructiveHint annotation (optional, default false)
+
+Fields (stdio only):
+    command      — subprocess argv list (required for stdio)
+    env          — extra environment variables merged into os.environ (optional)
+
+Fields (HTTP only):
+    url          — full URL to the MCP endpoint, e.g. "http://localhost:9000/mcp"
 """
 
 from __future__ import annotations
@@ -33,9 +48,15 @@ from ..theme import console
 @dataclass
 class MCPServerConfig:
     name: str
-    command: list[str]
-    env: dict[str, str] = field(default_factory=dict)
+    command: list[str] = field(default_factory=list)   # stdio transport: subprocess argv
+    env: dict[str, str] = field(default_factory=dict)  # stdio transport: extra env vars
+    url: str = ""                                       # HTTP transport: endpoint URL
     confirm_all: bool = False
+
+    @property
+    def transport(self) -> str:
+        """Return 'http' if a URL is configured, otherwise 'stdio'."""
+        return "http" if self.url else "stdio"
 
 
 def load_mcp_config(cwd: Path | None = None) -> dict[str, MCPServerConfig]:
@@ -72,15 +93,32 @@ def load_mcp_config(cwd: Path | None = None) -> dict[str, MCPServerConfig]:
             if not isinstance(spec, dict):
                 console.print(f"[muted]Warning: server '{name}' in {path} must be an object — skipping.[/]")
                 continue
-            command = spec.get("command")
-            if not isinstance(command, list) or not command:
-                console.print(f"[muted]Warning: server '{name}' missing valid 'command' list — skipping.[/]")
-                continue
-            configs[name] = MCPServerConfig(
-                name=name,
-                command=[str(c) for c in command],
-                env={str(k): str(v) for k, v in spec.get("env", {}).items()},
-                confirm_all=bool(spec.get("confirm_all", False)),
-            )
+
+            url = spec.get("url", "")
+            command = spec.get("command", [])
+
+            if url:
+                # Streamable HTTP transport
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    console.print(f"[muted]Warning: server '{name}' has invalid 'url' (must start with http:// or https://) — skipping.[/]")
+                    continue
+                configs[name] = MCPServerConfig(
+                    name=name,
+                    url=url,
+                    confirm_all=bool(spec.get("confirm_all", False)),
+                )
+            elif command:
+                # stdio transport
+                if not isinstance(command, list) or not command:
+                    console.print(f"[muted]Warning: server '{name}' missing valid 'command' list — skipping.[/]")
+                    continue
+                configs[name] = MCPServerConfig(
+                    name=name,
+                    command=[str(c) for c in command],
+                    env={str(k): str(v) for k, v in spec.get("env", {}).items()},
+                    confirm_all=bool(spec.get("confirm_all", False)),
+                )
+            else:
+                console.print(f"[muted]Warning: server '{name}' must have either 'command' (stdio) or 'url' (HTTP) — skipping.[/]")
 
     return configs
