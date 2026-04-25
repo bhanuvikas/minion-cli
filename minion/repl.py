@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from .mcp.manager import MCPManager
     from .skills.registry import SkillRegistry
 
 import typer
@@ -82,6 +83,7 @@ REPL_COMMANDS = {
     "/load":    "Load session: /load <name>",
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
+    "/mcp":     "MCP servers: /mcp or /mcp list",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -681,6 +683,180 @@ def _handle_slash_command(
     return False
 
 
+# ─── /mcp helpers ────────────────────────────────────────────────────────────
+
+def _extract_mcp_text(msg: dict) -> str:
+    """Extract plain text from an MCP message dict."""
+    content = msg.get("content", {})
+    if isinstance(content, dict) and content.get("type") == "text":
+        return content.get("text", "")
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _inject_mcp_message(msg: dict, conversation: Conversation) -> None:
+    """Inject one MCP message into the conversation at the correct role."""
+    text = _extract_mcp_text(msg)
+    role = msg.get("role", "user")
+    if role == "user":
+        conversation.add_user(text)
+    elif role == "assistant":
+        conversation.add_assistant(text, usage=None)
+
+
+# ─── /mcp command handler ────────────────────────────────────────────────────
+
+def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[list[dict]]:
+    """Handle the /mcp slash command family.
+
+    Subcommands:
+        /mcp [list|status]           — list servers, tools, resources, prompt templates
+        /mcp resource <uri>          — read and display a resource by URI
+        /mcp prompt <name> [k=v ...] — get a prompt template and inject it
+
+    Returns None normally. Returns the raw MCP messages list when /mcp prompt
+    succeeds — the REPL loop injects prefix messages into conversation history
+    and uses the last user-role message as the run_prompt() input.
+    """
+    parts = raw.split(maxsplit=2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+
+    # ── /mcp resource <uri> ──────────────────────────────────────────────────
+    if sub == "resource":
+        if len(parts) < 3:
+            console.print("[muted]Usage: /mcp resource <uri>  (e.g. /mcp resource notes://ideas)[/]")
+            return None
+        uri = parts[2].strip()
+        content = mcp_manager.read_resource(uri)
+        console.print(f"[bold {YELLOW}]Resource:[/] [bold]{uri}[/]")
+        console.print(content)
+        return None
+
+    # ── /mcp prompt <name> [key=value ...] ──────────────────────────────────
+    if sub == "prompt":
+        if len(parts) < 3:
+            console.print(
+                "[muted]Usage: /mcp prompt <server__name> [key=value ...]\n"
+                "       e.g.  /mcp prompt notes__summarize_notes\n"
+                "             /mcp prompt notes__find_related topic=AI\n"
+                "             /mcp prompt notes__draft_note title=arch context=microkernel design[/]"
+            )
+            return None
+        tokens = parts[2].strip().split()
+        namespaced_name = tokens[0]
+
+        # Smarter arg parsing: words after a key= are accumulated as the value
+        # until the next key= token. This lets multi-word values work without quotes.
+        # e.g.  context=microkernel design  →  {"context": "microkernel design"}
+        arguments: dict = {}
+        current_key: Optional[str] = None
+        current_val_parts: list[str] = []
+        for token in tokens[1:]:
+            if "=" in token:
+                if current_key is not None:
+                    arguments[current_key] = " ".join(current_val_parts)
+                k, _, v = token.partition("=")
+                current_key = k.strip()
+                current_val_parts = [v] if v else []
+            elif current_key is not None:
+                current_val_parts.append(token)
+            # tokens before the first key= are silently ignored (shouldn't happen)
+        if current_key is not None:
+            arguments[current_key] = " ".join(current_val_parts)
+
+        # Collect missing arguments interactively before calling the server.
+        # Required args must have a non-empty value; optional args can be skipped with Enter.
+        prompt_info = mcp_manager.get_prompt_info(namespaced_name)
+        if prompt_info is not None:
+            import questionary
+            from .config import MINION_STYLE
+            for arg in prompt_info.arguments:
+                if arg.name in arguments:
+                    continue  # already provided on the command line
+                desc = f" ({arg.description})" if arg.description else ""
+                label = f"  {arg.name}{desc}"
+                if arg.required:
+                    label += " [required]"
+                else:
+                    label += " [optional, Enter to skip]"
+                value = questionary.text(f"{label}:", style=MINION_STYLE).ask()
+                if value is None:  # Ctrl+C
+                    console.print("[muted]Cancelled.[/]")
+                    return None
+                value = value.strip()
+                if not value:
+                    if arg.required:
+                        console.print(f"[red]Required argument '{arg.name}' cannot be empty.[/]")
+                        return None
+                    # optional — skip it (don't add to arguments dict)
+                else:
+                    arguments[arg.name] = value
+
+        messages = mcp_manager.get_prompt(namespaced_name, arguments or None)
+        if not messages:
+            console.print(f"[muted]Prompt '{namespaced_name}' returned no messages.[/]")
+            return None
+
+        # Guard: if the server returned an error message, show it — don't inject into LLM.
+        # Error messages come back as a single message whose text starts with "Error".
+        if len(messages) == 1 and _extract_mcp_text(messages[0]).startswith("Error"):
+            console.print(f"[red]Prompt error:[/] {_extract_mcp_text(messages[0])}")
+            return None
+
+        n = len(messages)
+        console.print(
+            f"[muted]Injecting {n} message{'s' if n > 1 else ''} "
+            f"from '{namespaced_name}'…[/]"
+        )
+        return messages  # REPL loop handles role-aware injection
+
+    # ── /mcp [list|status] ───────────────────────────────────────────────────
+    if sub not in ("", "list", "status"):
+        console.print(
+            "[muted]Usage:\n"
+            "  /mcp [list|status]              — list servers and capabilities\n"
+            "  /mcp resource <uri>             — read a resource\n"
+            "  /mcp prompt <name> [key=value]  — inject a prompt template[/]"
+        )
+        return None
+
+    summary = mcp_manager.server_summary()
+    if not summary:
+        console.print(
+            "[muted]No MCP servers connected. "
+            "Add servers to ~/.minion/mcp.json or .minion/mcp.json[/]"
+        )
+        return None
+
+    total_tools = sum(len(s["tools"]) for s in summary)
+    total_resources = sum(len(s["resources"]) for s in summary)
+    total_prompts = sum(len(s["prompts"]) for s in summary)
+    console.print(
+        f"[bold {YELLOW}]MCP servers[/] [muted]("
+        f"{total_tools} tools, {total_resources} resources, {total_prompts} prompts):[/]"
+    )
+    for s in summary:
+        console.print(
+            f"  [bold {BLUE}]{s['name']}[/]  "
+            f"[muted]{len(s['tools'])}t · {len(s['resources'])}r · {len(s['prompts'])}p[/]"
+        )
+        for t in s["tools"]:
+            console.print(f"    [muted]tool[/]   {t}")
+        for r in s["resources"]:
+            label = f" — {r['description']}" if r.get("description") else ""
+            console.print(f"    [muted]resource[/] {r['uri']}{label}")
+        for p in s["prompts"]:
+            args_str = ""
+            if p.get("arguments"):
+                args_str = "  [muted](" + ", ".join(
+                    a["name"] + ("*" if a.get("required") else "") for a in p["arguments"]
+                ) + ")[/]"
+            console.print(f"    [muted]prompt[/]  {s['name']}__{p['name']}{args_str}")
+
+    return None
+
+
 # ─── REPL entry point ─────────────────────────────────────────────────────────
 
 def _get_last_response_text(conversation: Conversation) -> Optional[str]:
@@ -756,7 +932,18 @@ def run_repl(
     for _skill_name, _skill in skill_registry.items():
         _cmd_key = f"/{_skill_name}"
         if _cmd_key not in REPL_COMMANDS:   # never overwrite built-in commands
-            REPL_COMMANDS[_cmd_key] = f"[skill] {_skill.description}"
+            REPL_COMMANDS[_cmd_key] = _skill.description
+
+    # ── MCP setup ─────────────────────────────────────────────────────────────
+    from .mcp import load_mcp_manager
+    mcp_manager = load_mcp_manager(project_cwd)
+    if mcp_manager.has_tools():
+        tool_count = len(mcp_manager.get_tool_definitions())
+        server_count = len(mcp_manager.server_summary())
+        console.print(
+            f"[muted]MCP: {tool_count} tool(s) from {server_count} server(s). "
+            f"Type /mcp to list.[/]\n"
+        )
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
@@ -772,6 +959,7 @@ def run_repl(
             user_input = session.prompt(you_prompt)
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
+            mcp_manager.shutdown()
             get_tracer().finalize()
             break
 
@@ -781,6 +969,37 @@ def run_repl(
             continue
 
         get_tracer().emit("user_turn", text=user_input)
+
+        # /mcp is handled inline so it can access mcp_manager + conversation.
+        # Returns None (command handled, no LLM call) or a list of MCP message
+        # dicts for /mcp prompt (multi-turn injection).
+        if user_input.startswith("/mcp"):
+            mcp_messages = _handle_mcp_command(user_input, mcp_manager)
+            console.print()
+            if mcp_messages is None:
+                continue
+
+            # Inject all prefix messages (everything except the last) into
+            # conversation history at their declared roles. This is the
+            # multi-turn priming path: user→assistant→user patterns are
+            # faithfully reconstructed in the conversation before the LLM call.
+            for msg in mcp_messages[:-1]:
+                _inject_mcp_message(msg, conversation)
+
+            last = mcp_messages[-1]
+            if last.get("role") == "user":
+                # Last message is a user turn — use it as the run_prompt() input.
+                user_input = _extract_mcp_text(last)
+                # falls through to run_prompt() below
+            else:
+                # Last message is assistant-role — conversation is primed.
+                # Inject it into history and wait for the user's follow-up.
+                _inject_mcp_message(last, conversation)
+                console.print(
+                    "[muted]Conversation primed with prompt template. "
+                    "Ask a follow-up to continue.[/]"
+                )
+                continue
 
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,
@@ -832,6 +1051,7 @@ def run_repl(
             reflect_config=reflect_config,
             verbose=state.verbose,
             memory_tokens=memory_tokens,
+            mcp_manager=mcp_manager,
         )
         console.print()
 

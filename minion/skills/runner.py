@@ -36,6 +36,7 @@ def execute_skill(
     base_system_prompt: str,
     registry: SkillRegistry,
     state: Optional["ReplState"] = None,
+    _chain: frozenset[str] = frozenset(),
 ) -> None:
     """Execute a skill — chained or direct.
 
@@ -53,15 +54,23 @@ def execute_skill(
         base_system_prompt: The REPL's current system prompt (already includes project context).
         registry:           Used to resolve step names for chained skills.
         state:              REPL state for reflect_depth and verbose; may be None in tests.
+        _chain:             Internal — tracks skill names already in the call stack to detect cycles.
     """
     # ── Skill chaining ─────────────────────────────────────────────────────────
     if skill.steps:
         for step_name in skill.steps:
+            if step_name in _chain:
+                console.print(
+                    f"[red]Circular skill chain detected: '{step_name}' is already in the chain "
+                    f"{sorted(_chain)}[/]"
+                )
+                return
             step = registry.get(step_name)
             if step is None:
                 console.print(f"[red]Poulet tikka masala! Unknown skill in chain: '{step_name}'[/]")
                 return
-            execute_skill(step, arg, client, conversation, base_system_prompt, registry, state)
+            execute_skill(step, arg, client, conversation, base_system_prompt, registry, state,
+                          _chain | {skill.name})
         return
 
     # ── Direct execution ───────────────────────────────────────────────────────

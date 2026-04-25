@@ -13,7 +13,7 @@
     --border: #2a2a2a;
     --text: #e0e0e0;
     --muted: #777;
-    --accent: #f59e0b;
+    --accent: #FFD700;
     --accent-dim: #78450a;
 
     --c-session: #22c55e;
@@ -275,7 +275,8 @@
   .type-session_start, .type-session_end { border-left-color: var(--c-session); }
   .type-user_turn { border-left-color: var(--c-user); }
   .type-llm_request, .type-llm_response { border-left-color: var(--c-llm); }
-  .type-llm_response_end { border-left-color: #60a5fa; }  /* Minion (end_turn) = bright blue */
+  .type-llm_response_minion   { border-left-color: #FFD700; }  /* Minion (end_turn) = yellow */
+  .type-llm_response_thinking { border-left-color: #a78bfa; }  /* Thinking (tool_use) = purple */
   .type-tool_call, .type-tool_result { border-left-color: var(--c-tool); }
   .type-memory_retrieve, .type-memory_store { border-left-color: var(--c-memory); }
   .type-memory_skip { border-left-color: var(--c-skip); }
@@ -307,6 +308,10 @@
   <div class="stat">
     <span class="stat-label">Duration</span>
     <span class="stat-value" id="stat-duration">—</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Est. Cost</span>
+    <span class="stat-value" id="stat-cost">—</span>
   </div>
   <div id="refresh-badge">
     <div class="dot" id="live-dot"></div>
@@ -347,6 +352,30 @@
 </div>
 
 <script>
+// Pricing per million tokens: { in: $, out: $ }
+const MODEL_COSTS = {
+  'claude-opus-4':   { in: 15.00, out: 75.00 },
+  'claude-sonnet-4': { in: 3.00,  out: 15.00 },
+  'claude-haiku-4':  { in: 0.80,  out: 4.00  },
+};
+
+function calcCost(model, inTok, outTok) {
+  if (!model || inTok == null || outTok == null) return null;
+  const m = model.toLowerCase();
+  for (const [key, pricing] of Object.entries(MODEL_COSTS)) {
+    if (m.includes(key)) {
+      return (inTok / 1_000_000) * pricing.in + (outTok / 1_000_000) * pricing.out;
+    }
+  }
+  return null;
+}
+
+function fmtCost(cost) {
+  if (cost == null) return null;
+  if (cost < 0.00001) return '<$0.00001';
+  return `$${cost.toFixed(5)}`;
+}
+
 const EVENT_COLORS = {
   session_start:        '#22c55e',
   session_end:          '#22c55e',
@@ -368,17 +397,30 @@ const EVENT_COLORS = {
   plan_refined:         '#eab308',
   plan_execute_start:   '#eab308',
   plan_complete:        '#eab308',
-  skill_start:          '#10b981',
-  skill_complete:       '#10b981',
+  skill_start:              '#10b981',
+  skill_complete:           '#10b981',
+  llm_response_thinking:    '#a78bfa',
+  llm_response_minion:      '#FFD700',
+  mcp_server_connect:       '#6366f1',
+  mcp_tool_call:            '#6366f1',
+  mcp_tool_result:          '#6366f1',
+  mcp_resource_read:        '#818cf8',
+  mcp_resource_result:      '#818cf8',
+  mcp_prompt_get:           '#a78bfa',
+  mcp_prompt_result:        '#a78bfa',
+  mcp_error:                '#ef4444',
+  mcp_log:                  '#94a3b8',
 };
 
 const EVENT_LABELS = {
-  session_start:        'Session Start',
-  session_end:          'Session End',
-  user_turn:            'User',
-  llm_request:          'LLM Request',
-  llm_response:         'LLM Response',
-  llm_error:            'LLM Error',
+  session_start:            'Session Start',
+  session_end:              'Session End',
+  user_turn:                'User',
+  llm_request:              'LLM Request',
+  llm_response:             'LLM Response',
+  llm_error:                'LLM Error',
+  llm_response_thinking:    'Thinking',
+  llm_response_minion:      'Minion',
   tool_call:            'Tool Call',
   tool_result:          'Tool Result',
   memory_retrieve:      'Memory Retrieve',
@@ -395,12 +437,21 @@ const EVENT_LABELS = {
   plan_complete:        'Plan Complete',
   skill_start:          'Skill Start',
   skill_complete:       'Skill Complete',
+  mcp_server_connect:   'MCP Connect',
+  mcp_tool_call:        'MCP Tool Call',
+  mcp_tool_result:      'MCP Tool Result',
+  mcp_resource_read:    'MCP Resource Read',
+  mcp_resource_result:  'MCP Resource Result',
+  mcp_prompt_get:       'MCP Prompt Get',
+  mcp_prompt_result:    'MCP Prompt Result',
+  mcp_error:            'MCP Error',
+  mcp_log:              'MCP Log',
 };
 
 // Default expansion: LLM and tool cards start open
 // llm_request and llm_response are collapsed by default — their headers now
 // show enough context (narration / response snippet) to read the flow at a glance.
-const DEFAULT_OPEN = new Set(['llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start','skill_start']);
+const DEFAULT_OPEN = new Set(['llm_error','tool_call','tool_result','user_turn','reflection_revision','plan_generated','plan_execute_start','skill_start','mcp_server_connect','mcp_tool_call','mcp_error','mcp_resource_read','mcp_prompt_get','mcp_prompt_result']);
 
 let allEvents = [];
 let filters = {};  // event_type -> bool (shown)
@@ -408,6 +459,15 @@ let sessionEnded = false;
 
 function colorFor(t) { return EVENT_COLORS[t] || '#888'; }
 function labelFor(t) { return EVENT_LABELS[t] || t; }
+
+// mcp_log cards open by default only for warning+ severity levels
+function isDefaultOpen(ev) {
+  if (DEFAULT_OPEN.has(ev.event_type)) return true;
+  if (ev.event_type === 'mcp_log') {
+    return ['warning','error','critical','alert','emergency'].includes((ev.data||{}).level||'');
+  }
+  return false;
+}
 
 function fmtTime(ts) {
   try {
@@ -476,19 +536,20 @@ function buildCardBody(ev) {
       parts.push(fieldRow('tools schema', `<pre>${escHtml(JSON.stringify(d.tools, null, 2))}</pre>`));
     }
   } else if (t === 'llm_response') {
-    if (d.stop_reason === 'end_turn') {
-      // Show full assistant response first, then metadata
-      if (d.response) parts.push(`<pre style="margin-bottom:10px;border-left:2px solid #60a5fa">${escHtml(d.response)}</pre>`);
-      parts.push(fieldRow('model',         `<span class="pill">${escHtml(d.model||'')}</span>`));
-      parts.push(fieldRow('tokens in/out', `${fmtNum(d.input_tokens)} / ${fmtNum(d.output_tokens)}`));
-      parts.push(fieldRow('latency',       `${fmtNum(d.latency_ms)} ms`));
-    } else {
-      // tool_use — narration + request metadata
-      if (d.response) parts.push(fieldRow('narration', `<pre>${escHtml(d.response)}</pre>`));
-      parts.push(fieldRow('model',         `<span class="pill">${escHtml(d.model||'')}</span>`));
-      parts.push(fieldRow('stop reason',   `<span class="pill">${escHtml(d.stop_reason||'')}</span>`));
-      parts.push(fieldRow('tokens in/out', `${fmtNum(d.input_tokens)} / ${fmtNum(d.output_tokens)}`));
-      parts.push(fieldRow('latency',       `${fmtNum(d.latency_ms)} ms`));
+    parts.push(fieldRow('model',         `<span class="pill">${escHtml(d.model||'')}</span>`));
+    parts.push(fieldRow('stop reason',   `<span class="pill">${escHtml(d.stop_reason||'')}</span>`));
+    parts.push(fieldRow('tokens in/out', `${fmtNum(d.input_tokens)} / ${fmtNum(d.output_tokens)}`));
+    const cost = calcCost(d.model, d.input_tokens, d.output_tokens);
+    if (cost != null) parts.push(fieldRow('est. cost', `<span style="color:#34d399">${fmtCost(cost)}</span>`));
+    parts.push(fieldRow('latency',       `${fmtNum(d.latency_ms)} ms`));
+    if (d.tool_calls && d.tool_calls.length) {
+      const tcHtml = d.tool_calls.map(tc => {
+        const inputSummary = Object.entries(tc.input||{})
+          .map(([k,v]) => `${k}=${typeof v === 'string' ? v.slice(0,60) : JSON.stringify(v).slice(0,60)}`)
+          .join(', ');
+        return `<div style="margin:3px 0"><span class="pill" style="color:#f97316">${escHtml(tc.name)}</span> <span style="color:var(--muted);font-size:11px">${escHtml(inputSummary)}</span></div>`;
+      }).join('');
+      parts.push(fieldRow('tool calls', tcHtml));
     }
   } else if (t === 'llm_error') {
     parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)} ms`));
@@ -571,6 +632,67 @@ function buildCardBody(ev) {
   } else if (t === 'skill_complete') {
     parts.push(fieldRow('skill', `<strong>/${escHtml(d.skill_name||'')}</strong>`));
     if (d.arg) parts.push(fieldRow('target', escHtml(d.arg)));
+  } else if (t === 'mcp_server_connect') {
+    parts.push(fieldRow('server', `<strong>${escHtml(d.server_name||'')}</strong>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ connected</span>'
+      : '<span class="error-badge">✗ failed</span>'));
+    parts.push(fieldRow('tools', fmtNum(d.tool_count)));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)}ms`));
+    if (d.command) parts.push(fieldRow('command', `<pre>${escHtml(d.command.join(' '))}</pre>`));
+    if (d.error) parts.push(fieldRow('error', `<pre style="color:#ef4444">${escHtml(d.error)}</pre>`));
+  } else if (t === 'mcp_tool_call') {
+    parts.push(fieldRow('tool', `<span class="pill" style="color:#6366f1">${escHtml(d.namespaced_name||'')}</span>`));
+    if (d.inputs && Object.keys(d.inputs).length) {
+      parts.push(fieldRow('inputs', `<pre>${escHtml(JSON.stringify(d.inputs, null, 2))}</pre>`));
+    }
+  } else if (t === 'mcp_tool_result') {
+    parts.push(fieldRow('tool', `<span class="pill" style="color:#6366f1">${escHtml(d.server_name||'')}__${escHtml(d.tool_name||'')}</span>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ success</span>'
+      : '<span class="error-badge">✗ error</span>'));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)}ms`));
+    if (d.output) parts.push(fieldRow('output', `<pre>${escHtml(d.output)}</pre>`));
+  } else if (t === 'mcp_resource_read') {
+    parts.push(fieldRow('server', `<span class="pill" style="color:#818cf8">${escHtml(d.server_name||'')}</span>`));
+    parts.push(fieldRow('uri', `<code>${escHtml(d.uri||'')}</code>`));
+  } else if (t === 'mcp_resource_result') {
+    parts.push(fieldRow('server', `<span class="pill" style="color:#818cf8">${escHtml(d.server_name||'')}</span>`));
+    parts.push(fieldRow('uri', `<code>${escHtml(d.uri||'')}</code>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ success</span>'
+      : '<span class="error-badge">✗ error</span>'));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)}ms`));
+    parts.push(fieldRow('length', `${fmtNum(d.content_length)} chars`));
+    if (d.content) parts.push(fieldRow('content', `<pre>${escHtml(d.content)}</pre>`));
+  } else if (t === 'mcp_prompt_get') {
+    parts.push(fieldRow('server', `<span class="pill" style="color:#a78bfa">${escHtml(d.server_name||'')}</span>`));
+    parts.push(fieldRow('prompt', `<strong>${escHtml(d.prompt_name||'')}</strong>`));
+    if (d.arguments && Object.keys(d.arguments).length) {
+      parts.push(fieldRow('arguments', `<pre>${escHtml(JSON.stringify(d.arguments, null, 2))}</pre>`));
+    }
+  } else if (t === 'mcp_prompt_result') {
+    parts.push(fieldRow('server', `<span class="pill" style="color:#a78bfa">${escHtml(d.server_name||'')}</span>`));
+    parts.push(fieldRow('prompt', `<strong>${escHtml(d.prompt_name||'')}</strong>`));
+    parts.push(fieldRow('status', d.success
+      ? '<span class="success-badge">✓ success</span>'
+      : '<span class="error-badge">✗ error</span>'));
+    parts.push(fieldRow('messages', `${fmtNum(d.message_count)}`));
+    parts.push(fieldRow('latency', `${fmtNum(d.latency_ms)}ms`));
+    if (d.injected_text) parts.push(fieldRow('injected', `<pre>${escHtml(d.injected_text)}</pre>`));
+  } else if (t === 'mcp_error') {
+    if (d.server_name) parts.push(fieldRow('server', escHtml(d.server_name)));
+    if (d.tool_name) parts.push(fieldRow('tool', escHtml(d.tool_name)));
+    if (d.context) parts.push(fieldRow('context', `<span class="pill">${escHtml(d.context)}</span>`));
+    if (d.error) parts.push(fieldRow('error', `<pre style="color:#ef4444">${escHtml(d.error)}</pre>`));
+  } else if (t === 'mcp_log') {
+    const lvl = d.level || 'info';
+    const isWarn = ['warning','error','critical','alert','emergency'].includes(lvl);
+    const lvlColor = isWarn ? (lvl === 'warning' ? '#f59e0b' : '#ef4444') : '#94a3b8';
+    parts.push(fieldRow('server', escHtml(d.server_name||'')));
+    parts.push(fieldRow('level', `<span style="color:${lvlColor};font-weight:600">${escHtml(lvl)}</span>`));
+    if (d.logger) parts.push(fieldRow('logger', `<span style="color:var(--muted)">${escHtml(d.logger)}</span>`));
+    if (d.data !== undefined) parts.push(fieldRow('message', `<pre>${escHtml(String(d.data))}</pre>`));
   } else {
     parts.push(`<pre>${escHtml(JSON.stringify(d, null, 2))}</pre>`);
   }
@@ -601,21 +723,17 @@ function buildCardHeader(ev) {
   } else if (t === 'llm_response') {
     const tokenBadge = `<span class="token-badge">↑ ${fmtNum(d.input_tokens)} / ↓ ${fmtNum(d.output_tokens)}</span>`;
     const latBadge   = `<span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`;
+    const cost = calcCost(d.model, d.input_tokens, d.output_tokens);
+    const costBadge = cost != null ? `<span style="background:rgba(52,211,153,0.12);color:#34d399;font-size:11px;padding:1px 7px;border-radius:3px">${fmtCost(cost)}</span>` : '';
+    const stopPill = `<span style="background:rgba(255,255,255,0.07);border-radius:3px;padding:1px 6px;font-size:11px;color:#ccc">${escHtml(d.stop_reason||'')}</span>`;
 
-    if (d.stop_reason === 'end_turn') {
-      // Final assistant reply — show as "Minion" with response snippet
-      badgeText = 'Minion';
-      color = '#60a5fa';
-      const snippet = (d.response||'').replace(/\s+/g,' ').trim().slice(0, 100);
-      title = snippet ? escHtml(snippet) : '(no text)';
-      meta  = `${tokenBadge} ${latBadge}`;
+    if (d.stop_reason === 'tool_use') {
+      const tcNames = (d.tool_calls||[]).map(tc => `<span class="pill" style="color:#f97316">${escHtml(tc.name)}</span>`).join('');
+      title = `${stopPill} ${tcNames}`;
     } else {
-      // Intermediate thinking turn — show narration text
-      badgeText = 'Thinking';
-      const narration = (d.response||'').replace(/\s+/g,' ').trim().slice(0, 100);
-      title = narration ? escHtml(narration) : 'calling tools…';
-      meta  = `${tokenBadge} ${latBadge}`;
+      title = stopPill;
     }
+    meta = `${tokenBadge} ${latBadge} ${costBadge}`;
     if (d.reflection_role) meta += ` <span style="color:var(--c-reflection);font-size:11px;padding:1px 6px;background:rgba(236,72,153,0.1);border-radius:3px">${escHtml(d.reflection_role)}</span>`;
 
   } else if (t === 'llm_error') {
@@ -650,6 +768,50 @@ function buildCardHeader(ev) {
   } else if (t === 'skill_complete') {
     title = `/${escHtml(d.skill_name||'')}`;
     meta = `<span style="color:#10b981;font-size:11px;padding:1px 6px;background:rgba(16,185,129,0.1);border-radius:3px">✓ done</span>`;
+  } else if (t === 'mcp_server_connect') {
+    title = escHtml(d.server_name||'');
+    meta = d.success
+      ? `<span class="success-badge">✓ ${fmtNum(d.tool_count)} tools</span> <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`
+      : '<span class="error-badge">✗ failed</span>';
+  } else if (t === 'mcp_tool_call') {
+    title = escHtml(d.namespaced_name||'');
+    const firstArg = Object.entries(d.inputs||{}).find(([,v]) => typeof v === 'string');
+    if (firstArg) title += ` <span style="color:var(--muted)">${escHtml(firstArg[0])}=<em>${escHtml(firstArg[1].slice(0,50))}</em></span>`;
+  } else if (t === 'mcp_tool_result') {
+    title = `${escHtml(d.server_name||'')}__${escHtml(d.tool_name||'')}`;
+    meta = d.success
+      ? `<span class="success-badge">✓</span> <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`
+      : '<span class="error-badge">✗</span>';
+  } else if (t === 'mcp_resource_read') {
+    title = `<span style="color:#818cf8">${escHtml(d.server_name||'')}</span> · <code>${escHtml(d.uri||'')}</code>`;
+  } else if (t === 'mcp_resource_result') {
+    title = `<span style="color:#818cf8">${escHtml(d.server_name||'')}</span> · <code>${escHtml(d.uri||'')}</code>`;
+    meta = d.success
+      ? `<span class="success-badge">✓ ${fmtNum(d.content_length)}c</span> <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`
+      : '<span class="error-badge">✗</span>';
+  } else if (t === 'mcp_prompt_get') {
+    title = `<span style="color:#a78bfa">${escHtml(d.server_name||'')}</span> · <strong>${escHtml(d.prompt_name||'')}</strong>`;
+    const argKeys = Object.keys(d.arguments || {});
+    if (argKeys.length) meta = `<span style="color:var(--muted);font-size:11px">${argKeys.map(k=>`${escHtml(k)}=<em>${escHtml(String(d.arguments[k]).slice(0,30))}</em>`).join(' ')}</span>`;
+  } else if (t === 'mcp_prompt_result') {
+    title = `<span style="color:#a78bfa">${escHtml(d.server_name||'')}</span> · <strong>${escHtml(d.prompt_name||'')}</strong>`;
+    meta = d.success
+      ? `<span class="success-badge">✓ ${fmtNum(d.message_count)} msg</span> <span class="latency-badge">${fmtNum(d.latency_ms)}ms</span>`
+      : '<span class="error-badge">✗ error</span>';
+  } else if (t === 'mcp_error') {
+    title = `${escHtml(d.server_name||'')} · ${escHtml((d.error||'').slice(0,60))}`;
+    meta  = `<span class="error-badge">✗ ${escHtml(d.context||'error')}</span>`;
+  } else if (t === 'mcp_log') {
+    const lvl = d.level || 'info';
+    const isWarn = ['warning','error','critical','alert','emergency'].includes(lvl);
+    const isErr  = ['error','critical','alert','emergency'].includes(lvl);
+    color = isErr ? '#ef4444' : isWarn ? '#f59e0b' : '#94a3b8';
+    title = escHtml((d.data||'').slice(0, 80));
+    const lvlBadge = isErr  ? `<span class="error-badge">${escHtml(lvl)}</span>`
+                  : isWarn ? `<span style="background:rgba(245,158,11,0.15);color:#f59e0b;font-size:11px;padding:1px 6px;border-radius:3px">${escHtml(lvl)}</span>`
+                           : `<span class="pill" style="color:#94a3b8">${escHtml(lvl)}</span>`;
+    meta = lvlBadge;
+    if (d.logger) meta += ` <span style="color:var(--muted);font-size:11px">${escHtml(d.logger)}</span>`;
   } else if (t === 'session_end') title = `${fmtNum(d.total_turns)} turns · ${d.duration_seconds}s`;
 
   const badge = `<span class="card-type-badge" style="color:${color}">${badgeText}</span>`;
@@ -657,17 +819,54 @@ function buildCardHeader(ev) {
     <span class="card-title">${title}</span>
     ${meta}
     <span class="card-time">${fmtTime(ev.timestamp)}</span>
-    <span class="card-chevron ${DEFAULT_OPEN.has(t)?'open':''}">▶</span>`;
+    <span class="card-chevron ${isDefaultOpen(ev)?'open':''}">▶</span>`;
+}
+
+// Creates the companion "Minion" (end_turn) or "Thinking" (tool_use) text card
+// that shows just the LLM's response/narration text, separate from the param card.
+function createTextCard(ev, idx) {
+  const d = ev.data || {};
+  const isEndTurn = d.stop_reason === 'end_turn';
+  const text = d.response || '';
+  if (!text.trim()) return null;
+
+  const vcType = isEndTurn ? 'llm_response_minion' : 'llm_response_thinking';
+  const card = document.createElement('div');
+  card.className = `event-card type-${vcType}`;
+  card.dataset.type = vcType;
+  card.dataset.idx = `${idx}-text`;
+
+  const color = isEndTurn ? '#FFD700' : '#a78bfa';
+  const badgeText = isEndTurn ? 'Minion' : 'Thinking';
+  const snippet = text.replace(/\s+/g,' ').trim().slice(0, 100);
+  const badge = `<span class="card-type-badge" style="color:${color}">${badgeText}</span>`;
+
+  const header = document.createElement('div');
+  header.className = 'card-header';
+  header.innerHTML = `${badge}
+    <span class="card-title">${escHtml(snippet)}</span>
+    <span class="card-time">${fmtTime(ev.timestamp)}</span>
+    <span class="card-chevron open">▶</span>`;
+
+  const body = document.createElement('div');
+  body.className = 'card-body visible';
+  body.innerHTML = `<pre style="border-left:2px solid ${color}">${escHtml(text)}</pre>`;
+
+  header.addEventListener('click', () => {
+    const open = body.classList.toggle('visible');
+    header.querySelector('.card-chevron').classList.toggle('open', open);
+  });
+
+  card.appendChild(header);
+  card.appendChild(body);
+  return card;
 }
 
 function createCard(ev, idx) {
   const t = ev.event_type;
-  const d = ev.data || {};
   const card = document.createElement('div');
 
-  // End-turn llm_response cards get an extra CSS class for the blue left border
-  const isEndTurn = t === 'llm_response' && d.stop_reason === 'end_turn';
-  card.className = `event-card type-${t}${isEndTurn ? ' type-llm_response_end' : ''}`;
+  card.className = `event-card type-${t}`;
   card.dataset.type = t;
   card.dataset.idx = idx;
 
@@ -676,7 +875,7 @@ function createCard(ev, idx) {
   header.innerHTML = buildCardHeader(ev);
 
   const body = document.createElement('div');
-  body.className = 'card-body' + (DEFAULT_OPEN.has(t) ? ' visible' : '');
+  body.className = 'card-body' + (isDefaultOpen(ev) ? ' visible' : '');
   body.innerHTML = buildCardBody(ev);
 
   header.addEventListener('click', () => {
@@ -703,6 +902,10 @@ function updateSummary() {
   const tokIn  = responses.reduce((s,e) => s + (e.data.input_tokens||0), 0);
   const tokOut = responses.reduce((s,e) => s + (e.data.output_tokens||0), 0);
   const llmCalls  = responses.length;
+  const totalCost = responses.reduce((s, e) => {
+    const c = calcCost(e.data.model, e.data.input_tokens||0, e.data.output_tokens||0);
+    return s + (c || 0);
+  }, 0);
 
   // Try to get final stats from session_end
   const endEv = allEvents.find(e => e.event_type === 'session_end');
@@ -720,6 +923,8 @@ function updateSummary() {
     document.getElementById('stat-tokens').textContent = `${fmtNum(tokIn)} / ${fmtNum(tokOut)}`;
     document.getElementById('stat-tools').textContent  = toolCalls;
   }
+  const costDisplay = totalCost > 0 ? fmtCost(totalCost) : '—';
+  document.getElementById('stat-cost').textContent = costDisplay;
 
   // ── Sidebar stats ─────────────────────────────────────────────────────────
   const startEv = allEvents.find(e => e.event_type === 'session_start');
@@ -745,6 +950,7 @@ function updateSummary() {
   parts.push(sidebarStat('Tool calls', fmtNum(toolCalls)));
   parts.push(sidebarStat('Tokens in',  fmtNum(tokIn)));
   parts.push(sidebarStat('Tokens out', fmtNum(tokOut)));
+  if (totalCost > 0) parts.push(sidebarStat('Est. cost', `<span style="color:#34d399">${fmtCost(totalCost)}</span>`));
   parts.push(sidebarStat('Memories stored', fmtNum(memStores)));
   if (endEv) {
     const ed = endEv.data || {};
@@ -758,6 +964,11 @@ function rebuildFilters() {
   const counts = {};
   for (const ev of allEvents) {
     counts[ev.event_type] = (counts[ev.event_type]||0) + 1;
+    // Count virtual text cards (Thinking / Minion) derived from llm_response
+    if (ev.event_type === 'llm_response' && (ev.data||{}).response) {
+      const vcType = ev.data.stop_reason === 'end_turn' ? 'llm_response_minion' : 'llm_response_thinking';
+      counts[vcType] = (counts[vcType]||0) + 1;
+    }
   }
 
   const list = document.getElementById('filter-list');
@@ -824,8 +1035,12 @@ async function fetchEvents() {
     // Append only new events
     for (let i = prevCount; i < events.length; i++) {
       allEvents.push(events[i]);
-      const card = createCard(events[i], i);
-      timeline.appendChild(card);
+      timeline.appendChild(createCard(events[i], i));
+      // llm_response gets a companion text card (Minion / Thinking)
+      if (events[i].event_type === 'llm_response') {
+        const tc = createTextCard(events[i], i);
+        if (tc) timeline.appendChild(tc);
+      }
     }
     prevCount = events.length;
 

@@ -159,3 +159,80 @@ class SkillStartData:
 class SkillCompleteData:
     skill_name: str
     arg: str
+
+
+# ─── MCP lifecycle events ─────────────────────────────────────────────────────
+
+@dataclass
+class MCPServerConnectData:
+    server_name: str
+    command: list[str]      # subprocess argv (no secrets)
+    tool_count: int         # 0 on failure
+    success: bool
+    latency_ms: int
+    error: Optional[str] = None
+
+
+@dataclass
+class MCPToolCallData:
+    server_name: str        # extracted from namespaced name (before __)
+    tool_name: str          # raw tool name (after __)
+    namespaced_name: str    # full "server__tool" as seen by executor
+    inputs: dict
+
+
+@dataclass
+class MCPToolResultData:
+    server_name: str
+    tool_name: str
+    output: str             # full result text
+    success: bool
+    latency_ms: int
+
+
+@dataclass
+class MCPErrorData:
+    server_name: str        # "" if not server-specific
+    tool_name: str          # "" if not tool-specific
+    error: str
+    context: str = ""       # "connect" | "call" | "shutdown"
+
+
+@dataclass
+class MCPResourceReadData:
+    server_name: str
+    uri: str                # full resource URI, e.g. "notes://ideas"
+
+
+@dataclass
+class MCPResourceResultData:
+    server_name: str
+    uri: str
+    content_length: int     # byte length of returned content
+    success: bool
+    latency_ms: int
+
+
+@dataclass
+class MCPPromptGetData:
+    server_name: str
+    prompt_name: str        # raw (un-namespaced) prompt name
+    arguments: dict         # arguments passed to prompts/get
+
+
+@dataclass
+class MCPPromptResultData:
+    server_name: str
+    prompt_name: str
+    injected_text: str      # the text that will be sent to the LLM (truncated to 1000 chars)
+    message_count: int      # number of MCP messages in the response
+    success: bool
+    latency_ms: int
+
+
+@dataclass
+class MCPLogData:
+    server_name: str
+    level: str              # MCP syslog severity: debug/info/notice/warning/error/critical/alert/emergency
+    logger: str             # logger name from server (may be empty string)
+    data: str               # the log message text
