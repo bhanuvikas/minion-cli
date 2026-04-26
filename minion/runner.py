@@ -271,28 +271,28 @@ def _execute_parallel_agents(
 ) -> None:
     """Execute multiple spawn_agent calls concurrently with a grouped live display.
 
-    Unlike the generic _execute_tools path, this:
-    - Prints all spawn_agent tool calls in the main thread BEFORE the Live context
-      (prevents interleaving with the Live renderer)
-    - Uses AgentLiveDisplay to show each agent's status in its own updating slot
-    - Calls executor._agent_runner directly (bypasses executor.execute() which would
-      call print_tool_result and corrupt the Live display)
-    - Emits tool_call / tool_result traces manually to compensate
+    Each spawn_agent block gets its own 3-line slot (header + status + detail)
+    rendered inside the Live area. Calls executor._agent_runner directly to bypass
+    executor.execute()'s print_tool_call / print_tool_result (which would corrupt Live).
+    Emits tool_call / tool_result traces manually to compensate.
     """
-    from .agents.display import AgentLiveDisplay, set_agent_display_callback
-
-    # Print all spawn_agent tool calls up-front in main thread (stable order, no race).
-    for tb in tool_blocks:
-        print_tool_call(tb.name, tb.input, agent_label=executor._agent_label)
+    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
 
     results: dict[str, str] = {}
     display = AgentLiveDisplay()
 
-    # Pre-register all slots before the Live context starts.
-    # This fixes the height of the live area from the first frame so Rich never
-    # needs to resize it — eliminating flicker when agents complete and add preview lines.
-    roles_in_order = [tb.input.get("role") or "researcher" for tb in tool_blocks]
-    display.pre_register(roles_in_order)
+    # Pre-register all slots before the Live context starts so the display has a
+    # fixed height from the first render — Rich Live never resizes, eliminating flicker.
+    slots = [
+        SlotSpec(
+            key=tb.input.get("role") or "researcher",
+            tool_name="spawn_agent",
+            inputs=tb.input,
+            label=tb.input.get("role") or "researcher",
+        )
+        for tb in tool_blocks
+    ]
+    display.pre_register(slots)
 
     def run_one(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
@@ -326,6 +326,65 @@ def _execute_parallel_agents(
         conversation.add_tool_result(tb.id, results[tb.id])
 
 
+def _execute_parallel_tools(
+    tool_blocks: list[ToolUseBlock],
+    executor: ToolExecutor,
+    conversation: Conversation,
+) -> None:
+    """Execute multiple non-agent tool calls concurrently with a grouped live display.
+
+    Each tool block gets its own 3-line slot (⚙ header + status + result preview).
+    The slot callback is set on each thread so executor.execute() routes its
+    print_tool_call / print_tool_result through the callback instead of stdout,
+    preventing output from corrupting the Live display.
+    """
+    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
+
+    display = AgentLiveDisplay()
+
+    # tb.id is unique per tool_use block even when the same tool is called twice.
+    slots = [
+        SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
+        for tb in tool_blocks
+    ]
+    display.pre_register(slots)
+
+    results: dict[str, str] = {}
+
+    def _run_tb(tb: ToolUseBlock) -> str:
+        slot_cb = display.make_callback(tb.id)
+        slot_cb("running")
+        set_agent_display_callback(slot_cb)
+        start = _time.monotonic()
+        try:
+            result = executor.execute(tb)  # print_tool_call/result suppressed via slot_cb
+            latency_ms = int((_time.monotonic() - start) * 1000)
+            first_line = result.split("\n")[0][:100]
+            if result.startswith("Error:"):
+                slot_cb("error", error=first_line.removeprefix("Error: "))
+            else:
+                slot_cb("complete", latency_ms=latency_ms, preview=first_line)
+            return result
+        except Exception as exc:
+            slot_cb("error", error=str(exc))
+            raise
+        finally:
+            set_agent_display_callback(None)
+
+    with display:
+        with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
+            future_to_block = {pool.submit(_run_tb, tb): tb for tb in tool_blocks}
+            for future in as_completed(future_to_block):
+                tb = future_to_block[future]
+                try:
+                    results[tb.id] = future.result()
+                except Exception as exc:
+                    results[tb.id] = f"Error: {exc}"
+
+    for tb in tool_blocks:
+        conversation.add_tool_result(tb.id, results[tb.id])
+
+
 def _execute_tools(
     tool_blocks: list[ToolUseBlock],
     executor: ToolExecutor,
@@ -349,41 +408,15 @@ def _execute_tools(
         conversation.add_tool_result(tb.id, executor.execute(tb))
         return
 
-    # Parallel spawn_agent path: all blocks are spawn_agent calls and an agent
-    # runner is available — use the grouped live display.
+    # Parallel spawn_agent path: all blocks are spawn_agent calls — use the agent
+    # live display which includes subagent thinking/tool updates in each slot.
     if all(tb.name == "spawn_agent" for tb in tool_blocks) and executor._agent_runner is not None:
         _execute_parallel_agents(tool_blocks, executor, conversation)
         return
 
-    # Parallel path: dispatch all tool calls concurrently, collect by id.
-    # Capture the parent thread's slot callback (if any) so sub-threads also route
-    # their tool-call display through the same Live slot — handles the case where a
-    # subagent requests multiple tools in one turn.
-    from .agents.display import get_agent_display_callback, set_agent_display_callback
-    _parent_slot_cb = get_agent_display_callback()
-
-    def _run_tb(tb: ToolUseBlock) -> str:
-        if _parent_slot_cb is not None:
-            set_agent_display_callback(_parent_slot_cb)
-        try:
-            return executor.execute(tb)
-        finally:
-            if _parent_slot_cb is not None:
-                set_agent_display_callback(None)
-
-    results: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
-        future_to_block = {pool.submit(_run_tb, tb): tb for tb in tool_blocks}
-        for future in as_completed(future_to_block):
-            tb = future_to_block[future]
-            try:
-                results[tb.id] = future.result()
-            except Exception as exc:
-                results[tb.id] = f"Error: {exc}"
-
-    # Inject in original order — preserves conversation history coherence.
-    for tb in tool_blocks:
-        conversation.add_tool_result(tb.id, results[tb.id])
+    # Parallel generic path: any mix of non-agent tool calls — use the generic
+    # live display so each tool gets its own slot instead of interleaving output.
+    _execute_parallel_tools(tool_blocks, executor, conversation)
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
