@@ -71,6 +71,10 @@ def main(
         False, "--no-trace",
         help="Disable session tracing (no .jsonl written to ~/.minion/traces/).",
     ),
+    no_agents: bool = typer.Option(
+        False, "--no-agents",
+        help="Disable subagent spawning (removes spawn_agent from tool list).",
+    ),
     version: bool = typer.Option(
         False, "--version",
         help="Show version and exit.",
@@ -109,6 +113,7 @@ def main(
             dry_run=dry_run,
             reflect_config=reflect_config,
             verbose=verbose,
+            enable_agents=not no_agents,
         )
     else:
         # REPL mode — initialize tracer unless --no-trace
@@ -118,6 +123,7 @@ def main(
         run_repl(
             client, dry_run=dry_run, reflect_depth=reflect or 0,
             verbose=verbose, memory_enabled=not no_memory, debug=debug,
+            agents_enabled=not no_agents,
         )
 
 
@@ -196,3 +202,59 @@ def _list_mcp() -> None:
         for p in s["prompts"]:
             console.print(f"    · prompt   {s['name']}__{p['name']}")
     manager.shutdown()
+
+
+# ─── `minion agent` subcommand ────────────────────────────────────────────────
+
+_agent_app = typer.Typer(name="agent", help="Manage and run agent roles.", add_completion=False)
+app.add_typer(_agent_app, name="agent")
+
+
+@_agent_app.callback(invoke_without_command=True)
+def _agent_main(ctx: typer.Context) -> None:
+    """List available roles or run one. Run without subcommand to list all roles."""
+    if ctx.invoked_subcommand is None:
+        _list_agents()
+
+
+@_agent_app.command("list")
+def agent_list() -> None:
+    """List all available agent roles with descriptions and tool subsets."""
+    _list_agents()
+
+
+@_agent_app.command("run")
+def agent_run(
+    role: str = typer.Argument(..., help="Role name: researcher, coder, reviewer, tester"),
+    task: str = typer.Argument(..., help="Task for the agent to complete"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+    model: Optional[str] = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Run a specific agent role on a task (one-shot)."""
+    from .agents import load_agent_registry
+    from .agents.runner import run_agent
+    from .llm.factory import get_client
+
+    try:
+        client = get_client(provider, model)
+    except ValueError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1)
+
+    registry = load_agent_registry(Path.cwd())
+    result = run_agent(task, role, registry, client, parent_depth=0)
+    console.print(result)
+
+
+def _list_agents() -> None:
+    from .agents import load_agent_registry
+    registry = load_agent_registry(Path.cwd())
+    if not registry:
+        console.print("[muted]No agent roles found.[/]")
+        return
+    for name, role in sorted(registry.items()):
+        tools_str = ", ".join(role.tools) if role.tools else "all tools"
+        console.print(
+            f"  [bold {YELLOW}]{name:<14}[/] [{role.source}] {role.description}\n"
+            f"  {'':14}  [muted]tools: {tools_str}[/]"
+        )

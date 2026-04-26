@@ -60,6 +60,7 @@ class ReplState:
     debug: bool = False       # print full system prompt before each LLM call
     active_plan: Optional[Path] = None         # path to the current plan file
     active_plan_goal: Optional[str] = None     # goal text stored alongside path
+    agents_enabled: bool = True  # False = exclude spawn_agent from tool list
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -84,6 +85,8 @@ REPL_COMMANDS = {
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
     "/mcp":     "MCP servers: /mcp or /mcp list",
+    "/agents":  "Subagents: /agents | /agents on | /agents off",
+    "/agent":   "Run a role directly: /agent <role> <task>",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -288,6 +291,7 @@ def _handle_slash_command(
     memory_store: MemoryStore | None = None,
     base_system_prompt: str = "",
     skill_registry: "SkillRegistry | None" = None,
+    agent_registry=None,
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -412,6 +416,33 @@ def _handle_slash_command(
                 console.print(f"[{YELLOW}]Memory off.[/]")
             else:
                 print_error("Usage: /memory [--on | --off]")
+        return True
+
+    if cmd == "/agents":
+        if state is not None:
+            if not arg:
+                status = "on" if state.agents_enabled else "off"
+                console.print(f"[{YELLOW}]Subagents:[/] {status}")
+                if agent_registry:
+                    from rich.table import Table
+                    table = Table(show_header=True, header_style="bold", expand=False, box=None)
+                    table.add_column("role", style=YELLOW)
+                    table.add_column("description")
+                    table.add_column("tools", style="muted")
+                    for name, role in sorted(agent_registry.items()):
+                        tools_str = ", ".join(role.tools) if role.tools else "all"
+                        table.add_row(name, role.description, tools_str)
+                    console.print(table)
+                else:
+                    console.print("[muted]No agent roles loaded.[/]")
+            elif arg in ("on", "--on"):
+                state.agents_enabled = True
+                console.print(f"[{YELLOW}]Subagents on.[/]")
+            elif arg in ("off", "--off"):
+                state.agents_enabled = False
+                console.print(f"[{YELLOW}]Subagents off.[/] [muted](spawn_agent removed from tool list)[/]")
+            else:
+                print_error("Usage: /agents [on | off]")
         return True
 
     if cmd == "/remember":
@@ -705,6 +736,35 @@ def _inject_mcp_message(msg: dict, conversation: Conversation) -> None:
         conversation.add_assistant(text, usage=None)
 
 
+# ─── /agent direct invocation handler ───────────────────────────────────────
+
+def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
+    """Handle '/agent <role> <task>' — run a subagent role directly.
+
+    Parses the role name from the second token, treats the remainder as the
+    task, and calls run_agent() to execute it. The result is printed to the
+    terminal.
+    """
+    from .agents.runner import run_agent
+
+    parts = raw.split(None, 2)  # ["/agent", "<role>", "<task>"]
+    if len(parts) < 3:
+        if len(parts) == 2:
+            print_error(f"Usage: /agent <role> <task>  (missing task for role '{parts[1]}')")
+        else:
+            print_error("Usage: /agent <role> <task>")
+        return
+
+    role_name = parts[1]
+    task = parts[2].strip()
+    if not task:
+        print_error("Task cannot be empty.")
+        return
+
+    result = run_agent(task, role_name, agent_registry, client, parent_depth=0)
+    console.print(result)
+
+
 # ─── /mcp command handler ────────────────────────────────────────────────────
 
 def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[list[dict]]:
@@ -880,6 +940,7 @@ def run_repl(
     verbose: bool = False,
     memory_enabled: bool = True,
     debug: bool = False,
+    agents_enabled: bool = True,
 ) -> None:
     """Start the interactive REPL loop."""
     print_greeting()
@@ -923,6 +984,7 @@ def run_repl(
         verbose=verbose,
         memory_enabled=memory_enabled,
         debug=debug,
+        agents_enabled=agents_enabled,
     )
 
     # ── Skills setup ──────────────────────────────────────────────────────────
@@ -933,6 +995,15 @@ def run_repl(
         _cmd_key = f"/{_skill_name}"
         if _cmd_key not in REPL_COMMANDS:   # never overwrite built-in commands
             REPL_COMMANDS[_cmd_key] = _skill.description
+
+    # ── Agents setup ─────────────────────────────────────────────────────────
+    from .agents import load_agent_registry
+    agent_registry = load_agent_registry(project_cwd)
+    if agent_registry:
+        console.print(
+            f"[muted]Agents: {len(agent_registry)} role(s) available. "
+            f"Type /agents to list.[/]\n"
+        )
 
     # ── MCP setup ─────────────────────────────────────────────────────────────
     from .mcp import load_mcp_manager
@@ -1001,10 +1072,17 @@ def run_repl(
                 )
                 continue
 
+        # /agent is handled inline so it can access agent_registry + client.
+        if user_input.startswith("/agent "):
+            _handle_agent_direct(user_input, agent_registry, client)
+            console.print()
+            continue
+
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,
             base_system_prompt=base_system_prompt,
             skill_registry=skill_registry,
+            agent_registry=agent_registry,
         ):
             console.print()
             continue
@@ -1052,6 +1130,9 @@ def run_repl(
             verbose=state.verbose,
             memory_tokens=memory_tokens,
             mcp_manager=mcp_manager,
+            enable_agents=state.agents_enabled,
+            agent_registry=agent_registry,
+            agent_depth=0,
         )
         console.print()
 

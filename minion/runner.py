@@ -15,6 +15,7 @@ Responsibilities:
 import re
 import sys
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -250,10 +251,38 @@ def _execute_tools(
     executor: ToolExecutor,
     conversation: Conversation,
 ) -> None:
-    """Execute each tool call and inject its result into conversation."""
-    for tool_block in tool_blocks:
-        result = executor.execute(tool_block)
-        conversation.add_tool_result(tool_block.id, result)
+    """Execute all tool calls from one LLM turn and inject results into conversation.
+
+    When the model requests a single tool call the fast path avoids thread
+    overhead. When it requests multiple tool calls they run concurrently via
+    ThreadPoolExecutor and results are injected in the original order so the
+    conversation stays coherent regardless of which thread finishes first.
+
+    Thread-safety:
+    - ToolExecutor.execute() is stateless (reads dry_run/mcp_manager, never writes).
+    - _CONFIRM_LOCK in executor.py serializes questionary.confirm() calls.
+    - conversation.add_tool_result() is called sequentially after all futures settle.
+    """
+    if len(tool_blocks) == 1:
+        # Fast path: single tool call — no threading overhead.
+        tb = tool_blocks[0]
+        conversation.add_tool_result(tb.id, executor.execute(tb))
+        return
+
+    # Parallel path: dispatch all tool calls concurrently, collect by id.
+    results: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
+        future_to_block = {pool.submit(executor.execute, tb): tb for tb in tool_blocks}
+        for future in as_completed(future_to_block):
+            tb = future_to_block[future]
+            try:
+                results[tb.id] = future.result()
+            except Exception as exc:
+                results[tb.id] = f"Error: {exc}"
+
+    # Inject in original order — preserves conversation history coherence.
+    for tb in tool_blocks:
+        conversation.add_tool_result(tb.id, results[tb.id])
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
@@ -316,7 +345,11 @@ def run_prompt(
     markdown_title: str = "",
     spinner_label: Optional[str] = None,
     mcp_manager=None,
-) -> None:
+    capture_output: bool = False,
+    enable_agents: bool = True,
+    agent_depth: int = 0,
+    agent_registry=None,
+) -> Optional[str]:
     """Run the ReAct agent loop for a single user prompt.
 
     Loops up to max_iterations (defaults to MAX_ITERATIONS). Each iteration is
@@ -326,18 +359,41 @@ def run_prompt(
 
     When reflect_config is provided and depth > 0, runs the self-refine loop
     after the final end_turn response before returning.
+
+    When capture_output=True (used by subagents), all terminal output is
+    suppressed and the final response text is returned as a string. The return
+    value is None in normal (streaming) mode and str in capture mode.
     """
     limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
 
-    # Build effective tool list.  MCP tools are only appended when tools=None
-    # (all-tools mode).  Skills that declare an explicit tool subset are
-    # intentionally not given MCP tools — they opted into a specific capability.
+    # ── Build effective tool list ──────────────────────────────────────────────
+    # MCP tools appended only in all-tools mode (tools=None). Skills/subagents
+    # that declare an explicit tool subset intentionally skip MCP tools.
     if tools is None and mcp_manager is not None and mcp_manager.has_tools():
         effective_tools: Optional[list] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
     else:
         effective_tools = tools  # None → _stream_one_iteration uses TOOL_DEFINITIONS
 
-    executor = ToolExecutor(dry_run=dry_run, mcp_manager=mcp_manager)
+    # spawn_agent is excluded when agents are disabled or when we're already
+    # inside a worker (depth >= MAX_AGENT_DEPTH prevents recursive spawning).
+    from .agents.runner import MAX_AGENT_DEPTH
+    _exclude_spawn = not enable_agents or agent_depth >= MAX_AGENT_DEPTH
+    if _exclude_spawn:
+        base = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
+        effective_tools = [t for t in base if t["name"] != "spawn_agent"]
+
+    # ── Build agent runner + inject subagent guidance into system prompt ───────
+    if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
+        from .agents import SUBAGENT_GUIDANCE
+        from .agents.runner import run_agent
+        _agent_runner = lambda task, role: run_agent(  # noqa: E731
+            task, role, agent_registry, client, parent_depth=agent_depth
+        )
+        system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
+    else:
+        _agent_runner = None
+
+    executor = ToolExecutor(dry_run=dry_run, mcp_manager=mcp_manager, agent_runner=_agent_runner)
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
@@ -358,6 +414,9 @@ def run_prompt(
         # ── End turn: model finished responding ───────────────────────────────
         if result.stop_reason == "end_turn":
             conversation.add_assistant(result.full_text, result.usage)
+            if capture_output:
+                # Subagent mode: suppress all terminal output, return text.
+                return result.full_text
             if render_markdown and result.full_text:
                 from rich.markdown import Markdown
                 from rich.panel import Panel
@@ -394,9 +453,9 @@ def run_prompt(
                 break
 
             for tb in result.tool_blocks:
-                # MCP tools are conservatively treated as side-effecting to
-                # prevent reflection from running after unknown operations.
-                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name:
+                # MCP tools and spawn_agent are conservatively treated as
+                # side-effecting to prevent reflection after unknown operations.
+                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name == "spawn_agent":
                     side_effects_occurred = True
 
             _execute_tools(result.tool_blocks, executor, conversation)
@@ -407,8 +466,10 @@ def run_prompt(
         print_iteration_limit(limit)
 
     # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
-    system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
-    if final_usage:
-        conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
-    snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
-    print_usage(snapshot)
+    if not capture_output:
+        system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
+        if final_usage:
+            conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
+        snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
+        print_usage(snapshot)
+    return None

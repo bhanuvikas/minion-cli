@@ -236,3 +236,27 @@ class MCPLogData:
     level: str              # MCP syslog severity: debug/info/notice/warning/error/critical/alert/emergency
     logger: str             # logger name from server (may be empty string)
     data: str               # the log message text
+
+
+# ─── Agent lifecycle events ───────────────────────────────────────────────────
+
+@dataclass
+class AgentSpawnData:
+    role: str               # e.g., "researcher"
+    task: str               # full task text passed to the subagent
+    depth: int              # nesting depth (1 for direct workers of the orchestrator)
+
+
+@dataclass
+class AgentCompleteData:
+    role: str
+    task: str               # first 120 chars of the task (for header display)
+    result_length: int      # character count of the returned text
+    latency_ms: int
+
+
+@dataclass
+class AgentErrorData:
+    role: str
+    task: str               # first 120 chars of the task
+    error: str              # exception message

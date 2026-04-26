@@ -9,9 +9,17 @@ and keeps business-logic concerns (which tools are dangerous, dispatch table)
 out of runner.py.
 """
 
+import threading
+
 import questionary
 
 from ..config import MINION_STYLE
+
+# Serializes questionary.confirm() calls across threads.
+# Without this, parallel tool executions (e.g. two simultaneous spawn_agent calls
+# that each trigger dangerous sub-tools) would interleave confirmation prompts on
+# the terminal and corrupt the user's view.
+_CONFIRM_LOCK = threading.Lock()
 from ..llm.base import ToolUseBlock
 from ..theme import console, print_tool_call, print_tool_error, print_tool_result
 from ..tracing import get_tracer
@@ -56,9 +64,10 @@ class ToolExecutor:
     the same confirmation prompt as native DANGEROUS_TOOLS.
     """
 
-    def __init__(self, dry_run: bool = False, mcp_manager=None) -> None:
+    def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None) -> None:
         self.dry_run = dry_run
-        self._mcp_manager = mcp_manager  # type: MCPManager | None
+        self._mcp_manager = mcp_manager    # type: MCPManager | None
+        self._agent_runner = agent_runner  # type: Callable[[str, str | None], str] | None
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -70,12 +79,27 @@ class ToolExecutor:
         if self.dry_run:
             return "[dry-run: tool not executed]"
 
+        # spawn_agent: delegate to the injected agent runner callable
+        if name == "spawn_agent":
+            if self._agent_runner is None:
+                result = "Error: subagents not available (agents disabled or at max depth)."
+                print_tool_error(result)
+                return result
+            task = inputs.get("task", "")
+            role = inputs.get("role")
+            get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=inputs)
+            result = self._agent_runner(task, role)
+            print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            return result
+
         if name in DANGEROUS_TOOLS:
-            confirmed = questionary.confirm(
-                f"  Allow {name}?",
-                default=False,
-                style=MINION_STYLE,
-            ).ask()
+            with _CONFIRM_LOCK:
+                confirmed = questionary.confirm(
+                    f"  Allow {name}?",
+                    default=False,
+                    style=MINION_STYLE,
+                ).ask()
             if not confirmed:
                 result = "User declined tool execution."
                 print_tool_result(result)
@@ -86,11 +110,12 @@ class ToolExecutor:
             # MCP tool: namespaced as "server__tool"
             if "__" in name and self._mcp_manager is not None:
                 if self._mcp_manager.is_dangerous(name):
-                    confirmed = questionary.confirm(
-                        f"  Allow {name}?",
-                        default=False,
-                        style=MINION_STYLE,
-                    ).ask()
+                    with _CONFIRM_LOCK:
+                        confirmed = questionary.confirm(
+                            f"  Allow {name}?",
+                            default=False,
+                            style=MINION_STYLE,
+                        ).ask()
                     if not confirmed:
                         result = "User declined tool execution."
                         print_tool_result(result)

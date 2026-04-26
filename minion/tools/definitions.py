@@ -152,6 +152,40 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "spawn_agent",
+        "description": (
+            "Spawn a specialized subagent to handle a focused subtask in isolation. "
+            "The subagent runs its own ReAct loop with a dedicated context window and "
+            "a tool subset matched to its role. Returns the subagent's complete response "
+            "as a string when done. "
+            "Available roles: researcher (read-only analysis), coder (implements features), "
+            "reviewer (code review), tester (runs and diagnoses tests). "
+            "Use when subtasks are genuinely independent and benefit from specialization or "
+            "parallel execution. Do NOT use for simple questions you can answer directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained task description for the subagent. Include all "
+                        "context it needs — the subagent has no access to the current "
+                        "conversation history."
+                    ),
+                },
+                "role": {
+                    "type": "string",
+                    "description": (
+                        "Agent role to use: researcher, coder, reviewer, or tester. "
+                        "Defaults to researcher if omitted."
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
 ]
 
 # Tools that modify state or execute arbitrary code — require user confirmation.
