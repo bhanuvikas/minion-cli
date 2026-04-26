@@ -251,6 +251,7 @@ class AgentSpawnData:
 class AgentCompleteData:
     role: str
     task: str               # first 120 chars of the task (for header display)
+    result: str             # full response text returned to the orchestrator
     result_length: int      # character count of the returned text
     latency_ms: int
 

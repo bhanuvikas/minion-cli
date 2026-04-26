@@ -12,6 +12,7 @@ Responsibilities:
   _execute_tools()          — run each tool call, inject results into conversation
 """
 
+import contextlib
 import re
 import sys
 import time as _time
@@ -28,6 +29,7 @@ from .theme import (
     print_critique, print_diff, print_error, print_iteration_limit,
     print_reflection_header, print_tool_call, print_usage,
 )
+from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
 from .tracing import get_tracer
@@ -118,7 +120,9 @@ def _stream_one_iteration(
     system_prompt: str,
     tools: Optional[list] = None,
     silent: bool = False,
+    flush_narration: bool = True,
     spinner_label: Optional[str] = None,
+    agent_label: Optional[str] = None,
 ) -> Optional[_IterationResult]:
     """Run one LLM streaming call and collect all events into a structured result.
 
@@ -147,7 +151,9 @@ def _stream_one_iteration(
     effective_spinner = spinner_label or _SPINNER_LABEL
     try:
         stream = client.stream(conversation.messages, system=system_prompt, tools=effective_tools)
-        with console.status(effective_spinner, spinner="dots"):
+        _in_live = _get_slot_cb() is not None
+        _first_cm = contextlib.nullcontext() if _in_live else console.status(effective_spinner, spinner="dots")
+        with _first_cm:
             first_event = next(stream, None)
     except Exception as e:
         get_tracer().emit(
@@ -173,13 +179,20 @@ def _stream_one_iteration(
     def _process(event) -> None:
         nonlocal printed_prefix, stop_reason, usage
         if isinstance(event, TextChunk):
+            text_chunks.append(event.text)
+            _slot_cb = _get_slot_cb()
+            if _slot_cb is not None:
+                # Parallel agent mode: route thinking text to the slot display.
+                # Suppress stdout entirely — writing to it would corrupt the Live display.
+                _slot_cb("text", text=event.text)
+                return
             if not silent:
                 if not printed_prefix:
-                    console.print(f"[bold {BLUE}]minion[/] › ", end="")
+                    display_name = agent_label or "minion"
+                    console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
                     printed_prefix = True
                 sys.stdout.write(event.text)
                 sys.stdout.flush()
-            text_chunks.append(event.text)
         elif isinstance(event, ToolUseBlock):
             tool_blocks.append(event)
         elif isinstance(event, StreamComplete):
@@ -206,15 +219,20 @@ def _stream_one_iteration(
         # Narration text is collected but not printed yet — we decide after:
         #   tool_use turn → flush narration so user sees LLM's reasoning
         #   end_turn      → suppress (the markdown Panel replaces it)
-        with console.status(effective_spinner, spinner="dots"):
+        # When inside a Live context (parallel agents), use nullcontext to avoid
+        # conflicting with the Live display.
+        _in_live2 = _get_slot_cb() is not None
+        _silent_cm = contextlib.nullcontext() if _in_live2 else console.status(effective_spinner, spinner="dots")
+        with _silent_cm:
             _process(first_event)
             try:
                 for event in stream:
                     _process(event)
             except KeyboardInterrupt:
                 pass
-        if stop_reason == "tool_use" and text_chunks:
-            console.print(f"[bold {BLUE}]minion[/] › ", end="")
+        if flush_narration and stop_reason == "tool_use" and text_chunks:
+            display_name = agent_label or "minion"
+            console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
             sys.stdout.write("".join(text_chunks))
             print()
     else:
@@ -225,7 +243,7 @@ def _stream_one_iteration(
         except KeyboardInterrupt:
             pass  # Ctrl+C mid-stream — stop cleanly, no traceback
 
-    if text_chunks and not silent:
+    if text_chunks and not silent and _get_slot_cb() is None:
         print()  # newline after streamed text
 
     return _IterationResult(
@@ -244,6 +262,68 @@ def _build_content_blocks(result: _IterationResult) -> list:
     for tb in result.tool_blocks:
         blocks.append(ContentToolUseBlock(id=tb.id, name=tb.name, input=tb.input))
     return blocks
+
+
+def _execute_parallel_agents(
+    tool_blocks: list[ToolUseBlock],
+    executor: ToolExecutor,
+    conversation: Conversation,
+) -> None:
+    """Execute multiple spawn_agent calls concurrently with a grouped live display.
+
+    Unlike the generic _execute_tools path, this:
+    - Prints all spawn_agent tool calls in the main thread BEFORE the Live context
+      (prevents interleaving with the Live renderer)
+    - Uses AgentLiveDisplay to show each agent's status in its own updating slot
+    - Calls executor._agent_runner directly (bypasses executor.execute() which would
+      call print_tool_result and corrupt the Live display)
+    - Emits tool_call / tool_result traces manually to compensate
+    """
+    from .agents.display import AgentLiveDisplay, set_agent_display_callback
+
+    # Print all spawn_agent tool calls up-front in main thread (stable order, no race).
+    for tb in tool_blocks:
+        print_tool_call(tb.name, tb.input, agent_label=executor._agent_label)
+
+    results: dict[str, str] = {}
+    display = AgentLiveDisplay()
+
+    # Pre-register all slots before the Live context starts.
+    # This fixes the height of the live area from the first frame so Rich never
+    # needs to resize it — eliminating flicker when agents complete and add preview lines.
+    roles_in_order = [tb.input.get("role") or "researcher" for tb in tool_blocks]
+    display.pre_register(roles_in_order)
+
+    def run_one(tb: ToolUseBlock) -> str:
+        task = tb.input.get("task", "")
+        role = tb.input.get("role") or "researcher"
+        callback = display.make_callback(role)
+        set_agent_display_callback(callback)
+        try:
+            get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
+            result = executor._agent_runner(task, role)
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            return result
+        except Exception as exc:
+            err = f"Error: {exc}"
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=err, success=False)
+            return err
+        finally:
+            set_agent_display_callback(None)
+
+    with display:
+        with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
+            future_to_block = {pool.submit(run_one, tb): tb for tb in tool_blocks}
+            for future in as_completed(future_to_block):
+                tb = future_to_block[future]
+                try:
+                    results[tb.id] = future.result()
+                except Exception as exc:
+                    results[tb.id] = f"Error: {exc}"
+
+    # Inject in original order — preserves conversation history coherence.
+    for tb in tool_blocks:
+        conversation.add_tool_result(tb.id, results[tb.id])
 
 
 def _execute_tools(
@@ -269,10 +349,31 @@ def _execute_tools(
         conversation.add_tool_result(tb.id, executor.execute(tb))
         return
 
+    # Parallel spawn_agent path: all blocks are spawn_agent calls and an agent
+    # runner is available — use the grouped live display.
+    if all(tb.name == "spawn_agent" for tb in tool_blocks) and executor._agent_runner is not None:
+        _execute_parallel_agents(tool_blocks, executor, conversation)
+        return
+
     # Parallel path: dispatch all tool calls concurrently, collect by id.
+    # Capture the parent thread's slot callback (if any) so sub-threads also route
+    # their tool-call display through the same Live slot — handles the case where a
+    # subagent requests multiple tools in one turn.
+    from .agents.display import get_agent_display_callback, set_agent_display_callback
+    _parent_slot_cb = get_agent_display_callback()
+
+    def _run_tb(tb: ToolUseBlock) -> str:
+        if _parent_slot_cb is not None:
+            set_agent_display_callback(_parent_slot_cb)
+        try:
+            return executor.execute(tb)
+        finally:
+            if _parent_slot_cb is not None:
+                set_agent_display_callback(None)
+
     results: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
-        future_to_block = {pool.submit(executor.execute, tb): tb for tb in tool_blocks}
+        future_to_block = {pool.submit(_run_tb, tb): tb for tb in tool_blocks}
         for future in as_completed(future_to_block):
             tb = future_to_block[future]
             try:
@@ -349,6 +450,7 @@ def run_prompt(
     enable_agents: bool = True,
     agent_depth: int = 0,
     agent_registry=None,
+    agent_label: Optional[str] = None,
 ) -> Optional[str]:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -387,13 +489,16 @@ def run_prompt(
         from .agents import SUBAGENT_GUIDANCE
         from .agents.runner import run_agent
         _agent_runner = lambda task, role: run_agent(  # noqa: E731
-            task, role, agent_registry, client, parent_depth=agent_depth
+            task, role, agent_registry, client, parent_depth=agent_depth,
         )
         system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
     else:
         _agent_runner = None
 
-    executor = ToolExecutor(dry_run=dry_run, mcp_manager=mcp_manager, agent_runner=_agent_runner)
+    executor = ToolExecutor(
+        dry_run=dry_run, mcp_manager=mcp_manager,
+        agent_runner=_agent_runner, agent_label=agent_label,
+    )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
@@ -403,7 +508,10 @@ def run_prompt(
         # ── One LLM call ──────────────────────────────────────────────────────
         result = _stream_one_iteration(
             client, conversation, system_prompt, tools=effective_tools,
-            silent=render_markdown, spinner_label=spinner_label,
+            silent=render_markdown,
+            flush_narration=render_markdown,
+            spinner_label=spinner_label,
+            agent_label=agent_label,
         )
         if result is None:
             return  # error already displayed and user message popped
@@ -411,7 +519,18 @@ def run_prompt(
         if result.usage:
             final_usage = result.usage
 
-        # ── End turn: model finished responding ───────────────────────────────
+        # ── End turn: model finished responding (or hit output token limit) ─────
+        if result.stop_reason not in ("end_turn", "tool_use"):
+            # max_tokens or other unexpected stop — treat partial response as final.
+            # Do NOT loop: the model stopped generating, continuing would just burn
+            # tokens repeating context without new information.
+            conversation.add_assistant(result.full_text, result.usage)
+            if _get_slot_cb() is None:
+                console.print(f"\n[muted]  ↳ stopped: {result.stop_reason}[/]")
+            if capture_output:
+                return result.full_text
+            break
+
         if result.stop_reason == "end_turn":
             conversation.add_assistant(result.full_text, result.usage)
             if capture_output:
@@ -459,7 +578,8 @@ def run_prompt(
                     side_effects_occurred = True
 
             _execute_tools(result.tool_blocks, executor, conversation)
-            print()  # blank line before next iteration
+            if _get_slot_cb() is None:
+                print()  # blank line before next iteration
 
     else:
         # for/else fires when the loop exhausted all iterations without a break

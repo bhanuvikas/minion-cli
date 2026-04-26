@@ -11,6 +11,23 @@ from .base import (
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 
+# Per-model output token ceilings (Anthropic API limits).
+# Models not listed fall back to 8192 (conservative safe default).
+_MODEL_MAX_TOKENS: dict[str, int] = {
+    "claude-opus-4-6":              32000,
+    "claude-sonnet-4-6":            64000,
+    "claude-haiku-4-5-20251001":     8192,
+    "claude-sonnet-4-5":            64000,
+    "claude-opus-4-5":              32000,
+}
+
+def _max_tokens_for(model: str) -> int:
+    """Return the output token ceiling for a given model ID."""
+    for prefix, limit in _MODEL_MAX_TOKENS.items():
+        if model.startswith(prefix):
+            return limit
+    return 8192
+
 
 class AnthropicClient(LLMClient):
     def __init__(self, model: str | None = None) -> None:
@@ -60,7 +77,7 @@ class AnthropicClient(LLMClient):
     def complete(self, messages: list[Message], system: str = "") -> LLMResponse:
         kwargs: dict = {
             "model": self._model,
-            "max_tokens": 8192,
+            "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
         if system:
@@ -82,7 +99,7 @@ class AnthropicClient(LLMClient):
     ) -> Iterator[StreamEvent]:
         kwargs: dict = {
             "model": self._model,
-            "max_tokens": 8192,
+            "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
         if system:

@@ -19,6 +19,7 @@ from ..conversation import Conversation
 from ..theme import console
 from ..tools.definitions import TOOL_DEFINITIONS
 from ..tracing import get_tracer
+from .display import get_agent_display_callback
 from .manifest import AgentRoleManifest
 from .registry import AgentRegistry
 
@@ -88,13 +89,22 @@ def run_agent(
     max_iter = role.max_iterations if role else 20
     effective_role = role.name if role else "general"
 
+    # Check if a parallel live display is managing output for this thread.
+    # When set, route all status output through the callback instead of
+    # console.print(), and force silent mode to avoid conflicts with Live.
+    display_callback = get_agent_display_callback()
+
     get_tracer().emit(
         "agent_spawn",
         role=effective_role,
         task=task,
         depth=parent_depth + 1,
     )
-    console.print(f"[muted]  ⚙  [{effective_role}] running...[/]")
+
+    if display_callback:
+        display_callback("running")
+    else:
+        console.print(f"[muted]  ⚙[/]  [bold]\\[{effective_role}][/] [muted]running...[/]")
 
     conversation = Conversation()
     try:
@@ -105,18 +115,26 @@ def run_agent(
             system_prompt=system_prompt,
             tools=tools,
             max_iterations=max_iter,
-            capture_output=True,           # suppress terminal, return text
+            capture_output=True,           # return text to orchestrator
             agent_depth=parent_depth + 1,  # prevents recursive spawning
+            agent_label=effective_role,    # labels LLM text and tool calls
         )
         text = result or "(no response)"
         latency_ms = int((time.monotonic() - start) * 1000)
-        console.print(
-            f"[muted]  ✓  [{effective_role}] complete ({latency_ms / 1000:.1f}s)[/]"
-        )
+
+        if display_callback:
+            preview = text.split("\n")[0][:100]
+            display_callback("complete", latency_ms=latency_ms, preview=preview)
+        else:
+            console.print(
+                f"[muted]  ✓[/]  [bold]\\[{effective_role}][/] [muted]complete ({latency_ms / 1000:.1f}s)[/]"
+            )
+
         get_tracer().emit(
             "agent_complete",
             role=effective_role,
             task=task[:120],
+            result=text,
             result_length=len(text),
             latency_ms=latency_ms,
         )
@@ -124,7 +142,10 @@ def run_agent(
 
     except Exception as exc:
         latency_ms = int((time.monotonic() - start) * 1000)
-        console.print(f"[muted]  ✗  [{effective_role}] error: {exc}[/]")
+        if display_callback:
+            display_callback("error", error=str(exc))
+        else:
+            console.print(f"[muted]  ✗[/]  [bold]\\[{effective_role}][/] [muted]error: {exc}[/]")
         get_tracer().emit(
             "agent_error",
             role=effective_role,

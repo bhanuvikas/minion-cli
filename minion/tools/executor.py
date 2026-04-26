@@ -9,6 +9,7 @@ and keeps business-logic concerns (which tools are dangerous, dispatch table)
 out of runner.py.
 """
 
+import contextlib
 import threading
 
 import questionary
@@ -64,17 +65,25 @@ class ToolExecutor:
     the same confirmation prompt as native DANGEROUS_TOOLS.
     """
 
-    def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None) -> None:
+    def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None, agent_label=None) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager    # type: MCPManager | None
         self._agent_runner = agent_runner  # type: Callable[[str, str | None], str] | None
+        self._agent_label = agent_label    # type: str | None — shown as prefix on tool calls
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
         name = tool_block.name
         inputs = tool_block.input
 
-        print_tool_call(name, inputs, dry_run=self.dry_run)
+        # When running inside a parallel Live display, route tool-call display
+        # through the slot callback instead of console.print (which would corrupt Live).
+        from ..agents.display import get_agent_display_callback as _get_agent_cb
+        _agent_cb = _get_agent_cb()
+        if _agent_cb is not None:
+            _agent_cb("tool_call", name=name, inputs=inputs)
+        else:
+            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
 
         if self.dry_run:
             return "[dry-run: tool not executed]"
@@ -83,13 +92,15 @@ class ToolExecutor:
         if name == "spawn_agent":
             if self._agent_runner is None:
                 result = "Error: subagents not available (agents disabled or at max depth)."
-                print_tool_error(result)
+                if _agent_cb is None:
+                    print_tool_error(result)
                 return result
             task = inputs.get("task", "")
             role = inputs.get("role")
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=inputs)
             result = self._agent_runner(task, role)
-            print_tool_result(result)
+            if _agent_cb is None:
+                print_tool_result(result)
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
             return result
 
@@ -102,7 +113,8 @@ class ToolExecutor:
                 ).ask()
             if not confirmed:
                 result = "User declined tool execution."
-                print_tool_result(result)
+                if _agent_cb is None:
+                    print_tool_result(result)
                 return result
 
         fn = _DISPATCH.get(name)
@@ -118,28 +130,34 @@ class ToolExecutor:
                         ).ask()
                     if not confirmed:
                         result = "User declined tool execution."
-                        print_tool_result(result)
+                        if _agent_cb is None:
+                            print_tool_result(result)
                         return result
                 try:
                     result = self._mcp_manager.call_tool(name, inputs)
                 except Exception as e:
                     result = f"Error: {e}"
-                print_tool_result(result)
+                if _agent_cb is None:
+                    print_tool_result(result)
                 return result
             error = f"Unknown tool: '{name}'"
-            print_tool_error(error)
+            if _agent_cb is None:
+                print_tool_error(error)
             return f"Error: {error}"
 
         get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
             spinner_label = _TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
-            with console.status(spinner_label, spinner="dots"):
+            _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
+            with _spin_cm:
                 result = fn(**inputs)
-            print_tool_result(result)
+            if _agent_cb is None:
+                print_tool_result(result)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:
             error = str(e)
-            print_tool_error(error)
+            if _agent_cb is None:
+                print_tool_error(error)
             get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
             return f"Error: {error}"

@@ -213,7 +213,7 @@ def stream_response_to_stdout(chunks) -> None:
 
 # ─── Tool Use Display (Phase 3) ───────────────────────────────────────────────
 
-def print_tool_call(name: str, inputs: dict, dry_run: bool = False) -> None:
+def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label: str | None = None) -> None:
     """Display a tool call the agent is about to make.
 
     Scalar and short string values appear inline. Multiline strings (e.g. the
@@ -221,6 +221,7 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False) -> None:
     header line so the user can review the full content before confirming.
     """
     label = f"[muted][dry-run][/] " if dry_run else ""
+    agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
 
     inline_args = []
     block_args = []  # (key, value) pairs that need a separate block
@@ -233,7 +234,7 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False) -> None:
         else:
             inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
 
-    console.print(f"[bold {YELLOW}]⚙[/]  {label}[bold]{name}[/]  {'  '.join(inline_args)}")
+    console.print(f"{agent_prefix}[bold {YELLOW}]⚙[/]  {label}[bold]{name}[/]  {'  '.join(inline_args)}")
 
     for k, v in block_args:
         lines = v.count("\n") + 1

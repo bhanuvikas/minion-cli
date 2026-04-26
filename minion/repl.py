@@ -60,7 +60,7 @@ class ReplState:
     debug: bool = False       # print full system prompt before each LLM call
     active_plan: Optional[Path] = None         # path to the current plan file
     active_plan_goal: Optional[str] = None     # goal text stored alongside path
-    agents_enabled: bool = True  # False = exclude spawn_agent from tool list
+    agents_enabled: bool = True   # False = exclude spawn_agent from tool list
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -761,8 +761,7 @@ def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
         print_error("Task cannot be empty.")
         return
 
-    result = run_agent(task, role_name, agent_registry, client, parent_depth=0)
-    console.print(result)
+    run_agent(task, role_name, agent_registry, client, parent_depth=0)
 
 
 # ─── /mcp command handler ────────────────────────────────────────────────────
