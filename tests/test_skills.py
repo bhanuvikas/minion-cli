@@ -307,7 +307,9 @@ class TestRunPromptToolsParam:
             mc.status.return_value = _make_status_ctx()
             run_prompt("hello", client, Conversation(), "sys")
         _, call_kwargs = client.stream.call_args
-        assert call_kwargs["tools"] == TOOL_DEFINITIONS
+        # send_remote_task is filtered out when no a2a_manager is provided
+        expected = [t for t in TOOL_DEFINITIONS if t["name"] != "send_remote_task"]
+        assert call_kwargs["tools"] == expected
 
     def test_custom_subset_passed(self):
         from minion.runner import run_prompt

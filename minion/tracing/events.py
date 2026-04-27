@@ -261,3 +261,34 @@ class AgentErrorData:
     role: str
     task: str               # first 120 chars of the task
     error: str              # exception message
+
+
+# ─── A2A lifecycle events ─────────────────────────────────────────────────────
+
+@dataclass
+class A2ATaskSendData:
+    agent_name: str         # name from a2a.json config
+    task: str               # full task text sent to remote
+    remote_url: str         # base URL of the remote agent
+
+
+@dataclass
+class A2ATaskCompleteData:
+    agent_name: str
+    task: str               # first 120 chars of the task
+    result_length: int      # character count of returned artifact text
+    latency_ms: int
+
+
+@dataclass
+class A2ATaskErrorData:
+    agent_name: str
+    task: str               # first 120 chars of the task
+    error: str              # error message (A2AError or HTTP status)
+
+
+@dataclass
+class A2AServerRequestData:
+    task_id: str            # UUID of the incoming task
+    task: str               # input message text from remote caller
+    remote_addr: str        # caller IP address

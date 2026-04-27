@@ -153,6 +153,38 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "send_remote_task",
+        "description": (
+            "Delegate a task to a named remote A2A agent running on an external system. "
+            "The agent runs its own reasoning loop independently and returns the result "
+            "as text when done. "
+            "Use when a task benefits from a specialized remote agent or external "
+            "infrastructure. Available agents are listed in the system prompt. "
+            "Do NOT use for tasks your local tools or local subagents can handle directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": (
+                        "Name of the remote A2A agent to use (from a2a.json config). "
+                        "Must match an available agent name exactly."
+                    ),
+                },
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained task description for the remote agent. Include all "
+                        "context it needs — the remote agent has no access to the current "
+                        "conversation history."
+                    ),
+                },
+            },
+            "required": ["agent", "task"],
+        },
+    },
+    {
         "name": "spawn_agent",
         "description": (
             "Spawn a specialized subagent to handle a focused subtask in isolation. "
@@ -195,3 +227,7 @@ DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})
 # Reflection is skipped when any of these ran — the refiner cannot re-run tools,
 # and the side effects have already occurred.
 SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})
+
+# Delegation tools — both local subagents and remote A2A tasks are treated identically
+# by the parallel execution path in runner.py.
+DELEGATION_TOOLS: frozenset[str] = frozenset({"spawn_agent", "send_remote_task"})

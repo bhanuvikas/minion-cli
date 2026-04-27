@@ -30,7 +30,7 @@ from .theme import (
     print_reflection_header, print_tool_call, print_usage,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
-from .tools.definitions import SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
+from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor
 from .tracing import get_tracer
 
@@ -269,35 +269,38 @@ def _execute_parallel_agents(
     executor: ToolExecutor,
     conversation: Conversation,
 ) -> None:
-    """Execute multiple spawn_agent calls concurrently with a grouped live display.
+    """Execute spawn_agent and send_remote_task calls concurrently with a live display.
 
-    Each spawn_agent block gets its own 3-line slot (header + status + detail)
-    rendered inside the Live area. Calls executor._agent_runner directly to bypass
-    executor.execute()'s print_tool_call / print_tool_result (which would corrupt Live).
-    Emits tool_call / tool_result traces manually to compensate.
+    Each delegation tool block gets its own 3-line slot (header + status + detail)
+    inside the Live area. For spawn_agent, the subagent's thinking/tool activity is
+    routed through the slot callback (thread-local). For send_remote_task, the slot
+    shows running → complete/error without subagent internals (remote agent is opaque).
+    Traces are emitted manually (bypasses executor.execute() print helpers).
     """
     from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
 
     results: dict[str, str] = {}
     display = AgentLiveDisplay()
 
+    # Use tb.id as slot key (unique per block) to avoid collision when the same
+    # role or agent name appears twice. label= is the human-readable name shown
+    # in the status row (role for spawn_agent, agent name for send_remote_task).
+    slots = []
+    for tb in tool_blocks:
+        if tb.name == "spawn_agent":
+            label = tb.input.get("role") or "researcher"
+        else:  # send_remote_task
+            label = tb.input.get("agent") or "remote"
+        slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
+
     # Pre-register all slots before the Live context starts so the display has a
     # fixed height from the first render — Rich Live never resizes, eliminating flicker.
-    slots = [
-        SlotSpec(
-            key=tb.input.get("role") or "researcher",
-            tool_name="spawn_agent",
-            inputs=tb.input,
-            label=tb.input.get("role") or "researcher",
-        )
-        for tb in tool_blocks
-    ]
     display.pre_register(slots)
 
-    def run_one(tb: ToolUseBlock) -> str:
+    def run_spawn_agent(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
-        callback = display.make_callback(role)
+        callback = display.make_callback(tb.id)
         set_agent_display_callback(callback)
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
@@ -310,6 +313,33 @@ def _execute_parallel_agents(
             return err
         finally:
             set_agent_display_callback(None)
+
+    def run_remote_task(tb: ToolUseBlock) -> str:
+        agent = tb.input.get("agent", "")
+        task = tb.input.get("task", "")
+        callback = display.make_callback(tb.id)
+        callback("running")
+        start = _time.monotonic()
+        try:
+            get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=tb.input)
+            result = executor._remote_task_runner(agent, task)
+            latency_ms = int((_time.monotonic() - start) * 1000)
+            preview = result.split("\n")[0][:100] if result else ""
+            if result.startswith("Error:"):
+                callback("error", error=result.removeprefix("Error: ")[:60])
+            else:
+                callback("complete", latency_ms=latency_ms, preview=preview)
+            get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
+            return result
+        except Exception as exc:
+            callback("error", error=str(exc)[:60])
+            get_tracer().emit("tool_result", tool_name="send_remote_task", output=str(exc), success=False)
+            return f"Error: {exc}"
+
+    def run_one(tb: ToolUseBlock) -> str:
+        if tb.name == "spawn_agent":
+            return run_spawn_agent(tb)
+        return run_remote_task(tb)
 
     with display:
         with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
@@ -408,9 +438,9 @@ def _execute_tools(
         conversation.add_tool_result(tb.id, executor.execute(tb))
         return
 
-    # Parallel spawn_agent path: all blocks are spawn_agent calls — use the agent
-    # live display which includes subagent thinking/tool updates in each slot.
-    if all(tb.name == "spawn_agent" for tb in tool_blocks) and executor._agent_runner is not None:
+    # Parallel delegation path: all blocks are delegation tools (spawn_agent or
+    # send_remote_task) — use the agent live display which shows status per slot.
+    if all(tb.name in DELEGATION_TOOLS for tb in tool_blocks):
         _execute_parallel_agents(tool_blocks, executor, conversation)
         return
 
@@ -484,6 +514,7 @@ def run_prompt(
     agent_depth: int = 0,
     agent_registry=None,
     agent_label: Optional[str] = None,
+    a2a_manager=None,
 ) -> Optional[str]:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -528,9 +559,28 @@ def run_prompt(
     else:
         _agent_runner = None
 
+    # ── Build remote task runner + inject A2A guidance into system prompt ──────
+    if a2a_manager is not None and a2a_manager.has_agents():
+        from .a2a import A2A_REMOTE_GUIDANCE
+        _remote_task_runner = lambda agent, task: a2a_manager.send_task(agent, task)  # noqa: E731
+        # Build dynamic guidance listing available agent names
+        names = ", ".join(a2a_manager.agent_names())
+        _a2a_guidance = A2A_REMOTE_GUIDANCE + f"\nConfigured agent names: {names}"
+        system_prompt = system_prompt + "\n\n" + _a2a_guidance
+        # Filter send_remote_task out of any explicitly-provided tool list so the
+        # dynamic description (with agent names) in the system prompt is authoritative.
+    else:
+        _remote_task_runner = None
+
+    # Filter send_remote_task when no A2A manager is available.
+    if _remote_task_runner is None:
+        base_et = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
+        effective_tools = [t for t in base_et if t["name"] != "send_remote_task"]
+
     executor = ToolExecutor(
         dry_run=dry_run, mcp_manager=mcp_manager,
         agent_runner=_agent_runner, agent_label=agent_label,
+        remote_task_runner=_remote_task_runner,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
@@ -605,9 +655,9 @@ def run_prompt(
                 break
 
             for tb in result.tool_blocks:
-                # MCP tools and spawn_agent are conservatively treated as
+                # MCP tools, delegation tools, and shell/write are treated as
                 # side-effecting to prevent reflection after unknown operations.
-                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name == "spawn_agent":
+                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name in DELEGATION_TOOLS:
                     side_effects_occurred = True
 
             _execute_tools(result.tool_blocks, executor, conversation)

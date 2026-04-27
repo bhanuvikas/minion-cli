@@ -87,6 +87,7 @@ REPL_COMMANDS = {
     "/mcp":     "MCP servers: /mcp or /mcp list",
     "/agents":  "Subagents: /agents | /agents on | /agents off",
     "/agent":   "Run a role directly: /agent <role> <task>",
+    "/a2a":     "Remote agents: /a2a | /a2a list | /a2a run <agent> <task>",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -764,6 +765,63 @@ def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
     run_agent(task, role_name, agent_registry, client, parent_depth=0)
 
 
+# ─── /a2a command handler ────────────────────────────────────────────────────
+
+def _handle_a2a_command(raw: str, a2a_manager: "A2AManager | None") -> None:
+    """Handle the /a2a slash command family.
+
+    Subcommands:
+        /a2a [list]          — list configured remote agents + their capabilities
+        /a2a run <agent> <task> — send a task to a named remote agent directly
+    """
+    from .theme import BLUE, YELLOW, console, print_error
+
+    parts = raw.strip().split(None, 3)
+    # parts[0] = "/a2a", parts[1] = subcommand (optional), rest = args
+    sub = parts[1].lower() if len(parts) > 1 else ""
+
+    if sub in ("", "list", "status"):
+        if a2a_manager is None or not a2a_manager.has_agents():
+            console.print(
+                "[muted]No remote A2A agents configured. "
+                "Add agents to ~/.minion/a2a.json or .minion/a2a.json[/]"
+            )
+            return
+        summary = a2a_manager.agent_summary()
+        from rich.table import Table
+        table = Table(show_header=True, header_style="bold", expand=False, box=None)
+        table.add_column("agent", style=YELLOW)
+        table.add_column("url")
+        table.add_column("description", style="muted")
+        for entry in summary:
+            table.add_row(entry["name"], entry["url"], entry["card_description"])
+        console.print(table)
+        return
+
+    if sub == "run":
+        # /a2a run <agent> <task>
+        if len(parts) < 4:
+            if len(parts) == 3:
+                print_error(f"Usage: /a2a run <agent> <task>  (missing task for agent '{parts[2]}')")
+            else:
+                print_error("Usage: /a2a run <agent> <task>")
+            return
+        agent_name = parts[2]
+        task = parts[3].strip()
+        if not task:
+            print_error("Task cannot be empty.")
+            return
+        if a2a_manager is None or not a2a_manager.has_agents():
+            print_error("No remote A2A agents configured.")
+            return
+        with console.status(f"[muted]  ⚙  [{agent_name}] running...[/]", spinner="dots"):
+            result = a2a_manager.send_task(agent_name, task)
+        console.print(result)
+        return
+
+    print_error(f"Unknown /a2a subcommand '{sub}'. Usage: /a2a [list | run <agent> <task>]")
+
+
 # ─── /mcp command handler ────────────────────────────────────────────────────
 
 def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[list[dict]]:
@@ -1004,6 +1062,15 @@ def run_repl(
             f"Type /agents to list.[/]\n"
         )
 
+    # ── A2A setup ─────────────────────────────────────────────────────────────
+    from .a2a import load_a2a_manager
+    a2a_manager = load_a2a_manager(project_cwd)
+    if a2a_manager.has_agents():
+        console.print(
+            f"[muted]A2A: {len(a2a_manager.agent_names())} remote agent(s) configured. "
+            f"Type /a2a to list.[/]\n"
+        )
+
     # ── MCP setup ─────────────────────────────────────────────────────────────
     from .mcp import load_mcp_manager
     mcp_manager = load_mcp_manager(project_cwd)
@@ -1077,6 +1144,12 @@ def run_repl(
             console.print()
             continue
 
+        # /a2a is handled inline so it can access a2a_manager.
+        if user_input.startswith("/a2a"):
+            _handle_a2a_command(user_input, a2a_manager)
+            console.print()
+            continue
+
         if _handle_slash_command(
             user_input, client, conversation, project_context, state, memory_store,
             base_system_prompt=base_system_prompt,
@@ -1132,6 +1205,7 @@ def run_repl(
             enable_agents=state.agents_enabled,
             agent_registry=agent_registry,
             agent_depth=0,
+            a2a_manager=a2a_manager,
         )
         console.print()
 

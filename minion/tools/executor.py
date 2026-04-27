@@ -65,11 +65,13 @@ class ToolExecutor:
     the same confirmation prompt as native DANGEROUS_TOOLS.
     """
 
-    def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None, agent_label=None) -> None:
+    def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
+                 agent_label=None, remote_task_runner=None) -> None:
         self.dry_run = dry_run
-        self._mcp_manager = mcp_manager    # type: MCPManager | None
-        self._agent_runner = agent_runner  # type: Callable[[str, str | None], str] | None
-        self._agent_label = agent_label    # type: str | None — shown as prefix on tool calls
+        self._mcp_manager = mcp_manager          # type: MCPManager | None
+        self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
+        self._agent_label = agent_label          # type: str | None — shown as prefix on tool calls
+        self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -102,6 +104,22 @@ class ToolExecutor:
             if _agent_cb is None:
                 print_tool_result(result)
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            return result
+
+        # send_remote_task: delegate to the injected remote task runner callable
+        if name == "send_remote_task":
+            if self._remote_task_runner is None:
+                result = "Error: no remote A2A agents configured."
+                if _agent_cb is None:
+                    print_tool_error(result)
+                return result
+            agent = inputs.get("agent", "")
+            task = inputs.get("task", "")
+            get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=inputs)
+            result = self._remote_task_runner(agent, task)
+            if _agent_cb is None:
+                print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
             return result
 
         if name in DANGEROUS_TOOLS:
