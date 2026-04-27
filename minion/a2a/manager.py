@@ -82,6 +82,7 @@ class A2AManager:
                 "a2a_task_complete",
                 agent_name=agent_name,
                 task=task_text,
+                result=result[:500],
                 result_length=len(result),
                 latency_ms=latency_ms,
             )

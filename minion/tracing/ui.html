@@ -730,6 +730,7 @@ function buildCardBody(ev) {
     parts.push(fieldRow('latency', `${(d.latency_ms/1000).toFixed(1)}s`));
     parts.push(fieldRow('result length', `${fmtNum(d.result_length)} chars`));
     if (d.task) parts.push(fieldRow('task', `<pre>${escHtml(String(d.task).slice(0,120))}</pre>`));
+    if (d.result) parts.push(fieldRow('result', `<pre>${escHtml(d.result)}</pre>`));
   } else if (t === 'a2a_task_error') {
     parts.push(fieldRow('agent', `<span class="pill" style="color:#ef4444">${escHtml(d.agent_name||'')}</span>`));
     if (d.task) parts.push(fieldRow('task', `<pre>${escHtml(String(d.task).slice(0,120))}</pre>`));

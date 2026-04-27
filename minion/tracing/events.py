@@ -276,7 +276,8 @@ class A2ATaskSendData:
 class A2ATaskCompleteData:
     agent_name: str
     task: str               # first 120 chars of the task
-    result_length: int      # character count of returned artifact text
+    result: str             # first 500 chars of the returned artifact text
+    result_length: int      # total character count of returned artifact text
     latency_ms: int
 
 
