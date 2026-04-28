@@ -85,7 +85,7 @@ REPL_COMMANDS = {
     "/load":    "Load session: /load <name>",
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
-    "/mcp":     "MCP servers: /mcp or /mcp list",
+    "/mcp":     "MCP servers: /mcp | /mcp resource <uri> | /mcp prompt <name> | /mcp reload",
     "/agents":  "Subagents: /agents | /agents on | /agents off",
     "/agent":   "Run a role directly: /agent <role> <task>",
     "/a2a":     "Remote agents: /a2a | /a2a list | /a2a run <agent> <task>",
@@ -1106,7 +1106,24 @@ async def run_repl_async(
     if project_context.minion_md:
         console.print(f"[muted]MINION.md loaded.[/]\n")
 
-    memory_config = MemoryConfig()
+    from .config_file import load_config as _load_cfg
+    from .memory.triggers import (
+        AlwaysTrigger, EveryNTurnsTrigger, ManualOnlyTrigger, SubstantialContentTrigger,
+    )
+    _file_cfg = _load_cfg()
+    _mcfg = _file_cfg.memory
+    _trigger_map = {
+        "substantial": SubstantialContentTrigger(min_words=_mcfg.extraction_min_words),
+        "every_5":     EveryNTurnsTrigger(n=5),
+        "manual":      ManualOnlyTrigger(),
+        "always":      AlwaysTrigger(),
+    }
+    memory_config = MemoryConfig(
+        top_k=_mcfg.top_k,
+        similarity_threshold=_mcfg.similarity_threshold,
+        consolidation_threshold=_mcfg.consolidation_threshold,
+        trigger=_trigger_map.get(_mcfg.extraction_trigger, SubstantialContentTrigger()),
+    )
     embedder = build_embedder() if memory_enabled else None
     memory_store = MemoryStore(
         config=memory_config,
