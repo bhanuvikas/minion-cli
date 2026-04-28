@@ -19,6 +19,8 @@ from .theme import YELLOW, console, print_error
 
 load_dotenv()  # must run before any LLM client is constructed
 
+from .config_file import load_config as _load_config  # noqa: E402 — after dotenv
+
 
 app = typer.Typer(
     name="minion",
@@ -82,19 +84,31 @@ def main(
         console.print(f"minion-cli [bold {YELLOW}]v{__version__}[/]")
         raise typer.Exit()
 
+    cfg = _load_config()
+
+    # CLI flags override config.toml defaults
+    effective_provider = provider or cfg.llm.provider
+    effective_model = model or cfg.llm.model
+    effective_reflect = reflect if reflect is not None else cfg.agent.reflect_depth
+    effective_verbose = verbose or cfg.agent.verbose
+    effective_debug = debug or cfg.agent.debug
+    effective_memory = not no_memory and cfg.memory.enabled
+    effective_trace = not no_trace and cfg.tracing.enabled
+
     try:
-        client = get_client(provider, model)
+        client = get_client(effective_provider, effective_model)
     except ValueError as e:
         print_error(str(e))
         raise typer.Exit(code=1)
 
-    if not no_trace:
+    if effective_trace:
         from .tracing import init_tracer
         init_tracer(session_id=str(uuid.uuid4()))
 
     asyncio.run(run_repl_async(
-        client, dry_run=dry_run, reflect_depth=reflect or 0,
-        verbose=verbose, memory_enabled=not no_memory, debug=debug,
+        client, dry_run=dry_run, reflect_depth=effective_reflect,
+        verbose=effective_verbose, memory_enabled=effective_memory,
+        debug=effective_debug,
     ))
 
 

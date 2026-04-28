@@ -89,6 +89,7 @@ REPL_COMMANDS = {
     "/agents":  "Subagents: /agents | /agents on | /agents off",
     "/agent":   "Run a role directly: /agent <role> <task>",
     "/a2a":     "Remote agents: /a2a | /a2a list | /a2a run <agent> <task>",
+    "/config":  "Show effective configuration (config.toml + CLI flags)",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -520,6 +521,14 @@ def _handle_slash_command(
                     )
         else:
             console.print(f"[muted]Memory not available in this session.[/]")
+        return True
+
+    if cmd == "/config":
+        from .config_file import format_config, load_config as _load_cfg
+        cfg = _load_cfg()
+        console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + CLI flags):[/]\n")
+        console.print(format_config(cfg))
+        console.print()
         return True
 
     if cmd == "/model":
