@@ -8,6 +8,7 @@ The actual LLM call is delegated to runner.run_prompt() so this file
 stays focused on input/UX concerns.
 """
 
+import asyncio
 import re
 import uuid
 from dataclasses import dataclass
@@ -40,7 +41,7 @@ from .memory.injection import _format_age, inject_memories
 from .memory.record import MemoryRecord
 from .memory.store import MemoryStore
 from .prompts import build_system_prompt
-from .runner import run_prompt
+from .runner import run_prompt, run_prompt_async
 from .session import list_sessions, load, save
 from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
 from .tracing import get_tracer
@@ -1215,6 +1216,228 @@ def run_repl(
             if last_response:
                 with console.status("[muted]saving memories...[/]", spinner="dots"):
                     extracted = memory_store.maybe_extract(user_input, last_response)
+                if extracted and state.verbose:
+                    console.print(
+                        f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]"
+                    )
+                    if state.debug:
+                        for r in extracted:
+                            tag = f"[{r.category}·{r.type}·{r.scope}]"
+                            console.print(f"[muted]     · {tag} {r.content}[/]")
+                    console.print()
+
+
+# ─── Async REPL entry point (Phase 12) ───────────────────────────────────────
+# Mirrors run_repl() but uses prompt_async() so the event loop stays live
+# between user inputs. Memory retrieval and extraction run in asyncio.to_thread()
+# so they don't stall the loop. run_prompt_async() is called instead of run_prompt().
+
+async def run_repl_async(
+    client: LLMClient,
+    dry_run: bool = False,
+    reflect_depth: int = 0,
+    verbose: bool = False,
+    memory_enabled: bool = True,
+    debug: bool = False,
+    agents_enabled: bool = True,
+) -> None:
+    """Async REPL loop. Call via asyncio.run(run_repl_async(...))."""
+    print_greeting()
+    console.print(
+        f"[muted]Type [bold]/help[/bold] for commands · "
+        f"[bold]/quit[/bold] to exit[/]\n"
+    )
+
+    history_path = Path.home() / ".minion" / "history"
+    history_path.parent.mkdir(exist_ok=True)
+
+    project_cwd = Path.cwd()
+    project_context = build_project_context(project_cwd)
+    base_system_prompt = build_system_prompt(project_context)
+
+    get_tracer().emit(
+        "session_start",
+        model=getattr(client, "model_id", "unknown"),
+        system_prompt=base_system_prompt,
+        cwd=str(project_cwd),
+    )
+
+    if project_context.manifest:
+        console.print(f"[muted]Project: {project_context.label}[/]\n")
+    if project_context.minion_md:
+        console.print(f"[muted]MINION.md loaded.[/]\n")
+
+    memory_config = MemoryConfig()
+    embedder = build_embedder() if memory_enabled else None
+    memory_store = MemoryStore(
+        config=memory_config,
+        project_cwd=project_cwd,
+        client=client,
+        embedder=embedder,
+    )
+
+    conversation = Conversation(model=client.model_id)
+    state = ReplState(
+        reflect_depth=reflect_depth,
+        verbose=verbose,
+        memory_enabled=memory_enabled,
+        debug=debug,
+        agents_enabled=agents_enabled,
+    )
+
+    from .skills import load_skill_registry
+    skill_registry = load_skill_registry()
+    REPL_COMMANDS["/skills"] = "List all available skills"
+    for _skill_name, _skill in skill_registry.items():
+        _cmd_key = f"/{_skill_name}"
+        if _cmd_key not in REPL_COMMANDS:
+            REPL_COMMANDS[_cmd_key] = _skill.description
+
+    from .agents import load_agent_registry
+    agent_registry = load_agent_registry(project_cwd)
+    if agent_registry:
+        console.print(
+            f"[muted]Agents: {len(agent_registry)} role(s) available. "
+            f"Type /agents to list.[/]\n"
+        )
+
+    from .a2a import load_a2a_manager
+    a2a_manager = load_a2a_manager(project_cwd)
+    if a2a_manager.has_agents():
+        console.print(
+            f"[muted]A2A: {len(a2a_manager.agent_names())} remote agent(s) configured. "
+            f"Type /a2a to list.[/]\n"
+        )
+
+    from .mcp import load_mcp_manager
+    mcp_manager = load_mcp_manager(project_cwd)
+    if mcp_manager.has_tools():
+        tool_count = len(mcp_manager.get_tool_definitions())
+        server_count = len(mcp_manager.server_summary())
+        console.print(
+            f"[muted]MCP: {tool_count} tool(s) from {server_count} server(s). "
+            f"Type /mcp to list.[/]\n"
+        )
+
+    session: PromptSession = PromptSession(
+        history=FileHistory(str(history_path)),
+        completer=_SlashCompleter(),
+        key_bindings=_kb,
+        lexer=_InputLexer(),
+        style=_INPUT_STYLE,
+    )
+    you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
+
+    while True:
+        try:
+            user_input = await session.prompt_async(you_prompt)
+        except (KeyboardInterrupt, EOFError):
+            console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
+            mcp_manager.shutdown()
+            get_tracer().finalize()
+            break
+
+        user_input = user_input.strip()
+        if not user_input:
+            console.print()
+            continue
+
+        get_tracer().emit("user_turn", text=user_input)
+
+        if user_input.startswith("/mcp"):
+            mcp_messages = _handle_mcp_command(user_input, mcp_manager)
+            console.print()
+            if mcp_messages is None:
+                continue
+            for msg in mcp_messages[:-1]:
+                _inject_mcp_message(msg, conversation)
+            last = mcp_messages[-1]
+            if last.get("role") == "user":
+                user_input = _extract_mcp_text(last)
+            else:
+                _inject_mcp_message(last, conversation)
+                console.print(
+                    "[muted]Conversation primed with prompt template. "
+                    "Ask a follow-up to continue.[/]"
+                )
+                continue
+
+        if user_input.startswith("/agent "):
+            _handle_agent_direct(user_input, agent_registry, client)
+            console.print()
+            continue
+
+        if user_input.startswith("/a2a"):
+            _handle_a2a_command(user_input, a2a_manager)
+            console.print()
+            continue
+
+        if _handle_slash_command(
+            user_input, client, conversation, project_context, state, memory_store,
+            base_system_prompt=base_system_prompt,
+            skill_registry=skill_registry,
+            agent_registry=agent_registry,
+        ):
+            console.print()
+            continue
+
+        # Memory injection — off the hot path: runs in thread pool
+        augmented_prompt = base_system_prompt
+        memory_tokens = 0
+        if state.memory_enabled:
+            with console.status("[muted]recalling memories...[/]", spinner="dots"):
+                memories = await asyncio.to_thread(memory_store.retrieve, user_input)
+            augmented_prompt = inject_memories(base_system_prompt, memories)
+            memory_tokens = (len(augmented_prompt) - len(base_system_prompt)) // 4
+            if memories:
+                get_tracer().emit(
+                    "context_inject",
+                    memory_count=len(memories),
+                    token_estimate=memory_tokens,
+                    memories=[m.content for m in memories],
+                )
+
+        if state.active_plan and state.active_plan.exists():
+            goal_hint = state.active_plan_goal or state.active_plan.stem
+            augmented_prompt += (
+                f"\n\n## Recently Executed Plan\n"
+                f"Goal: {goal_hint}\n"
+                f"Path: {state.active_plan}\n"
+                f"Use read_file on this path if it is relevant to the current request."
+            )
+
+        if state.debug:
+            console.print(f"[muted]── debug: system prompt ───────────────────[/]")
+            console.print(f"[muted]{augmented_prompt}[/]")
+            console.print(f"[muted]────────────────────────────────────────────[/]")
+
+        reflect_config = (
+            ReflectionConfig(depth=state.reflect_depth)
+            if state.reflect_depth > 0 else None
+        )
+        console.print()
+        await run_prompt_async(
+            user_input, client, conversation, augmented_prompt,
+            dry_run=dry_run,
+            reflect_config=reflect_config,
+            verbose=state.verbose,
+            memory_tokens=memory_tokens,
+            mcp_manager=mcp_manager,
+            enable_agents=state.agents_enabled,
+            agent_registry=agent_registry,
+            agent_depth=0,
+            a2a_manager=a2a_manager,
+        )
+        console.print()
+
+        # Memory extraction — off the hot path: runs in thread pool
+        if state.memory_enabled:
+            last_response = _get_last_response_text(conversation)
+            if last_response:
+                with console.status("[muted]saving memories...[/]", spinner="dots"):
+                    extracted = await asyncio.to_thread(
+                        memory_store.maybe_extract, user_input, last_response
+                    )
                 if extracted and state.verbose:
                     console.print(
                         f"[muted]  ↳ remembered {len(extracted)} fact(s)[/]"

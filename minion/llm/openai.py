@@ -1,9 +1,9 @@
 import os
-from typing import Iterator, Optional
+from typing import AsyncIterator, Iterator, Optional
 
 from openai import OpenAI
 
-from .base import LLMClient, LLMResponse, Message
+from .base import LLMClient, LLMResponse, Message, StreamEvent
 
 OPENAI_DEFAULT_MODEL = "gpt-4o"
 OPENROUTER_DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
@@ -104,6 +104,22 @@ class OpenAIClient(LLMClient):
                 output_tokens=usage_data.completion_tokens,
                 model=self._model,
             )
+
+    async def async_complete(
+        self,
+        messages: list[Message],
+        system: str = "",
+    ) -> LLMResponse:
+        raise NotImplementedError("OpenAI async support is deferred to Phase 13")
+
+    async def async_stream(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: Optional[list] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        raise NotImplementedError("OpenAI async support is deferred to Phase 13")
+        yield  # type: ignore[misc]
 
 
 class OpenRouterClient(OpenAIClient):

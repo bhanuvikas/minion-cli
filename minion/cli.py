@@ -4,6 +4,7 @@ Single responsibility: define the typer app, parse CLI arguments,
 and hand off to the right module. No business logic lives here.
 """
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -13,7 +14,7 @@ from dotenv import load_dotenv
 
 from . import __version__
 from .llm import get_client
-from .repl import run_repl
+from .repl import run_repl, run_repl_async
 from .theme import YELLOW, console, print_error
 
 load_dotenv()  # must run before any LLM client is constructed
@@ -91,10 +92,10 @@ def main(
         from .tracing import init_tracer
         init_tracer(session_id=str(uuid.uuid4()))
 
-    run_repl(
+    asyncio.run(run_repl_async(
         client, dry_run=dry_run, reflect_depth=reflect or 0,
         verbose=verbose, memory_enabled=not no_memory, debug=debug,
-    )
+    ))
 
 
 # ─── `minion skills` subcommand ───────────────────────────────────────────────

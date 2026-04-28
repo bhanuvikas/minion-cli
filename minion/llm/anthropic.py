@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Iterator, Optional
+from typing import AsyncIterator, Iterator, Optional
 
 import anthropic
 
@@ -37,6 +37,7 @@ class AnthropicClient(LLMClient):
                 "ANTHROPIC_API_KEY is not set. Add it to your .env file."
             )
         self._client = anthropic.Anthropic(api_key=api_key)
+        self._async_client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model or os.getenv("MINION_MODEL", DEFAULT_MODEL)
         self._last_usage: Optional[LLMResponse] = None
 
@@ -139,6 +140,85 @@ class AnthropicClient(LLMClient):
                         current_tool = None
 
             final = stream_ctx.get_final_message()
+            self._last_usage = LLMResponse(
+                content="",
+                input_tokens=final.usage.input_tokens,
+                output_tokens=final.usage.output_tokens,
+                model=final.model,
+            )
+            yield StreamComplete(
+                stop_reason=final.stop_reason,
+                input_tokens=final.usage.input_tokens,
+                output_tokens=final.usage.output_tokens,
+                model=final.model,
+            )
+
+    async def async_complete(
+        self,
+        messages: list[Message],
+        system: str = "",
+    ) -> LLMResponse:
+        kwargs: dict = {
+            "model": self._model,
+            "max_tokens": _max_tokens_for(self._model),
+            "messages": self._format_messages(messages),
+        }
+        if system:
+            kwargs["system"] = system
+
+        response = await self._async_client.messages.create(**kwargs)
+        return LLMResponse(
+            content=response.content[0].text,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            model=response.model,
+        )
+
+    async def async_stream(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: Optional[list] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        kwargs: dict = {
+            "model": self._model,
+            "max_tokens": _max_tokens_for(self._model),
+            "messages": self._format_messages(messages),
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = tools
+
+        current_tool: Optional[dict] = None
+
+        async with self._async_client.messages.stream(**kwargs) as stream_ctx:
+            async for event in stream_ctx:
+                event_type = event.type
+
+                if event_type == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+
+                elif event_type == "content_block_delta":
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        yield TextChunk(text=delta.text)
+                    elif delta.type == "input_json_delta" and current_tool is not None:
+                        current_tool["json_buf"] += delta.partial_json
+
+                elif event_type == "content_block_stop":
+                    if current_tool is not None:
+                        tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
+                        yield ToolUseBlock(
+                            id=current_tool["id"],
+                            name=current_tool["name"],
+                            input=tool_input,
+                        )
+                        current_tool = None
+
+            final = await stream_ctx.get_final_message()
             self._last_usage = LLMResponse(
                 content="",
                 input_tokens=final.usage.input_tokens,

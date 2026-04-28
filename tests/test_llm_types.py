@@ -122,6 +122,13 @@ class TestLLMClientInterface:
             def stream(self, messages, system=""):
                 yield ""
 
+            async def async_complete(self, messages, system=""):
+                raise NotImplementedError
+
+            async def async_stream(self, messages, system="", tools=None):
+                raise NotImplementedError
+                yield
+
             @property
             def model_id(self):
                 return "test-model"

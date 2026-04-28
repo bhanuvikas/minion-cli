@@ -10,6 +10,7 @@ display output through the callback instead of console.print(). run_agent does
 the same for subagent status updates.
 """
 
+import contextvars
 import threading
 from typing import Callable, NamedTuple, Optional
 
@@ -30,19 +31,25 @@ def _format_tool_args(inputs: dict) -> str:
         return f"{k}={str(v)[:40]}"
     return ""
 
-# ─── Thread-local callback registry ──────────────────────────────────────────
+# ─── Context-variable callback registry ───────────────────────────────────────
+# Using ContextVar instead of threading.local so that the callback is correctly
+# isolated per asyncio Task (each task copies context on creation) AND per thread
+# (threads start with their own context copy). This supports both sync
+# ThreadPoolExecutor and async TaskGroup dispatch paths.
 
-_thread_local = threading.local()
+_display_callback_var: contextvars.ContextVar[Optional[Callable]] = contextvars.ContextVar(
+    "display_callback", default=None
+)
 
 
 def get_agent_display_callback() -> Optional[Callable]:
-    """Return the live display callback for the current thread, or None."""
-    return getattr(_thread_local, "display_callback", None)
+    """Return the live display callback for the current task/thread, or None."""
+    return _display_callback_var.get()
 
 
 def set_agent_display_callback(callback: Optional[Callable]) -> None:
-    """Set (or clear) the live display callback for the current thread."""
-    _thread_local.display_callback = callback
+    """Set (or clear) the live display callback for the current task/thread."""
+    _display_callback_var.set(callback)
 
 
 # ─── Slot specification ───────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Iterator, Optional, Union
+from typing import AsyncIterator, Iterator, Optional, Union
 
 
 # ─── Application-level content block types ───────────────────────────────────
@@ -117,6 +117,31 @@ class LLMClient(ABC):
           StreamComplete — stop_reason + usage; signals end of this iteration
         """
         ...
+
+    @abstractmethod
+    async def async_stream(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: Optional[list] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Async streaming call. Yields typed StreamEvent objects.
+
+        Async equivalent of stream() for use inside an asyncio event loop.
+        Adapters that don't support async raise NotImplementedError.
+        """
+        raise NotImplementedError
+        # mypy needs this to recognise the return type as AsyncIterator
+        yield  # type: ignore[misc]
+
+    @abstractmethod
+    async def async_complete(
+        self,
+        messages: list[Message],
+        system: str = "",
+    ) -> LLMResponse:
+        """Async non-streaming call. Async equivalent of complete()."""
+        raise NotImplementedError
 
     @property
     @abstractmethod

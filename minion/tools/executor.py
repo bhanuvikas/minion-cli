@@ -9,18 +9,27 @@ and keeps business-logic concerns (which tools are dangerous, dispatch table)
 out of runner.py.
 """
 
+import asyncio
 import contextlib
 import threading
+from typing import Optional
 
 import questionary
 
 from ..config import MINION_STYLE
 
-# Serializes questionary.confirm() calls across threads.
-# Without this, parallel tool executions (e.g. two simultaneous spawn_agent calls
-# that each trigger dangerous sub-tools) would interleave confirmation prompts on
-# the terminal and corrupt the user's view.
+# Serializes questionary.confirm() calls across threads (sync path only).
 _CONFIRM_LOCK = threading.Lock()
+
+# Async confirmation lock — lazy-initialised on first use inside an event loop.
+_ASYNC_CONFIRM_LOCK: Optional[asyncio.Lock] = None
+
+
+def _get_async_confirm_lock() -> asyncio.Lock:
+    global _ASYNC_CONFIRM_LOCK
+    if _ASYNC_CONFIRM_LOCK is None:
+        _ASYNC_CONFIRM_LOCK = asyncio.Lock()
+    return _ASYNC_CONFIRM_LOCK
 from ..llm.base import ToolUseBlock
 from ..theme import console, print_tool_call, print_tool_error, print_tool_result
 from ..tracing import get_tracer
@@ -169,6 +178,113 @@ class ToolExecutor:
             _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
             with _spin_cm:
                 result = fn(**inputs)
+            if _agent_cb is None:
+                print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
+            return result
+        except Exception as e:
+            error = str(e)
+            if _agent_cb is None:
+                print_tool_error(error)
+            get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
+            return f"Error: {error}"
+
+    async def execute_async(self, tool_block: ToolUseBlock) -> str:
+        """Async version of execute(). Runs confirmations and tools without blocking the event loop.
+
+        Confirmation dialogs use asyncio.Lock + asyncio.to_thread so the event loop
+        stays responsive while waiting for user input. Tool functions run in a thread
+        pool via asyncio.to_thread so they don't block the event loop either.
+        """
+        name = tool_block.name
+        inputs = tool_block.input
+
+        from ..agents.display import get_agent_display_callback as _get_agent_cb
+        _agent_cb = _get_agent_cb()
+        if _agent_cb is not None:
+            _agent_cb("tool_call", name=name, inputs=inputs)
+        else:
+            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
+
+        if self.dry_run:
+            return "[dry-run: tool not executed]"
+
+        if name == "spawn_agent":
+            if self._agent_runner is None:
+                result = "Error: subagents not available (agents disabled or at max depth)."
+                if _agent_cb is None:
+                    print_tool_error(result)
+                return result
+            task = inputs.get("task", "")
+            role = inputs.get("role")
+            get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=inputs)
+            result = await asyncio.to_thread(self._agent_runner, task, role)
+            if _agent_cb is None:
+                print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            return result
+
+        if name == "send_remote_task":
+            if self._remote_task_runner is None:
+                result = "Error: no remote A2A agents configured."
+                if _agent_cb is None:
+                    print_tool_error(result)
+                return result
+            agent = inputs.get("agent", "")
+            task = inputs.get("task", "")
+            get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=inputs)
+            result = await asyncio.to_thread(self._remote_task_runner, agent, task)
+            if _agent_cb is None:
+                print_tool_result(result)
+            get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
+            return result
+
+        if name in DANGEROUS_TOOLS:
+            async with _get_async_confirm_lock():
+                confirmed = await asyncio.to_thread(
+                    lambda: questionary.confirm(
+                        f"  Allow {name}?", default=False, style=MINION_STYLE
+                    ).ask()
+                )
+            if not confirmed:
+                result = "User declined tool execution."
+                if _agent_cb is None:
+                    print_tool_result(result)
+                return result
+
+        fn = _DISPATCH.get(name)
+        if fn is None:
+            if "__" in name and self._mcp_manager is not None:
+                if self._mcp_manager.is_dangerous(name):
+                    async with _get_async_confirm_lock():
+                        confirmed = await asyncio.to_thread(
+                            lambda: questionary.confirm(
+                                f"  Allow {name}?", default=False, style=MINION_STYLE
+                            ).ask()
+                        )
+                    if not confirmed:
+                        result = "User declined tool execution."
+                        if _agent_cb is None:
+                            print_tool_result(result)
+                        return result
+                try:
+                    result = await asyncio.to_thread(self._mcp_manager.call_tool, name, inputs)
+                except Exception as e:
+                    result = f"Error: {e}"
+                if _agent_cb is None:
+                    print_tool_result(result)
+                return result
+            error = f"Unknown tool: '{name}'"
+            if _agent_cb is None:
+                print_tool_error(error)
+            return f"Error: {error}"
+
+        get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
+        try:
+            spinner_label = _TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
+            _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
+            with _spin_cm:
+                result = await asyncio.to_thread(fn, **inputs)
             if _agent_cb is None:
                 print_tool_result(result)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)

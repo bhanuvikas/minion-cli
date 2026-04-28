@@ -12,6 +12,7 @@ which is injected as a tool result into the orchestrator's conversation.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Optional
 
@@ -152,4 +153,74 @@ def run_agent(
             task=task[:120],
             error=str(exc),
         )
+        return f"Error in [{effective_role}] subagent: {exc}"
+
+
+async def run_agent_async(
+    task: str,
+    role_name: Optional[str],
+    registry: AgentRegistry,
+    client,
+    parent_depth: int = 0,
+) -> str:
+    """Async variant of run_agent(). Calls run_prompt_async() inside a task group."""
+    from ..runner import run_prompt_async
+
+    start = time.monotonic()
+    role: Optional[AgentRoleManifest] = registry.get(role_name) if role_name else None
+    if role_name and role is None:
+        console.print(f"[muted]  ⚠  Unknown agent role '{role_name}', using researcher.[/]")
+        role = registry.get("researcher")
+
+    system_prompt = role.system_prompt if role else _DEFAULT_SUBAGENT_PROMPT
+    tools = _resolve_tools(role.tools) if role else None
+    max_iter = role.max_iterations if role else 20
+    effective_role = role.name if role else "general"
+
+    display_callback = get_agent_display_callback()
+    get_tracer().emit("agent_spawn", role=effective_role, task=task, depth=parent_depth + 1)
+
+    if display_callback:
+        display_callback("running")
+    else:
+        console.print(f"[muted]  ⚙[/]  [bold]\\[{effective_role}][/] [muted]running...[/]")
+
+    conversation = Conversation()
+    try:
+        result = await run_prompt_async(
+            prompt=task,
+            client=client,
+            conversation=conversation,
+            system_prompt=system_prompt,
+            tools=tools,
+            max_iterations=max_iter,
+            capture_output=True,
+            agent_depth=parent_depth + 1,
+            agent_label=effective_role,
+        )
+        text = result or "(no response)"
+        latency_ms = int((time.monotonic() - start) * 1000)
+
+        if display_callback:
+            preview = text.split("\n")[0][:100]
+            display_callback("complete", latency_ms=latency_ms, preview=preview)
+        else:
+            console.print(
+                f"[muted]  ✓[/]  [bold]\\[{effective_role}][/] [muted]complete ({latency_ms / 1000:.1f}s)[/]"
+            )
+
+        get_tracer().emit(
+            "agent_complete",
+            role=effective_role, task=task[:120], result=text,
+            result_length=len(text), latency_ms=latency_ms,
+        )
+        return text
+
+    except Exception as exc:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if display_callback:
+            display_callback("error", error=str(exc))
+        else:
+            console.print(f"[muted]  ✗[/]  [bold]\\[{effective_role}][/] [muted]error: {exc}[/]")
+        get_tracer().emit("agent_error", role=effective_role, task=task[:120], error=str(exc))
         return f"Error in [{effective_role}] subagent: {exc}"
