@@ -54,6 +54,8 @@ def run_agent(
     registry: AgentRegistry,
     client,  # LLMClient — avoided circular import via duck typing
     parent_depth: int = 0,
+    mcp_manager=None,  # MCPManager | None — forwarded so subagents can call MCP tools
+    _token_accumulator: "list[int] | None" = None,  # appended with subagent total_tokens when done
 ) -> str:
     """Spawn an isolated subagent and return its final text response.
 
@@ -119,9 +121,13 @@ def run_agent(
             capture_output=True,           # return text to orchestrator
             agent_depth=parent_depth + 1,  # prevents recursive spawning
             agent_label=effective_role,    # labels LLM text and tool calls
+            mcp_manager=mcp_manager,       # propagate MCP tools to subagents
         )
         text = result or "(no response)"
         latency_ms = int((time.monotonic() - start) * 1000)
+
+        if _token_accumulator is not None:
+            _token_accumulator.append(conversation.total_tokens)
 
         if display_callback:
             preview = text.split("\n")[0][:100]
@@ -162,6 +168,7 @@ async def run_agent_async(
     registry: AgentRegistry,
     client,
     parent_depth: int = 0,
+    mcp_manager=None,
 ) -> str:
     """Async variant of run_agent(). Calls run_prompt_async() inside a task group."""
     from ..runner import run_prompt_async
@@ -197,6 +204,7 @@ async def run_agent_async(
             capture_output=True,
             agent_depth=parent_depth + 1,
             agent_label=effective_role,
+            mcp_manager=mcp_manager,
         )
         text = result or "(no response)"
         latency_ms = int((time.monotonic() - start) * 1000)

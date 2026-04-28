@@ -550,11 +550,14 @@ def run_prompt(
         effective_tools = [t for t in base if t["name"] != "spawn_agent"]
 
     # ── Build agent runner + inject subagent guidance into system prompt ───────
+    _subagent_tokens: list[int] = []  # accumulates total_tokens per subagent
     if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
         from .agents import SUBAGENT_GUIDANCE
         from .agents.runner import run_agent
         _agent_runner = lambda task, role: run_agent(  # noqa: E731
-            task, role, agent_registry, client, parent_depth=agent_depth,
+            task, role, agent_registry, client,
+            parent_depth=agent_depth, mcp_manager=mcp_manager,
+            _token_accumulator=_subagent_tokens,
         )
         system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
     else:
@@ -676,6 +679,13 @@ def run_prompt(
             conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
         print_usage(snapshot)
+        if _subagent_tokens:
+            total_sub = sum(_subagent_tokens)
+            n_sub = len(_subagent_tokens)
+            console.print(
+                f"  [muted]subagents: {n_sub} agent{'s' if n_sub > 1 else ''}, "
+                f"{total_sub:,} tokens total[/]"
+            )
     return None
 
 
@@ -971,11 +981,14 @@ async def run_prompt_async(
         base = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
         effective_tools = [t for t in base if t["name"] != "spawn_agent"]
 
+    _subagent_tokens: list[int] = []
     if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
         from .agents import SUBAGENT_GUIDANCE
         from .agents.runner import run_agent
         _agent_runner = lambda task, role: run_agent(  # noqa: E731
-            task, role, agent_registry, client, parent_depth=agent_depth,
+            task, role, agent_registry, client,
+            parent_depth=agent_depth, mcp_manager=mcp_manager,
+            _token_accumulator=_subagent_tokens,
         )
         system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
     else:
@@ -1081,4 +1094,11 @@ async def run_prompt_async(
             conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
         print_usage(snapshot)
+        if _subagent_tokens:
+            total_sub = sum(_subagent_tokens)
+            n_sub = len(_subagent_tokens)
+            console.print(
+                f"  [muted]subagents: {n_sub} agent{'s' if n_sub > 1 else ''}, "
+                f"{total_sub:,} tokens total[/]"
+            )
     return None

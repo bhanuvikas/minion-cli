@@ -210,6 +210,16 @@ class MCPManager:
                 state.task.cancel()
         self._states.clear()
 
+    async def reconnect_all(self, cwd: Path | None = None) -> None:
+        """Shut down existing sessions, re-read config, and reconnect.
+
+        Allows hot-reload of MCP servers without restarting the REPL.
+        """
+        self.shutdown()
+        configs = load_mcp_config(cwd)
+        if configs:
+            await self.connect_all(configs)
+
     # ── Sync metadata (no I/O) ────────────────────────────────────────────────
 
     def has_tools(self) -> bool:

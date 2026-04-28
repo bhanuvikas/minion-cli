@@ -325,3 +325,70 @@ def _list_a2a() -> None:
         )
         if entry["card_description"]:
             console.print(f"  {'':16}  [muted]{entry['card_description']}[/]")
+
+
+# ─── `minion doctor` subcommand ───────────────────────────────────────────────
+
+@app.command("doctor")
+def doctor() -> None:
+    """Check API keys, memory dir, MCP servers, and A2A agents for problems."""
+    import os
+    ok_mark = f"[bold green]✓[/]"
+    fail_mark = f"[bold red]✗[/]"
+    warn_mark = f"[bold yellow]![/]"
+
+    console.print(f"\n[bold {YELLOW}]minion doctor[/]\n")
+
+    # ── API key ────────────────────────────────────────────────────────────────
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY") or \
+              os.environ.get("OPENROUTER_API_KEY")
+    if api_key:
+        console.print(f"  {ok_mark}  API key found")
+    else:
+        console.print(
+            f"  {fail_mark}  No API key found. "
+            "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY."
+        )
+
+    # ── Memory directory ───────────────────────────────────────────────────────
+    memory_dir = Path.home() / ".minion" / "memory"
+    if memory_dir.exists():
+        console.print(f"  {ok_mark}  Memory dir exists: {memory_dir}")
+    else:
+        console.print(f"  {warn_mark}  Memory dir not created yet: {memory_dir} (will be created on first run)")
+
+    # ── config.toml ────────────────────────────────────────────────────────────
+    config_path = Path.home() / ".minion" / "config.toml"
+    if config_path.exists():
+        console.print(f"  {ok_mark}  config.toml found: {config_path}")
+    else:
+        console.print(f"  {warn_mark}  No config.toml (using defaults). Create at: {config_path}")
+
+    # ── MCP servers ────────────────────────────────────────────────────────────
+    from .mcp import load_mcp_manager
+    mcp_manager = load_mcp_manager(Path.cwd())
+    if mcp_manager.has_tools():
+        defs = mcp_manager.get_tool_definitions()
+        console.print(f"  {ok_mark}  MCP: {len(defs)} tool(s) available")
+    else:
+        console.print(f"  {warn_mark}  MCP: no servers configured (optional)")
+    mcp_manager.shutdown()
+
+    # ── A2A agents ─────────────────────────────────────────────────────────────
+    from .a2a import load_a2a_manager
+    a2a_manager = load_a2a_manager(Path.cwd())
+    if a2a_manager.has_agents():
+        names = ", ".join(a2a_manager.agent_names())
+        reachable = 0
+        for name in a2a_manager.agent_names():
+            card = a2a_manager._clients[name].fetch_agent_card()
+            if card is not None:
+                reachable += 1
+        console.print(
+            f"  {ok_mark if reachable == len(a2a_manager.agent_names()) else warn_mark}"
+            f"  A2A: {reachable}/{len(a2a_manager.agent_names())} agent(s) reachable ({names})"
+        )
+    else:
+        console.print(f"  {warn_mark}  A2A: no remote agents configured (optional)")
+
+    console.print()

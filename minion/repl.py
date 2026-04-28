@@ -98,12 +98,52 @@ REPL_COMMANDS = {
 # ─── Tab completion ───────────────────────────────────────────────────────────
 
 class _SlashCompleter(Completer):
-    """Completes slash commands from REPL_COMMANDS when input starts with '/'."""
+    """Completes slash commands from REPL_COMMANDS when input starts with '/'.
+
+    When registries are provided, also completes second-argument values for:
+        /agent <role>       — role names from agent_registry
+        /skill <name>       — skill names from skill_registry
+        /a2a run <agent>    — agent names from a2a_manager
+    """
+
+    def __init__(self, agent_registry=None, skill_registry=None, a2a_manager=None) -> None:
+        self._agent_registry = agent_registry
+        self._skill_registry = skill_registry
+        self._a2a_manager = a2a_manager
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
+
+        parts = text.split()
+        # Second-arg completion: "/agent <partial>" or "/skill <partial>" or "/a2a run <partial>"
+        if len(parts) >= 2 or (len(parts) == 1 and text.endswith(" ")):
+            cmd = parts[0].lower()
+            prefix = parts[1] if len(parts) >= 2 else ""
+
+            if cmd == "/agent" and self._agent_registry is not None:
+                for name in sorted(self._agent_registry.keys()):
+                    if name.startswith(prefix):
+                        yield Completion(name[len(prefix):], display=name)
+                return
+
+            if cmd == "/skill" and self._skill_registry is not None:
+                for name in sorted(self._skill_registry.keys()):
+                    if name.startswith(prefix):
+                        yield Completion(name[len(prefix):], display=f"/{name}")
+                return
+
+            if cmd == "/a2a" and len(parts) >= 2 and parts[1] == "run":
+                # "/a2a run <partial>"
+                agent_prefix = parts[2] if len(parts) >= 3 else ""
+                if self._a2a_manager is not None:
+                    for name in sorted(self._a2a_manager.agent_names()):
+                        if name.startswith(agent_prefix):
+                            yield Completion(name[len(agent_prefix):], display=name)
+                return
+
+        # First-arg: complete slash command name
         for cmd, description in REPL_COMMANDS.items():
             if cmd.startswith(text):
                 yield Completion(
@@ -938,13 +978,23 @@ async def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[l
         )
         return messages  # REPL loop handles role-aware injection
 
+    # ── /mcp reload ──────────────────────────────────────────────────────────
+    if sub == "reload":
+        from pathlib import Path as _Path
+        console.print(f"[muted]Reloading MCP servers…[/]")
+        await mcp_manager.reconnect_all(cwd=_Path.cwd())
+        n = len(list(mcp_manager._states))
+        console.print(f"[{YELLOW}]MCP reloaded: {n} server{'s' if n != 1 else ''} connected.[/]")
+        return None
+
     # ── /mcp [list|status] ───────────────────────────────────────────────────
     if sub not in ("", "list", "status"):
         console.print(
             "[muted]Usage:\n"
             "  /mcp [list|status]              — list servers and capabilities\n"
             "  /mcp resource <uri>             — read a resource\n"
-            "  /mcp prompt <name> [key=value]  — inject a prompt template[/]"
+            "  /mcp prompt <name> [key=value]  — inject a prompt template\n"
+            "  /mcp reload                     — reconnect to all MCP servers[/]"
         )
         return None
 
@@ -1110,7 +1160,11 @@ async def run_repl_async(
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
-        completer=_SlashCompleter(),
+        completer=_SlashCompleter(
+            agent_registry=agent_registry,
+            skill_registry=skill_registry,
+            a2a_manager=a2a_manager,
+        ),
         key_bindings=_kb,
         lexer=_InputLexer(),
         style=_INPUT_STYLE,
