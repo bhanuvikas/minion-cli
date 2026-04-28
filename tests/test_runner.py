@@ -195,7 +195,7 @@ class TestAgentLoop:
              patch("sys.stdout"):
             mc.status.return_value = ctx
             run_prompt("hi", client, Conversation(), _SYSTEM_PROMPT, dry_run=True)
-        MockExecutor.assert_called_once_with(dry_run=True, mcp_manager=None, agent_runner=None, agent_label=None, remote_task_runner=None)
+        MockExecutor.assert_called_once_with(dry_run=True, mcp_manager=None, agent_runner=None, agent_label=None, remote_task_runner=None, confirm_callback=None)
 
     def test_max_iterations_shows_limit_message(self):
         """Loop should stop and show a message after MAX_ITERATIONS tool-use responses."""

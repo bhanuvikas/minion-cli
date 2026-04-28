@@ -1,23 +1,24 @@
 """A2A HTTP client — sends tasks to a single remote A2A agent.
 
-Uses http.client from stdlib (zero new deps). Includes a minimal inline SSE
-parser for the streaming endpoint.
+Sync path: uses http.client from stdlib (zero new deps).
+Async path: uses httpx.AsyncClient (replaces time.sleep with asyncio.sleep).
+
+Both paths handle spec-compliant input-required task state: when the server
+needs human approval for a dangerous tool, the client surfaces the prompt and
+sends a continuation via POST /tasks/send with {task_id, message: "yes"|"no"}.
 
 Protocol subset implemented:
     GET  /.well-known/agent.json    — fetch Agent Card
-    POST /tasks/send                — submit task, poll until done
+    POST /tasks/send                — submit task (or continue existing), poll until done
     POST /tasks/sendSubscribe       — submit task, read SSE stream until done
+    POST /tasks/send (continuation) — approve/deny input-required requests
 
-Task lifecycle: submitted → working → completed / failed
-
-Wire format:
-    Request body:   {"message": "<task text>"}
-    Poll response:  {"id": "...", "status": "...", "artifacts": [{"text": "..."}]}
-    SSE data line:  data: {"id": "...", "status": "...", "artifacts": [...]}
+Task lifecycle: submitted → working → [input-required → working →]* completed / failed
 """
 
 from __future__ import annotations
 
+import asyncio
 import http.client
 import json
 import time
@@ -61,6 +62,24 @@ class A2AError(Exception):
     """Raised on HTTP errors, timeouts, or malformed A2A responses."""
 
 
+# ── User approval UI ──────────────────────────────────────────────────────────
+
+def _prompt_user_approval(agent_name: str, prompt_text: str) -> bool:
+    """Interactively ask the user to approve/deny an input-required request."""
+    try:
+        import questionary
+        from ..config import MINION_STYLE
+        return bool(
+            questionary.confirm(
+                f"  [remote: {agent_name}] {prompt_text}",
+                default=False,
+                style=MINION_STYLE,
+            ).ask()
+        )
+    except Exception:
+        return False
+
+
 class A2AClient:
     """HTTP client for one named remote A2A agent.
 
@@ -75,6 +94,7 @@ class A2AClient:
         self._scheme = parsed.scheme          # "http" or "https"
         self._netloc = parsed.netloc          # "host:port" or "host"
         self._base_path = parsed.path.rstrip("/")  # "" or "/prefix"
+        self._base_url = url.rstrip("/")
 
     # ─── Connection factory ────────────────────────────────────────────────────
 
@@ -105,13 +125,14 @@ class A2AClient:
         except Exception:
             return None
 
-    # ─── Task submission (polling) ─────────────────────────────────────────────
+    # ─── Task submission (sync polling) ───────────────────────────────────────
 
     def send_task(self, task_text: str) -> str:
         """Submit a task and poll GET /tasks/{id} until completed or failed.
 
         Returns the artifact text on success.
         Raises A2AError on HTTP failure, task failure, or timeout.
+        Handles input-required by prompting the user interactively.
         """
         task_id = self._submit_task(task_text)
         task = self._poll_until_done(task_id)
@@ -153,8 +174,30 @@ class A2AClient:
             raise A2AError(f"No task ID in response from '{self.name}'")
         return task_id
 
+    def _send_continuation(self, task_id: str, answer: str) -> None:
+        """POST /tasks/send with task_id to continue an input-required task."""
+        body = json.dumps({"task_id": task_id, "message": answer}).encode("utf-8")
+        try:
+            conn = self._make_connection()
+            conn.request(
+                "POST",
+                self._path("/tasks/send"),
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Content-Length": str(len(body)),
+                },
+            )
+            conn.getresponse()
+        except Exception:
+            pass  # best-effort; poll loop will continue regardless
+
     def _poll_until_done(self, task_id: str) -> Task:
-        """GET /tasks/{id} every 0.5s until status is completed or failed."""
+        """GET /tasks/{id} every 0.5s until status is completed or failed.
+
+        Handles input-required by prompting the user and sending a continuation.
+        """
         deadline = time.monotonic() + self._timeout
         while True:
             if time.monotonic() >= deadline:
@@ -176,11 +219,20 @@ class A2AClient:
                 raise A2AError(f"Failed to poll task '{task_id}' from '{self.name}': {e}") from e
 
             task = Task.from_dict(data)
+
+            if task.status == TaskStatus.INPUT_REQUIRED:
+                input_info = data.get("input", {})
+                prompt_text = input_info.get("prompt", "Allow action?")
+                approved = _prompt_user_approval(self.name, prompt_text)
+                self._send_continuation(task_id, "yes" if approved else "no")
+                time.sleep(0.5)
+                continue
+
             if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 return task
             time.sleep(0.5)
 
-    # ─── Task submission (SSE streaming) ──────────────────────────────────────
+    # ─── Task submission (SSE streaming, sync) ────────────────────────────────
 
     def send_task_streaming(
         self,
@@ -189,8 +241,10 @@ class A2AClient:
     ) -> str:
         """POST /tasks/sendSubscribe and read SSE stream until completion.
 
-        Calls on_status(status_str) for each SSE event received (e.g. "working",
-        "completed"). Returns the artifact text on success.
+        Handles input-required by prompting the user and sending a continuation,
+        then falls back to polling until the task resumes.
+        Calls on_status(status_str) for each SSE event received.
+        Returns the artifact text on success.
         Raises A2AError on failure or timeout.
         """
         body = json.dumps({"message": task_text}).encode("utf-8")
@@ -215,6 +269,7 @@ class A2AClient:
                 f"Task subscribe failed for '{self.name}': HTTP {resp.status}"
             )
 
+        task_id: Optional[str] = None
         for event in _iter_sse_events(resp):
             try:
                 data = json.loads(event.data)
@@ -222,8 +277,23 @@ class A2AClient:
                 continue
 
             status = data.get("status", "")
+            task_id = data.get("id", task_id)
             if on_status is not None:
                 on_status(status)
+
+            if status == TaskStatus.INPUT_REQUIRED.value and task_id:
+                input_info = data.get("input", {})
+                prompt_text = input_info.get("prompt", "Allow action?")
+                approved = _prompt_user_approval(self.name, prompt_text)
+                self._send_continuation(task_id, "yes" if approved else "no")
+                # The SSE stream may not send more events — fall back to polling
+                if task_id:
+                    task = self._poll_until_done(task_id)
+                    if task.status == TaskStatus.FAILED:
+                        raise A2AError(task.error or "Remote task failed.")
+                    if task.artifacts:
+                        return task.artifacts[0].text
+                    return ""
 
             if status == TaskStatus.COMPLETED.value:
                 artifacts = data.get("artifacts", [])
@@ -235,3 +305,67 @@ class A2AClient:
                 raise A2AError(data.get("error") or "Remote task failed.")
 
         raise A2AError(f"SSE stream from '{self.name}' ended without a final status event.")
+
+    # ─── Task submission (async with httpx) ───────────────────────────────────
+
+    async def send_task_async(self, task_text: str) -> str:
+        """Submit a task using httpx.AsyncClient with async polling.
+
+        Uses asyncio.sleep instead of time.sleep so the event loop stays responsive.
+        Handles input-required by prompting the user in a thread.
+        """
+        try:
+            import httpx
+        except ImportError:
+            raise A2AError("httpx is required for async A2A. Install it: pip install httpx") from None
+
+        async with httpx.AsyncClient(timeout=self._timeout, base_url=self._base_url) as client:
+            # Submit task
+            try:
+                resp = await client.post("/tasks/send", json={"message": task_text})
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError as e:
+                raise A2AError(f"Failed to submit task to '{self.name}': {e}") from e
+
+            task_id = data.get("id")
+            if not task_id:
+                raise A2AError(f"No task ID in response from '{self.name}'")
+
+            # Async poll loop
+            deadline = time.monotonic() + self._timeout
+            while True:
+                if time.monotonic() >= deadline:
+                    raise A2AError(
+                        f"Task '{task_id}' from '{self.name}' timed out after {self._timeout}s"
+                    )
+                try:
+                    poll_resp = await client.get(f"/tasks/{task_id}")
+                    poll_resp.raise_for_status()
+                    task_data = poll_resp.json()
+                except httpx.HTTPError as e:
+                    raise A2AError(f"Failed to poll task '{task_id}': {e}") from e
+
+                task = Task.from_dict(task_data)
+
+                if task.status == TaskStatus.INPUT_REQUIRED:
+                    input_info = task_data.get("input", {})
+                    prompt_text = input_info.get("prompt", "Allow action?")
+                    approved = await asyncio.to_thread(_prompt_user_approval, self.name, prompt_text)
+                    answer = "yes" if approved else "no"
+                    try:
+                        await client.post("/tasks/send", json={"task_id": task_id, "message": answer})
+                    except httpx.HTTPError:
+                        pass  # best-effort
+                    await asyncio.sleep(0.5)
+                    continue
+
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                await asyncio.sleep(0.5)
+
+        if task.status == TaskStatus.FAILED:
+            raise A2AError(task.error or "Remote task failed.")
+        if task.artifacts:
+            return task.artifacts[0].text
+        return ""

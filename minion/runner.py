@@ -516,6 +516,7 @@ def run_prompt(
     agent_registry=None,
     agent_label: Optional[str] = None,
     a2a_manager=None,
+    confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
 ) -> Optional[str]:
     """Run the ReAct agent loop for a single user prompt.
 
@@ -585,6 +586,7 @@ def run_prompt(
         dry_run=dry_run, mcp_manager=mcp_manager,
         agent_runner=_agent_runner, agent_label=agent_label,
         remote_task_runner=_remote_task_runner,
+        confirm_callback=confirm_callback,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
@@ -962,6 +964,7 @@ async def run_prompt_async(
     agent_registry=None,
     agent_label: Optional[str] = None,
     a2a_manager=None,
+    confirm_callback=None,
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -1011,6 +1014,7 @@ async def run_prompt_async(
         dry_run=dry_run, mcp_manager=mcp_manager,
         agent_runner=_agent_runner, agent_label=agent_label,
         remote_task_runner=_remote_task_runner,
+        confirm_callback=confirm_callback,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)

@@ -75,12 +75,13 @@ class ToolExecutor:
     """
 
     def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
-                 agent_label=None, remote_task_runner=None) -> None:
+                 agent_label=None, remote_task_runner=None, confirm_callback=None) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
         self._agent_label = agent_label          # type: str | None — shown as prefix on tool calls
         self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
+        self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -132,12 +133,15 @@ class ToolExecutor:
             return result
 
         if name in DANGEROUS_TOOLS:
-            with _CONFIRM_LOCK:
-                confirmed = questionary.confirm(
-                    f"  Allow {name}?",
-                    default=False,
-                    style=MINION_STYLE,
-                ).ask()
+            if self._confirm_callback is not None:
+                confirmed = self._confirm_callback(f"Allow {name}?")
+            else:
+                with _CONFIRM_LOCK:
+                    confirmed = questionary.confirm(
+                        f"  Allow {name}?",
+                        default=False,
+                        style=MINION_STYLE,
+                    ).ask()
             if not confirmed:
                 result = "User declined tool execution."
                 if _agent_cb is None:
@@ -242,12 +246,15 @@ class ToolExecutor:
             return result
 
         if name in DANGEROUS_TOOLS:
-            async with _get_async_confirm_lock():
-                confirmed = await asyncio.to_thread(
-                    lambda: questionary.confirm(
-                        f"  Allow {name}?", default=False, style=MINION_STYLE
-                    ).ask()
-                )
+            if self._confirm_callback is not None:
+                confirmed = await asyncio.to_thread(self._confirm_callback, f"Allow {name}?")
+            else:
+                async with _get_async_confirm_lock():
+                    confirmed = await asyncio.to_thread(
+                        lambda: questionary.confirm(
+                            f"  Allow {name}?", default=False, style=MINION_STYLE
+                        ).ask()
+                    )
             if not confirmed:
                 result = "User declined tool execution."
                 if _agent_cb is None:

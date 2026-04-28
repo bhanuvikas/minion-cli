@@ -7,9 +7,16 @@ blocks with SSE streaming for the subscribe mode (POST /tasks/sendSubscribe).
 
 Endpoints:
     GET  /.well-known/agent.json  — Agent Card (capability advertisement)
-    POST /tasks/send              — Submit task; returns {id, status: "submitted"} immediately
+    POST /tasks/send              — Submit new task; or continue existing (task_id in body)
     GET  /tasks/{id}              — Poll task status + artifact
     POST /tasks/sendSubscribe     — Submit task + SSE stream until completion
+
+Spec-compliant human approval:
+    When the agent needs approval for a dangerous tool, the task transitions to
+    "input-required" with an {input: {prompt, type}} payload. The orchestrator
+    surfaces the prompt to its user, collects the decision, and sends a
+    continuation via POST /tasks/send with {task_id, message: "yes"|"no"}.
+    The server resumes the paused agent coroutine.
 
 Task state is kept in memory (dict[str, Task] with a threading.Lock).
 No persistence across server restarts — Phase 11 scope.
@@ -34,6 +41,10 @@ _tasks: dict[str, Task] = {}
 _task_done_events: dict[str, threading.Event] = {}
 _tasks_lock = threading.Lock()
 
+# Pending approval requests: task_id → {event, prompt, response}
+_pending_approvals: dict[str, dict] = {}
+_approvals_lock = threading.Lock()
+
 
 def _store_task(task: Task) -> threading.Event:
     """Register a new task and return its completion Event."""
@@ -51,7 +62,8 @@ def _get_task(task_id: str) -> Optional[Task]:
 
 def _update_task_status(task_id: str, status: TaskStatus,
                         artifact_text: Optional[str] = None,
-                        error: Optional[str] = None) -> None:
+                        error: Optional[str] = None,
+                        input_data: Optional[dict] = None) -> None:
     with _tasks_lock:
         task = _tasks.get(task_id)
         if task is None:
@@ -61,6 +73,26 @@ def _update_task_status(task_id: str, status: TaskStatus,
             task.artifacts = [Artifact(text=artifact_text)]
         if error is not None:
             task.error = error
+        if input_data is not None:
+            task.input_data = input_data  # type: ignore[attr-defined]
+
+
+def _make_confirm_callback(task_id: str) -> Callable[[str], bool]:
+    """Return a callback that pauses the agent with input-required and waits for approval."""
+    def _confirm(prompt: str) -> bool:
+        _update_task_status(
+            task_id, TaskStatus.INPUT_REQUIRED,
+            input_data={"prompt": prompt, "type": "confirm"},
+        )
+        entry: dict = {"event": threading.Event(), "response": None}
+        with _approvals_lock:
+            _pending_approvals[task_id] = entry
+
+        # Block until orchestrator sends a continuation (or 5-minute timeout)
+        entry["event"].wait(timeout=300)
+        return bool(entry.get("response"))
+
+    return _confirm
 
 
 # ─── HTTP handler ─────────────────────────────────────────────────────────────
@@ -68,13 +100,13 @@ def _update_task_status(task_id: str, status: TaskStatus,
 class _A2AHandler(BaseHTTPRequestHandler):
     """HTTP handler for A2A protocol endpoints.
 
-    The server sets `agent_runner`, `host`, `port` as class attributes before
-    starting, so all handler instances share them via the class.
+    The server sets class attributes before starting, so all handler instances
+    share them via the class.
     """
-    agent_runner: Callable[[str], str]     # injected by A2AServer
+    agent_runner: Callable[..., str]     # fn(task_text, *, confirm_callback=None) -> str
     host: str
     port: int
-    _executor: ThreadPoolExecutor          # shared thread pool
+    _executor: ThreadPoolExecutor        # shared thread pool
 
     # ── Routing ───────────────────────────────────────────────────────────────
 
@@ -115,7 +147,27 @@ class _A2AHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_send(self, body: dict) -> None:
-        """POST /tasks/send — create task, submit to pool, return submitted immediately."""
+        """POST /tasks/send — create new task OR continue an existing one.
+
+        Continuation body: {"task_id": "<id>", "message": "yes"|"no"}
+        New task body:     {"message": "<task text>"}
+        """
+        # ── Task continuation (input-required approval) ────────────────────────
+        if "task_id" in body:
+            task_id = body["task_id"]
+            with _approvals_lock:
+                entry = _pending_approvals.pop(task_id, None)
+            if entry is None:
+                self._send_json(404, {"error": f"task '{task_id}' not awaiting approval"})
+                return
+            response = body.get("message", "").strip().lower() in ("yes", "y", "true", "1")
+            entry["response"] = response
+            entry["event"].set()
+            _update_task_status(task_id, TaskStatus.WORKING)
+            self._send_json(200, {"id": task_id, "status": TaskStatus.WORKING.value})
+            return
+
+        # ── New task ──────────────────────────────────────────────────────────
         message = body.get("message", "")
         if not message:
             self._send_json(400, {"error": "request body must include 'message'"})
@@ -133,7 +185,8 @@ class _A2AHandler(BaseHTTPRequestHandler):
             remote_addr=remote_addr,
         )
 
-        self.__class__._executor.submit(self._run_task, task_id, message, done_event)
+        confirm_cb = _make_confirm_callback(task_id)
+        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb)
         self._send_json(202, {"id": task_id, "status": TaskStatus.SUBMITTED.value})
 
     def _handle_get_task(self, task_id: str) -> None:
@@ -142,7 +195,13 @@ class _A2AHandler(BaseHTTPRequestHandler):
         if task is None:
             self._send_json(404, {"error": f"task '{task_id}' not found"})
             return
-        self._send_json(200, task.to_dict())
+        d = task.to_dict()
+        # Include input_data for input-required state
+        if task.status == TaskStatus.INPUT_REQUIRED:
+            input_data = getattr(task, "input_data", None)
+            if input_data:
+                d["input"] = input_data
+        self._send_json(200, d)
 
     def _handle_subscribe(self, body: dict) -> None:
         """POST /tasks/sendSubscribe — create task, stream SSE events until completion."""
@@ -178,10 +237,18 @@ class _A2AHandler(BaseHTTPRequestHandler):
         self._write_sse({"id": task_id, "status": TaskStatus.WORKING.value})
 
         # Run agent in thread pool
-        self.__class__._executor.submit(self._run_task, task_id, message, done_event)
+        confirm_cb = _make_confirm_callback(task_id)
+        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb)
 
-        # Block until done (handler thread is fine to block — ThreadingHTTPServer)
-        done_event.wait(timeout=600)  # 10 minutes max for streaming
+        # Block until done; periodically flush input-required SSE events
+        while not done_event.wait(timeout=1.0):
+            task_snap = _get_task(task_id)
+            if task_snap and task_snap.status == TaskStatus.INPUT_REQUIRED:
+                d = task_snap.to_dict()
+                input_data = getattr(task_snap, "input_data", None)
+                if input_data:
+                    d["input"] = input_data
+                self._write_sse(d)
 
         final_task = _get_task(task_id)
         if final_task is not None:
@@ -190,11 +257,12 @@ class _A2AHandler(BaseHTTPRequestHandler):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @classmethod
-    def _run_task(cls, task_id: str, message: str, done_event: threading.Event) -> None:
+    def _run_task(cls, task_id: str, message: str, done_event: threading.Event,
+                  confirm_cb: Callable[[str], bool]) -> None:
         """Execute the agent for a task and update task state when done."""
         _update_task_status(task_id, TaskStatus.WORKING)
         try:
-            result = cls.agent_runner(message)
+            result = cls.agent_runner(message, confirm_callback=confirm_cb)
             _update_task_status(task_id, TaskStatus.COMPLETED, artifact_text=result)
         except Exception as e:
             _update_task_status(task_id, TaskStatus.FAILED, error=str(e))
@@ -229,13 +297,17 @@ class A2AServer:
     Usage:
         server = A2AServer(host="localhost", port=8080, agent_runner=runner)
         server.start()  # blocks until Ctrl+C or server.stop()
+
+    agent_runner signature:
+        def runner(task_text: str, *, confirm_callback=None) -> str:
+            ...
     """
 
     def __init__(
         self,
         host: str,
         port: int,
-        agent_runner: Callable[[str], str],
+        agent_runner: Callable[..., str],
         max_workers: int = 4,
     ) -> None:
         self.host = host

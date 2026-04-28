@@ -15,10 +15,11 @@ from typing import Optional
 
 
 class TaskStatus(str, Enum):
-    SUBMITTED = "submitted"
-    WORKING   = "working"
-    COMPLETED = "completed"
-    FAILED    = "failed"
+    SUBMITTED      = "submitted"
+    WORKING        = "working"
+    INPUT_REQUIRED = "input-required"   # agent needs human approval to proceed
+    COMPLETED      = "completed"
+    FAILED         = "failed"
 
 
 @dataclass

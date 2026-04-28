@@ -291,11 +291,12 @@ def a2a_serve(
     project_context = build_project_context(Path.cwd())
     base_system_prompt = build_system_prompt(project_context)
 
-    def agent_runner(task_text: str) -> str:
+    def agent_runner(task_text: str, confirm_callback=None) -> str:
         conversation = Conversation(model=getattr(client, "model_id", "unknown"))
         result = run_prompt(
             task_text, client, conversation, base_system_prompt,
             capture_output=True,
+            confirm_callback=confirm_callback,
         )
         return result or "(no response)"
 

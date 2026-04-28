@@ -92,7 +92,7 @@ class TestA2AServer(unittest.TestCase):
         self.server = A2AServer(
             host="127.0.0.1",
             port=self.port,
-            agent_runner=lambda task: f"Echo: {task}",
+            agent_runner=lambda task, **kw: f"Echo: {task}",
         )
         self._thread = threading.Thread(target=self.server.start, daemon=True)
         self._thread.start()
@@ -154,7 +154,7 @@ class TestA2AServer(unittest.TestCase):
         error_server = A2AServer(
             host="127.0.0.1",
             port=error_port,
-            agent_runner=lambda task: (_ for _ in ()).throw(RuntimeError("intentional fail")),
+            agent_runner=lambda task, **kw: (_ for _ in ()).throw(RuntimeError("intentional fail")),
         )
         t = threading.Thread(target=error_server.start, daemon=True)
         t.start()
