@@ -1,150 +1,291 @@
-"""MCPManager — manages multiple MCPClient connections.
+"""MCPManager — manages multiple MCP server sessions using the official MCP SDK.
 
-Responsible for:
-- Connecting to all configured servers at REPL startup (graceful degradation)
-- Exposing a merged, namespaced tool definition list to the agent loop
-- Routing namespaced tool calls (server__tool) to the right server
-- Emitting Nefario trace events for MCP lifecycle operations
-- Coordinating shutdown of all server processes
+Each configured server gets a persistent async session maintained by a background
+asyncio.Task. The task opens the transport, initialises the session, and waits
+forever (until cancelled). Tool/resource/prompt calls reuse the live session —
+no reconnect overhead per call.
+
+Public API (async I/O):
+    connect_all(configs) — async, call once at REPL startup
+    call_tool(name, args) — async
+    get_prompt(name, args) — async
+    read_resource(uri) — async
+
+Public API (sync metadata — no I/O):
+    has_tools(), get_tool_definitions(), is_dangerous(name), shutdown()
+
+Backward-compat sync wrapper (for use from threads only, via asyncio.run()):
+    call_tool_sync(name, args)
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
 
 from ..theme import console
 from ..tracing import get_tracer
-from .base import MCPClientBase
-from .client import MCPClient
 from .config import MCPServerConfig, load_mcp_config
-from .http_client import MCPHTTPClient
-
-if TYPE_CHECKING:
-    pass
 
 
-def _make_client(name: str, config: MCPServerConfig) -> MCPClientBase:
-    """Factory: return the correct transport client for this config."""
-    if config.transport == "http":
-        return MCPHTTPClient(name, config)
-    return MCPClient(name, config)
+@dataclass
+class _MCPTool:
+    name: str
+    description: str
+    input_schema: dict
+    destructive: bool = False
+
+
+@dataclass
+class _MCPPromptArg:
+    name: str
+    description: str
+    required: bool
+
+
+@dataclass
+class _MCPPrompt:
+    name: str
+    description: str
+    arguments: list[_MCPPromptArg] = field(default_factory=list)
+
+
+@dataclass
+class _ServerState:
+    """Runtime state for one connected MCP server."""
+    name: str
+    config: MCPServerConfig
+    session: Optional[ClientSession] = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    error: Optional[Exception] = None
+    tools: list[_MCPTool] = field(default_factory=list)
+    prompts: list[_MCPPrompt] = field(default_factory=list)
+    has_resources: bool = False
+    task: Optional[asyncio.Task] = None
+
+
+async def _run_server(state: _ServerState) -> None:
+    """Background task that owns the server's transport + session lifetime."""
+    cfg = state.config
+    name = state.name
+    try:
+        if cfg.transport == "http":
+            transport_cm = sse_client(url=cfg.url)
+        else:
+            env = {**os.environ, **cfg.env}
+            params = StdioServerParameters(
+                command=cfg.command[0],
+                args=cfg.command[1:],
+                env=env,
+            )
+            transport_cm = stdio_client(params)
+
+        async with transport_cm as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+
+                # Populate tools
+                tools_result = await session.list_tools()
+                for t in tools_result.tools:
+                    destructive = bool(
+                        (t.annotations and getattr(t.annotations, "destructiveHint", False))
+                        or cfg.confirm_all
+                    )
+                    schema = t.inputSchema if isinstance(t.inputSchema, dict) else {}
+                    state.tools.append(_MCPTool(
+                        name=t.name,
+                        description=t.description or "",
+                        input_schema=schema,
+                        destructive=destructive,
+                    ))
+
+                # Detect resources capability
+                try:
+                    await session.list_resources()
+                    state.has_resources = True
+                except Exception:
+                    state.has_resources = False
+
+                # Populate prompts
+                try:
+                    prompts_result = await session.list_prompts()
+                    for p in prompts_result.prompts:
+                        args = []
+                        for a in (p.arguments or []):
+                            args.append(_MCPPromptArg(
+                                name=a.name,
+                                description=a.description or "",
+                                required=bool(a.required),
+                            ))
+                        state.prompts.append(_MCPPrompt(
+                            name=p.name,
+                            description=p.description or "",
+                            arguments=args,
+                        ))
+                except Exception:
+                    pass
+
+                state.session = session
+                state.ready.set()
+
+                # Block indefinitely — keep the session alive until task is cancelled.
+                await asyncio.Event().wait()
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        state.error = exc
+        state.ready.set()
 
 
 class MCPManager:
-    """Manages multiple MCP server connections for the duration of a session."""
+    """Manages multiple MCP server sessions using the official MCP SDK."""
 
     def __init__(self) -> None:
-        self._clients: dict[str, MCPClientBase] = {}  # keyed by server name
+        self._states: dict[str, _ServerState] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def connect_all(self, configs: dict[str, MCPServerConfig]) -> None:
-        """Connect to all configured servers. Warns and skips failed servers.
-
-        Pattern mirrors load_skill_registry's graceful degradation: a bad server
-        config never prevents minion from starting.
-        """
-        for name, config in configs.items():
-            client = _make_client(name, config)
-            client.notification_callback = self._on_notification
+    async def connect_all(self, configs: dict[str, MCPServerConfig]) -> None:
+        """Connect to all configured servers concurrently. Warns on failures."""
+        async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
+            state = _ServerState(name=name, config=cfg)
+            self._states[name] = state
             t0 = time.monotonic()
-            try:
-                client.connect()
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                self._clients[name] = client
-                get_tracer().emit(
-                    "mcp_server_connect",
-                    server_name=name,
-                    command=config.command,
-                    tool_count=len(client.tools),
-                    success=True,
-                    latency_ms=latency_ms,
-                )
-            except (RuntimeError, OSError) as e:
+            task = asyncio.create_task(_run_server(state))
+            state.task = task
+
+            await state.ready.wait()
+
+            if state.error is not None:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 console.print(
-                    f"[muted]Warning: MCP server '{name}' failed to connect: {e}[/]"
+                    f"[muted]Warning: MCP server '{name}' failed to connect: {state.error}[/]"
                 )
                 get_tracer().emit(
                     "mcp_server_connect",
                     server_name=name,
-                    command=config.command,
+                    command=cfg.command,
                     tool_count=0,
                     success=False,
-                    error=str(e),
+                    error=str(state.error),
                     latency_ms=latency_ms,
                 )
                 get_tracer().emit(
                     "mcp_error",
                     server_name=name,
                     tool_name="",
-                    error=str(e),
+                    error=str(state.error),
                     context="connect",
                 )
+                # Remove failed server so it doesn't appear in summaries
+                del self._states[name]
+            else:
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                get_tracer().emit(
+                    "mcp_server_connect",
+                    server_name=name,
+                    command=cfg.command,
+                    tool_count=len(state.tools),
+                    success=True,
+                    latency_ms=latency_ms,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for name, cfg in configs.items():
+                tg.create_task(_connect_one(name, cfg))
 
     def shutdown(self) -> None:
-        """Terminate all server subprocesses. Errors are silently ignored."""
-        for client in self._clients.values():
-            client.shutdown()
-        self._clients.clear()
+        """Cancel all server background tasks."""
+        for state in self._states.values():
+            if state.task and not state.task.done():
+                state.task.cancel()
+        self._states.clear()
 
-    # ── Tool access ───────────────────────────────────────────────────────────
+    # ── Sync metadata (no I/O) ────────────────────────────────────────────────
 
     def has_tools(self) -> bool:
-        """True if at least one connected server has at least one tool."""
-        return any(client.tools for client in self._clients.values())
+        return any(s.tools for s in self._states.values())
 
     def has_resources(self) -> bool:
-        """True if at least one connected server advertises the resources capability."""
-        return any(client._has_resources_capability for client in self._clients.values())
+        return any(s.has_resources for s in self._states.values())
 
     def has_prompts(self) -> bool:
-        """True if at least one connected server has at least one prompt template."""
-        return any(client.prompts for client in self._clients.values())
+        return any(s.prompts for s in self._states.values())
 
     def get_tool_definitions(self) -> list[dict]:
-        """Return merged list of all tool definitions from all connected clients.
-
-        Each dict is in Anthropic API format with a namespaced name:
-            {"name": "notes__create_note", "description": ..., "input_schema": ...}
-        """
+        """Return merged list of Anthropic-format tool definitions from all servers."""
         defs: list[dict] = []
-        for client in self._clients.values():
-            defs.extend(client.get_tool_definitions())
+        for name, state in self._states.items():
+            for t in state.tools:
+                defs.append({
+                    "name": f"{name}__{t.name}",
+                    "description": t.description,
+                    "input_schema": t.input_schema or {"type": "object", "properties": {}},
+                })
         return defs
 
     def is_dangerous(self, namespaced_name: str) -> bool:
-        """True if this tool requires user confirmation before execution.
-
-        A tool is dangerous if:
-        - The server was configured with confirm_all=True, OR
-        - The tool's MCP annotation has destructiveHint=True.
-        Returns False (safe) for unknown tools or servers not connected.
-        """
         server_name = namespaced_name.split("__", 1)[0]
-        client = self._clients.get(server_name)
-        if client is None:
+        state = self._states.get(server_name)
+        if state is None:
             return False
-        return client.is_dangerous(namespaced_name)
+        if state.config.confirm_all:
+            return True
+        tool_name = namespaced_name.split("__", 1)[1] if "__" in namespaced_name else ""
+        return any(t.destructive for t in state.tools if t.name == tool_name)
 
-    def call_tool(self, namespaced_name: str, arguments: dict) -> str:
-        """Route a namespaced tool call to the correct server.
+    def server_summary(self) -> list[dict]:
+        """Return cached server info (no live RPC calls — use async version for live resources)."""
+        result = []
+        for name, state in self._states.items():
+            result.append({
+                "name": name,
+                "tools": [t.name for t in state.tools],
+                "resources": [],  # live resources require async — see server_summary_async()
+                "prompts": [
+                    {
+                        "name": p.name,
+                        "description": p.description,
+                        "arguments": [{"name": a.name, "required": a.required} for a in p.arguments],
+                    }
+                    for p in state.prompts
+                ],
+            })
+        return result
 
-        Splits 'server__tool' on '__' (maxsplit=1), locates the client,
-        and delegates execution. Emits mcp_tool_call and mcp_tool_result
-        Nefario events around the call.
+    def get_prompt_info(self, namespaced_name: str) -> "_MCPPrompt | None":
+        parts = namespaced_name.split("__", 1)
+        if len(parts) != 2:
+            return None
+        server_name, prompt_name = parts
+        state = self._states.get(server_name)
+        if state is None:
+            return None
+        for p in state.prompts:
+            if p.name == prompt_name:
+                return p
+        return None
 
-        Returns an error string if the server is not connected or the call fails.
-        """
+    # ── Async I/O ─────────────────────────────────────────────────────────────
+
+    async def call_tool(self, namespaced_name: str, arguments: dict) -> str:
+        """Route a namespaced tool call to the correct server session."""
         parts = namespaced_name.split("__", 1)
         if len(parts) != 2:
             return f"Error: malformed MCP tool name '{namespaced_name}' (expected 'server__tool')"
 
         server_name, tool_name = parts
-        client = self._clients.get(server_name)
-        if client is None:
+        state = self._states.get(server_name)
+        if state is None or state.session is None:
             return f"Error: MCP server '{server_name}' is not connected"
 
         get_tracer().emit(
@@ -156,10 +297,22 @@ class MCPManager:
         )
 
         t0 = time.monotonic()
-        result = client.call_tool(tool_name, arguments)
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        success = not result.startswith("Error:")
+        try:
+            result_obj = await state.session.call_tool(tool_name, arguments or None)
+            # SDK returns CallToolResult with content list
+            parts_text = []
+            for item in result_obj.content:
+                if hasattr(item, "text"):
+                    parts_text.append(item.text)
+                else:
+                    parts_text.append(str(item))
+            result = "\n".join(parts_text) if parts_text else "(no output)"
+            success = True
+        except Exception as e:
+            result = f"Error: {e}"
+            success = False
 
+        latency_ms = int((time.monotonic() - t0) * 1000)
         get_tracer().emit(
             "mcp_tool_result",
             server_name=server_name,
@@ -168,7 +321,6 @@ class MCPManager:
             success=success,
             latency_ms=latency_ms,
         )
-
         if not success:
             get_tracer().emit(
                 "mcp_error",
@@ -177,72 +329,41 @@ class MCPManager:
                 error=result,
                 context="call",
             )
-
         return result
 
-    def read_resource(self, uri: str) -> str:
-        """Read a resource by URI, routing to whichever server owns it.
+    def call_tool_sync(self, namespaced_name: str, arguments: dict) -> str:
+        """Sync wrapper for call_tool(). Only safe to call from a thread (no running event loop)."""
+        return asyncio.run(self.call_tool(namespaced_name, arguments))
 
-        Ownership is determined by fetching a fresh resources/list from each
-        client that supports resources. This ensures newly created resources
-        (e.g. notes written during the session) are always findable.
-        Returns an error string if no server owns the URI.
-        """
-        for name, client in self._clients.items():
-            if not client._has_resources_capability:
+    async def read_resource(self, uri: str) -> str:
+        """Read a resource by URI, routing to the server that supports resources."""
+        for name, state in self._states.items():
+            if not state.has_resources or state.session is None:
                 continue
-            live_resources = client.list_resources()
-            if any(r.uri == uri for r in live_resources):
+            try:
+                result_obj = await state.session.read_resource(uri)  # type: ignore[arg-type]
+                parts_text = []
+                for item in result_obj.contents:
+                    if hasattr(item, "text"):
+                        parts_text.append(item.text)
+                    else:
+                        parts_text.append(str(item))
+                result = "\n".join(parts_text) if parts_text else "(empty resource)"
                 get_tracer().emit("mcp_resource_read", server_name=name, uri=uri)
-                t0 = time.monotonic()
-                result = client.read_resource(uri)
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                success = not result.startswith("Error:")
-                get_tracer().emit(
-                    "mcp_resource_result",
-                    server_name=name,
-                    uri=uri,
-                    content_length=len(result),
-                    content=result[:500] if success else "",
-                    success=success,
-                    latency_ms=latency_ms,
-                )
                 return result
+            except Exception:
+                continue
         return f"Error: No MCP server owns resource URI '{uri}'"
 
-    def get_prompt_info(self, namespaced_name: str) -> "MCPPrompt | None":
-        """Return the MCPPrompt definition for a namespaced name, or None if not found.
-
-        Used by the REPL to discover required arguments before calling get_prompt(),
-        so it can interactively collect missing args rather than letting the server error.
-        """
-        from .client import MCPPrompt  # local import avoids circular at module level
-        parts = namespaced_name.split("__", 1)
-        if len(parts) != 2:
-            return None
-        server_name, prompt_name = parts
-        client = self._clients.get(server_name)
-        if client is None:
-            return None
-        for p in client.prompts:
-            if p.name == prompt_name:
-                return p
-        return None
-
-    def get_prompt(self, namespaced_name: str, arguments: dict | None = None) -> list[dict]:
-        """Get a prompt template by namespaced name ('server__prompt_name').
-
-        Returns a list of MCP message dicts. The REPL extracts text from them
-        and injects into the conversation. Returns a single error message dict
-        if the server is not connected or the name is malformed.
-        """
+    async def get_prompt(self, namespaced_name: str, arguments: dict | None = None) -> list[dict]:
+        """Get a prompt template by namespaced name."""
         parts = namespaced_name.split("__", 1)
         if len(parts) != 2:
             return [{"role": "user", "content": {"type": "text", "text": f"Error: malformed prompt name '{namespaced_name}'"}}]
 
         server_name, prompt_name = parts
-        client = self._clients.get(server_name)
-        if client is None:
+        state = self._states.get(server_name)
+        if state is None or state.session is None:
             return [{"role": "user", "content": {"type": "text", "text": f"Error: MCP server '{server_name}' is not connected"}}]
 
         get_tracer().emit(
@@ -252,85 +373,89 @@ class MCPManager:
             arguments=arguments or {},
         )
         t0 = time.monotonic()
-        messages = client.get_prompt(prompt_name, arguments)
+        try:
+            result_obj = await state.session.get_prompt(prompt_name, arguments)
+            messages = []
+            for msg in result_obj.messages:
+                role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
+                if hasattr(msg.content, "text"):
+                    content = {"type": "text", "text": msg.content.text}
+                else:
+                    content = {"type": "text", "text": str(msg.content)}
+                messages.append({"role": role, "content": content})
+        except Exception as e:
+            messages = [{"role": "user", "content": {"type": "text", "text": f"Error: {e}"}}]
+
         latency_ms = int((time.monotonic() - t0) * 1000)
-
-        # Extract injected text (same logic as REPL) so the trace shows what the LLM sees
-        text_parts: list[str] = []
-        for msg in messages:
-            content = msg.get("content", {})
-            if isinstance(content, dict) and content.get("type") == "text":
-                text_parts.append(str(content.get("text", "")))
-            elif isinstance(content, str):
-                text_parts.append(content)
-        injected_text = "\n\n".join(text_parts).strip()
-        success = not injected_text.startswith("Error")
-
         get_tracer().emit(
             "mcp_prompt_result",
             server_name=server_name,
             prompt_name=prompt_name,
-            injected_text=injected_text[:1000],
+            injected_text="",
             message_count=len(messages),
-            success=success,
+            success=not (messages and "Error:" in str(messages[0])),
             latency_ms=latency_ms,
         )
         return messages
 
-    # ── Notification handling ─────────────────────────────────────────────────
-
-    def _on_notification(self, server_name: str, params: dict) -> None:
-        """Handle any server-sent notification forwarded by the transport client.
-
-        Called from the background reader/stream thread. Only emits an mcp_log
-        trace event for MCP standard logging notifications (those that carry a
-        "level" field). Custom server notification types (e.g. file change events
-        from the workspace server) are silently ignored here — add handling below
-        when minion needs to act on them.
-
-        MCP log levels (syslog severity): debug, info, notice, warning, error,
-        critical, alert, emergency.
-        """
-        if "level" in params:
-            # Standard MCP logging notification (notifications/message)
-            get_tracer().emit(
-                "mcp_log",
-                server_name=server_name,
-                level=params.get("level", "info"),
-                logger=params.get("logger", ""),
-                data=str(params.get("data", "")),
-            )
-
-    # ── Display helpers ───────────────────────────────────────────────────────
-
-    def server_summary(self) -> list[dict]:
-        """Return a list of server info dicts for display.
-
-        Each dict has keys: name, tools, resources, prompts.
-        Resources are fetched live (they change as files are created/deleted).
-        Prompts and tools are cached schema definitions fetched at connect time.
-        """
+    async def server_summary_async(self) -> list[dict]:
+        """Like server_summary() but fetches live resources via RPC."""
         result = []
-        for name, client in self._clients.items():
-            live_resources = client.list_resources()  # fresh RPC call — reflects current state
+        for name, state in self._states.items():
+            resources = []
+            if state.has_resources and state.session is not None:
+                try:
+                    res_result = await state.session.list_resources()
+                    for r in res_result.resources:
+                        resources.append({
+                            "uri": str(r.uri),
+                            "name": r.name or "",
+                            "description": r.description or "",
+                        })
+                except Exception:
+                    pass
             result.append({
                 "name": name,
-                "tools": [t.name for t in client.tools],
-                "resources": [{"uri": r.uri, "name": r.name, "description": r.description} for r in live_resources],
-                "prompts": [{"name": p.name, "description": p.description, "arguments": [{"name": a.name, "required": a.required} for a in p.arguments]} for p in client.prompts],
+                "tools": [t.name for t in state.tools],
+                "resources": resources,
+                "prompts": [
+                    {
+                        "name": p.name,
+                        "description": p.description,
+                        "arguments": [{"name": a.name, "required": a.required} for a in p.arguments],
+                    }
+                    for p in state.prompts
+                ],
             })
         return result
 
+    # ── Notification (no-op for SDK — SDK handles internally) ─────────────────
 
-def load_mcp_manager(cwd: Path | None = None) -> "MCPManager":
-    """Load MCP config and connect to all configured servers.
+    def _on_notification(self, server_name: str, params: dict) -> None:
+        """Kept for interface compatibility — SDK handles notifications internally."""
 
-    Always returns an MCPManager — if no servers are configured or all fail,
-    the manager is empty (has_tools() returns False, get_tool_definitions() returns []).
-    Callers never need to null-check the return value.
+
+async def load_mcp_manager_async(cwd: Path | None = None) -> "MCPManager":
+    """Async: load config + connect to all configured MCP servers.
+
+    Returns an MCPManager with live sessions. Call this from async contexts
+    (e.g. run_repl_async). Always returns a manager — empty if no servers configured.
     """
     configs = load_mcp_config(cwd)
     manager = MCPManager()
     if configs:
-        manager.connect_all(configs)
+        await manager.connect_all(configs)
+    return manager
+
+
+def load_mcp_manager(cwd: Path | None = None) -> "MCPManager":
+    """Sync: load config + connect to all configured MCP servers.
+
+    Safe to call from sync contexts. Runs the async connect_all in a new event loop.
+    Returns an empty MCPManager if no servers configured.
+    """
+    configs = load_mcp_config(cwd)
+    manager = MCPManager()
+    if configs:
+        asyncio.run(manager.connect_all(configs))
     return manager

@@ -161,7 +161,9 @@ class ToolExecutor:
                             print_tool_result(result)
                         return result
                 try:
-                    result = self._mcp_manager.call_tool(name, inputs)
+                    # call_tool is async; sync execute() is called from threads
+                    # where asyncio.run() is safe (no running event loop in thread).
+                    result = asyncio.run(self._mcp_manager.call_tool(name, inputs))
                 except Exception as e:
                     result = f"Error: {e}"
                 if _agent_cb is None:
@@ -268,7 +270,7 @@ class ToolExecutor:
                             print_tool_result(result)
                         return result
                 try:
-                    result = await asyncio.to_thread(self._mcp_manager.call_tool, name, inputs)
+                    result = await self._mcp_manager.call_tool(name, inputs)
                 except Exception as e:
                     result = f"Error: {e}"
                 if _agent_cb is None:

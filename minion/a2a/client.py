@@ -1,7 +1,7 @@
 """A2A HTTP client — sends tasks to a single remote A2A agent.
 
-Uses http.client from stdlib (zero new deps) — same approach as the MCP
-HTTP client. Reuses SSEParser from minion/mcp/sse.py for event-stream parsing.
+Uses http.client from stdlib (zero new deps). Includes a minimal inline SSE
+parser for the streaming endpoint.
 
 Protocol subset implemented:
     GET  /.well-known/agent.json    — fetch Agent Card
@@ -22,10 +22,39 @@ import http.client
 import json
 import time
 import urllib.parse
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Callable, Iterator, Optional
 
-from ..mcp.sse import SSEParser
 from .models import AgentCard, Artifact, Task, TaskStatus
+
+
+# ── Minimal inline SSE parser ─────────────────────────────────────────────────
+
+@dataclass
+class _SSEEvent:
+    data: str = ""
+    event: str = ""
+    id: str = ""
+
+
+def _iter_sse_events(response: http.client.HTTPResponse) -> Iterator[_SSEEvent]:
+    """Yield SSE events from an HTTP response using readline()."""
+    current = _SSEEvent()
+    while True:
+        line_bytes = response.readline()
+        if not line_bytes:
+            break
+        line = line_bytes.rstrip(b"\r\n").decode("utf-8", errors="replace")
+        if line == "":
+            if current.data:
+                yield current
+            current = _SSEEvent()
+        elif line.startswith("data:"):
+            current.data += line[5:].lstrip(" ")
+        elif line.startswith("event:"):
+            current.event = line[6:].strip()
+        elif line.startswith("id:"):
+            current.id = line[3:].strip()
 
 
 class A2AError(Exception):
@@ -186,7 +215,7 @@ class A2AClient:
                 f"Task subscribe failed for '{self.name}': HTTP {resp.status}"
             )
 
-        for event in SSEParser.iter_events(resp):
+        for event in _iter_sse_events(resp):
             try:
                 data = json.loads(event.data)
             except json.JSONDecodeError:

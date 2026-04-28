@@ -44,10 +44,23 @@ class _FakeResponse:
                  content_type: str = "application/json") -> None:
         self.status = status
         self._body = body
+        self._pos = 0
         self._content_type = content_type
 
     def read(self) -> bytes:
         return self._body
+
+    def readline(self) -> bytes:
+        if self._pos >= len(self._body):
+            return b""
+        end = self._body.find(b"\n", self._pos)
+        if end == -1:
+            line = self._body[self._pos:]
+            self._pos = len(self._body)
+        else:
+            line = self._body[self._pos:end + 1]
+            self._pos = end + 1
+        return line
 
     def getheader(self, name: str, default: str = "") -> str:
         return {"Content-Type": self._content_type}.get(name, default)
