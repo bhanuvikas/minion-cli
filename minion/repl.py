@@ -1223,7 +1223,7 @@ async def run_repl_async(
                 continue
 
         if user_input.startswith("/agent "):
-            _handle_agent_direct(user_input, agent_registry, client)
+            await asyncio.to_thread(_handle_agent_direct, user_input, agent_registry, client)
             console.print()
             continue
 
