@@ -437,40 +437,44 @@ class TestConfirmLock:
 class TestAgentsToggle:
     """Verify that spawn_agent appears or disappears based on enable_agents/agent_depth."""
 
-    def _captured_tools(self, **run_prompt_kwargs) -> list[dict] | None:
-        """Call run_prompt with a minimal mock client and capture the tools list
-        passed to _stream_one_iteration."""
-        from minion.runner import run_prompt
+    async def _captured_tools(self, **run_prompt_kwargs) -> list[dict] | None:
+        """Call run_prompt_async with a minimal mock client and capture the tools list
+        passed to _stream_one_iteration_async."""
+        from minion.runner import run_prompt_async
 
         captured = {}
 
-        def fake_stream_one_iteration(client, conversation, system_prompt, tools=None, **kwargs):
+        async def fake_stream_one_iteration_async(client, conversation, system_prompt, tools=None, **kwargs):
             captured["tools"] = tools
             return None  # triggers early return (None = error path pops user message)
 
         client = MagicMock()
+        client.model_id = "stub"
         conv = Conversation()
 
-        with patch("minion.runner._stream_one_iteration", side_effect=fake_stream_one_iteration), \
+        with patch("minion.runner._stream_one_iteration_async", side_effect=fake_stream_one_iteration_async), \
              patch("minion.runner.print_error"):
-            run_prompt("hi", client, conv, "system", **run_prompt_kwargs)
+            await run_prompt_async("hi", client, conv, "system", **run_prompt_kwargs)
 
         return captured.get("tools")
 
-    def test_spawn_agent_excluded_when_enable_agents_false(self):
-        tools = self._captured_tools(enable_agents=False)
+    @pytest.mark.asyncio
+    async def test_spawn_agent_excluded_when_enable_agents_false(self):
+        tools = await self._captured_tools(enable_agents=False)
         assert not _has_spawn_agent(tools)
 
-    def test_spawn_agent_excluded_when_agent_depth_at_max(self):
+    @pytest.mark.asyncio
+    async def test_spawn_agent_excluded_when_agent_depth_at_max(self):
         from minion.agents.runner import MAX_AGENT_DEPTH
-        tools = self._captured_tools(enable_agents=True, agent_depth=MAX_AGENT_DEPTH)
+        tools = await self._captured_tools(enable_agents=True, agent_depth=MAX_AGENT_DEPTH)
         assert not _has_spawn_agent(tools)
 
-    def test_spawn_agent_included_when_agents_enabled_depth_zero(self):
+    @pytest.mark.asyncio
+    async def test_spawn_agent_included_when_agents_enabled_depth_zero(self):
         # No registry → no agent_runner → but spawn_agent still in tool list
-        tools = self._captured_tools(enable_agents=True, agent_depth=0)
+        tools = await self._captured_tools(enable_agents=True, agent_depth=0)
         # spawn_agent is in TOOL_DEFINITIONS; effective_tools defaults to TOOL_DEFINITIONS
-        # when tools=None (not excluded). _stream_one_iteration receives None → it uses TOOL_DEFINITIONS.
+        # when tools=None (not excluded). _stream_one_iteration_async receives None → it uses TOOL_DEFINITIONS.
         # tools captured as None means TOOL_DEFINITIONS is used, which includes spawn_agent.
         if tools is None:
             assert _has_spawn_agent(None)  # TOOL_DEFINITIONS contains spawn_agent

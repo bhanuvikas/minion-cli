@@ -518,183 +518,26 @@ def run_prompt(
     a2a_manager=None,
     confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
 ) -> Optional[str]:
-    """Run the ReAct agent loop for a single user prompt.
+    """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
-    Loops up to max_iterations (defaults to MAX_ITERATIONS). Each iteration is
-    one LLM call; if the model requests tool use the results are observed and
-    the loop continues. The loop exits when the model signals end_turn or
-    dry_run stops it after the first tool-use iteration.
-
-    When reflect_config is provided and depth > 0, runs the self-refine loop
-    after the final end_turn response before returning.
-
-    When capture_output=True (used by subagents), all terminal output is
-    suppressed and the final response text is returned as a string. The return
-    value is None in normal (streaming) mode and str in capture mode.
+    Safe to call from threads where no event loop is running (including
+    asyncio.to_thread()). Do NOT call from a coroutine; use run_prompt_async() directly.
     """
-    limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
-
-    # ── Build effective tool list ──────────────────────────────────────────────
-    # MCP tools appended only in all-tools mode (tools=None). Skills/subagents
-    # that declare an explicit tool subset intentionally skip MCP tools.
-    if tools is None and mcp_manager is not None and mcp_manager.has_tools():
-        effective_tools: Optional[list] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
-    else:
-        effective_tools = tools  # None → _stream_one_iteration uses TOOL_DEFINITIONS
-
-    # spawn_agent is excluded when agents are disabled or when we're already
-    # inside a worker (depth >= MAX_AGENT_DEPTH prevents recursive spawning).
-    from .agents.runner import MAX_AGENT_DEPTH
-    _exclude_spawn = not enable_agents or agent_depth >= MAX_AGENT_DEPTH
-    if _exclude_spawn:
-        base = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
-        effective_tools = [t for t in base if t["name"] != "spawn_agent"]
-
-    # ── Build agent runner + inject subagent guidance into system prompt ───────
-    _subagent_tokens: list[int] = []  # accumulates total_tokens per subagent
-    if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
-        from .agents import SUBAGENT_GUIDANCE
-        from .agents.runner import run_agent
-        _agent_runner = lambda task, role: run_agent(  # noqa: E731
-            task, role, agent_registry, client,
-            parent_depth=agent_depth, mcp_manager=mcp_manager,
-            _token_accumulator=_subagent_tokens,
-        )
-        system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
-    else:
-        _agent_runner = None
-
-    # ── Build remote task runner + inject A2A guidance into system prompt ──────
-    if a2a_manager is not None and a2a_manager.has_agents():
-        from .a2a import A2A_REMOTE_GUIDANCE
-        _remote_task_runner = lambda agent, task: a2a_manager.send_task(agent, task)  # noqa: E731
-        # Build dynamic guidance listing available agent names
-        names = ", ".join(a2a_manager.agent_names())
-        _a2a_guidance = A2A_REMOTE_GUIDANCE + f"\nConfigured agent names: {names}"
-        system_prompt = system_prompt + "\n\n" + _a2a_guidance
-        # Filter send_remote_task out of any explicitly-provided tool list so the
-        # dynamic description (with agent names) in the system prompt is authoritative.
-    else:
-        _remote_task_runner = None
-
-    # Filter send_remote_task when no A2A manager is available.
-    if _remote_task_runner is None:
-        base_et = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
-        effective_tools = [t for t in base_et if t["name"] != "send_remote_task"]
-
-    executor = ToolExecutor(
-        dry_run=dry_run, mcp_manager=mcp_manager,
-        agent_runner=_agent_runner, agent_label=agent_label,
-        remote_task_runner=_remote_task_runner,
-        confirm_callback=confirm_callback,
-    )
-    prompt = _resolve_mentions(prompt, Path.cwd())
-    conversation.add_user(prompt)
-    final_usage: Optional[LLMResponse] = None
-    side_effects_occurred = False
-
-    for _ in range(limit):
-        # ── One LLM call ──────────────────────────────────────────────────────
-        result = _stream_one_iteration(
-            client, conversation, system_prompt, tools=effective_tools,
-            silent=render_markdown,
-            flush_narration=render_markdown,
-            spinner_label=spinner_label,
-            agent_label=agent_label,
-        )
-        if result is None:
-            return  # error already displayed and user message popped
-
-        if result.usage:
-            final_usage = result.usage
-
-        # ── End turn: model finished responding (or hit output token limit) ─────
-        if result.stop_reason not in ("end_turn", "tool_use"):
-            # max_tokens or other unexpected stop — treat partial response as final.
-            # Do NOT loop: the model stopped generating, continuing would just burn
-            # tokens repeating context without new information.
-            conversation.add_assistant(result.full_text, result.usage)
-            if _get_slot_cb() is None:
-                console.print(f"\n[muted]  ↳ stopped: {result.stop_reason}[/]")
-            if capture_output:
-                return result.full_text
-            break
-
-        if result.stop_reason == "end_turn":
-            conversation.add_assistant(result.full_text, result.usage)
-            if capture_output:
-                # Subagent mode: suppress all terminal output, return text.
-                return result.full_text
-            if render_markdown and result.full_text:
-                from rich.markdown import Markdown
-                from rich.panel import Panel
-                console.print(
-                    Panel(
-                        Markdown(result.full_text),
-                        title=f"[bold {YELLOW}]{markdown_title or 'Response'}[/]",
-                        expand=False,
-                        border_style="dim",
-                    )
-                )
-            if reflect_config and reflect_config.depth > 0:
-                if side_effects_occurred:
-                    console.print("[muted]  ↳ reflection skipped (side-effecting tools were used)[/]")
-                else:
-                    _run_reflection(
-                        prompt=prompt,
-                        response=result.full_text,
-                        client=client,
-                        config=reflect_config,
-                        verbose=verbose,
-                        conversation=conversation,
-                    )
-            break
-
-        # ── Tool use: execute calls, inject observations, loop ────────────────
-        if result.stop_reason == "tool_use":
-            conversation.add_assistant_blocks(_build_content_blocks(result), result.usage)
-
-            if dry_run:
-                for tb in result.tool_blocks:
-                    print_tool_call(tb.name, tb.input, dry_run=True)
-                console.print(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
-                break
-
-            for tb in result.tool_blocks:
-                # MCP tools, delegation tools, and shell/write are treated as
-                # side-effecting to prevent reflection after unknown operations.
-                if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name in DELEGATION_TOOLS:
-                    side_effects_occurred = True
-
-            _execute_tools(result.tool_blocks, executor, conversation)
-            if _get_slot_cb() is None:
-                print()  # blank line before next iteration
-
-    else:
-        # for/else fires when the loop exhausted all iterations without a break
-        print_iteration_limit(limit)
-
-    # ── Post-loop: truncation, context snapshot, usage footer ─────────────────
-    if not capture_output:
-        system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
-        if final_usage:
-            conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
-        snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
-        print_usage(snapshot)
-        if _subagent_tokens:
-            total_sub = sum(_subagent_tokens)
-            n_sub = len(_subagent_tokens)
-            console.print(
-                f"  [muted]subagents: {n_sub} agent{'s' if n_sub > 1 else ''}, "
-                f"{total_sub:,} tokens total[/]"
-            )
-    return None
+    return asyncio.run(run_prompt_async(
+        prompt=prompt, client=client, conversation=conversation,
+        system_prompt=system_prompt, dry_run=dry_run, reflect_config=reflect_config,
+        verbose=verbose, memory_tokens=memory_tokens, max_iterations=max_iterations,
+        tools=tools, render_markdown=render_markdown, markdown_title=markdown_title,
+        spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
+        enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
+        agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
+    ))
 
 
-# ─── Async variants (Phase 12) ────────────────────────────────────────────────
-# The async loop mirrors the sync loop exactly but uses client.async_stream()
-# and asyncio.TaskGroup for parallel tool/agent execution. The sync run_prompt()
-# and helpers above are kept for backward compatibility during the migration.
+# ─── Async implementation ─────────────────────────────────────────────────────
+# run_prompt_async() is the canonical implementation. The sync helpers below
+# (_stream_one_iteration, _execute_tools, _execute_parallel_agents) are kept
+# because test_agents.py tests them in isolation.
 
 
 async def _stream_one_iteration_async(

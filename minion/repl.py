@@ -1232,7 +1232,8 @@ async def run_repl_async(
             console.print()
             continue
 
-        if _handle_slash_command(
+        if await asyncio.to_thread(
+            _handle_slash_command,
             user_input, client, conversation, project_context, state, memory_store,
             base_system_prompt=base_system_prompt,
             skill_registry=skill_registry,

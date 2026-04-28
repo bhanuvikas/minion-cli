@@ -291,45 +291,49 @@ class TestExecuteSkill:
 # ─── TestRunPromptToolsParam ──────────────────────────────────────────────────
 
 class TestRunPromptToolsParam:
-    def _make_client(self, stop_reason="end_turn"):
-        client = MagicMock()
+    def _make_async_client(self, stop_reason="end_turn"):
         events = [TextChunk(text="done"), StreamComplete(
             stop_reason=stop_reason, input_tokens=5, output_tokens=3, model="test"
         )]
-        client.stream.return_value = iter(events)
+        async def _gen(*args, **kwargs):
+            for e in events:
+                yield e
+        client = MagicMock()
+        client.model_id = "test"
+        client.async_stream = MagicMock(side_effect=_gen)
         return client
 
-    def test_defaults_to_all_tools(self):
-        from minion.runner import run_prompt
+    @pytest.mark.asyncio
+    async def test_defaults_to_all_tools(self):
+        from minion.runner import run_prompt_async
         from minion.conversation import Conversation
-        client = self._make_client()
-        with patch("minion.runner.console") as mc:
-            mc.status.return_value = _make_status_ctx()
-            run_prompt("hello", client, Conversation(), "sys")
-        _, call_kwargs = client.stream.call_args
+        client = self._make_async_client()
+        with patch("minion.runner.console"):
+            await run_prompt_async("hello", client, Conversation(), "sys")
+        _, call_kwargs = client.async_stream.call_args
         # send_remote_task is filtered out when no a2a_manager is provided
         expected = [t for t in TOOL_DEFINITIONS if t["name"] != "send_remote_task"]
         assert call_kwargs["tools"] == expected
 
-    def test_custom_subset_passed(self):
-        from minion.runner import run_prompt
+    @pytest.mark.asyncio
+    async def test_custom_subset_passed(self):
+        from minion.runner import run_prompt_async
         from minion.conversation import Conversation
         single_tool = [TOOL_DEFINITIONS[0]]
-        client = self._make_client()
-        with patch("minion.runner.console") as mc:
-            mc.status.return_value = _make_status_ctx()
-            run_prompt("hello", client, Conversation(), "sys", tools=single_tool)
-        _, call_kwargs = client.stream.call_args
+        client = self._make_async_client()
+        with patch("minion.runner.console"):
+            await run_prompt_async("hello", client, Conversation(), "sys", tools=single_tool)
+        _, call_kwargs = client.async_stream.call_args
         assert call_kwargs["tools"] == single_tool
 
-    def test_empty_tools_passes_empty_list(self):
-        from minion.runner import run_prompt
+    @pytest.mark.asyncio
+    async def test_empty_tools_passes_empty_list(self):
+        from minion.runner import run_prompt_async
         from minion.conversation import Conversation
-        client = self._make_client()
-        with patch("minion.runner.console") as mc:
-            mc.status.return_value = _make_status_ctx()
-            run_prompt("hello", client, Conversation(), "sys", tools=[])
-        _, call_kwargs = client.stream.call_args
+        client = self._make_async_client()
+        with patch("minion.runner.console"):
+            await run_prompt_async("hello", client, Conversation(), "sys", tools=[])
+        _, call_kwargs = client.async_stream.call_args
         assert call_kwargs["tools"] == []
 
 
