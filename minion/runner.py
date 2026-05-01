@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .conversation import Conversation
-from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
+from .llm.base import ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
@@ -565,6 +565,7 @@ def run_prompt(
     agent_label: Optional[str] = None,
     a2a_manager=None,
     confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
+    auto_compact: bool = True,
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -579,6 +580,7 @@ def run_prompt(
         spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
         enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
+        auto_compact=auto_compact,
     ))
 
 
@@ -622,6 +624,15 @@ async def _stream_one_iteration_async(
             first_event = await gen.__anext__()
     except StopAsyncIteration:
         first_event = None
+    except InputTokenRateLimitError:
+        # Don't pop the message and don't print an error — propagate so
+        # run_prompt_async can auto-compact the conversation and retry.
+        get_tracer().emit(
+            "llm_error",
+            error="input_token_rate_limit",
+            latency_ms=int((_time.monotonic() - _llm_start) * 1000),
+        )
+        raise
     except Exception as e:
         get_tracer().emit(
             "llm_error",
@@ -914,6 +925,7 @@ async def run_prompt_async(
     agent_label: Optional[str] = None,
     a2a_manager=None,
     confirm_callback=None,
+    auto_compact: bool = True,
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -970,15 +982,48 @@ async def run_prompt_async(
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
     side_effects_occurred = False
+    _auto_compacted = False  # only auto-compact once per run_prompt call
 
     for _ in range(limit):
-        result = await _stream_one_iteration_async(
-            client, conversation, system_prompt, tools=effective_tools,
-            silent=render_markdown,
-            flush_narration=render_markdown,
-            spinner_label=spinner_label,
-            agent_label=agent_label,
-        )
+        try:
+            result = await _stream_one_iteration_async(
+                client, conversation, system_prompt, tools=effective_tools,
+                silent=render_markdown,
+                flush_narration=render_markdown,
+                spinner_label=spinner_label,
+                agent_label=agent_label,
+            )
+        except InputTokenRateLimitError:
+            if auto_compact and not _auto_compacted:
+                _auto_compacted = True
+                # Pop the pending user message so compaction summarises only
+                # prior history, then re-add it after so the LLM still sees it.
+                pending_user_msg = None
+                if conversation.messages and isinstance(conversation.messages[-1].content, str):
+                    pending_user_msg = conversation.messages.pop()
+                console.print(
+                    f"\n[{YELLOW}]⚠ Input token rate limit hit — auto-compacting conversation...[/]"
+                )
+                from .compact import get_strategy as _get_compact_strategy
+                _compact_strategy = _get_compact_strategy("summary")
+                with console.status("[muted]summarizing...[/]", spinner="dots"):
+                    await asyncio.to_thread(
+                        _compact_strategy.compact, conversation, client, system_prompt
+                    )
+                msgs_after = len(conversation.messages)
+                console.print(
+                    f"[{YELLOW}]Compacted.[/] [muted]"
+                    f"Context reduced to {msgs_after} messages — retrying...[/]"
+                )
+                if pending_user_msg is not None:
+                    conversation.messages.append(pending_user_msg)
+                continue  # retry this iteration with compacted context
+            # auto_compact disabled or already tried once — surface the error
+            print_error(
+                "Rate limited due to input token count. "
+                "Use /compact to reduce context size, or set auto_compact = false in config.toml."
+            )
+            return None
         if result is None:
             return None
 

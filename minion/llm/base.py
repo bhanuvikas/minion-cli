@@ -3,6 +3,17 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Iterator, Optional, Union
 
 
+# ─── Rate-limit exceptions ────────────────────────────────────────────────────
+
+class InputTokenRateLimitError(Exception):
+    """Raised when a 429 is caused by exceeding the input-token-per-minute limit.
+
+    Distinct from other RateLimitErrors (requests/min, output tokens/min) because
+    the right response is NOT to wait and retry — the context is still the same
+    size after 60s. The caller should compact the conversation and then retry.
+    """
+
+
 # ─── Application-level content block types ───────────────────────────────────
 # These are the canonical types the application uses to represent message content.
 # Adapters translate these to provider-specific wire formats in _format_messages().

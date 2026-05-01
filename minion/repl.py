@@ -1350,6 +1350,7 @@ async def run_repl_async(
             agent_registry=agent_registry,
             agent_depth=0,
             a2a_manager=a2a_manager,
+            auto_compact=_file_cfg.context.auto_compact,
         )
         console.print()
 

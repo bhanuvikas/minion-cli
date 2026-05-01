@@ -19,9 +19,9 @@ _COMPACT_SYSTEM = (
     "- Current state: what's done, what's in progress, what's next\n"
     "- Any errors encountered and how they were resolved\n"
     "- Things the assistant must NOT do (constraints established during the session)\n\n"
-    "Format as bullet points grouped by topic. "
-    "Be as concise as possible while keeping all specifics — do not round down "
-    "file paths to 'several files' or test counts to 'many tests'. "
+    "Format as bullet points grouped by topic. Write as much as needed to preserve "
+    "accuracy — do not round down file paths to 'several files', test counts to "
+    "'many tests', or decisions to vague summaries. "
     "Omit pleasantries, preamble, and anything re-derivable by reading the files."
 )
 

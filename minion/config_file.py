@@ -27,6 +27,9 @@ Schema (all sections optional — missing keys fall back to defaults):
     extraction_trigger       = "substantial"   # "substantial" | "every_5" | "manual" | "always"
     extraction_min_words     = 50
 
+    [context]
+    auto_compact = true   # automatically compact on input-token rate limit (429)
+
     [a2a]
     auth_token = ""
 
@@ -73,6 +76,11 @@ class MemoryFileConfig:
 
 
 @dataclass
+class ContextConfig:
+    auto_compact: bool = True
+
+
+@dataclass
 class A2AConfig:
     auth_token: str = ""
 
@@ -87,6 +95,7 @@ class MinionConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     memory: MemoryFileConfig = field(default_factory=MemoryFileConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
     a2a: A2AConfig = field(default_factory=A2AConfig)
     tracing: TracingConfig = field(default_factory=TracingConfig)
 
@@ -153,6 +162,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
     llm_raw = raw.get("llm", {})
     agent_raw = raw.get("agent", {})
     memory_raw = raw.get("memory", {})
+    context_raw = raw.get("context", {})
     a2a_raw = raw.get("a2a", {})
     tracing_raw = raw.get("tracing", {})
 
@@ -179,6 +189,9 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
             consolidation_threshold=_float(memory_raw.get("consolidation_threshold"), 0.70),
             extraction_trigger=extraction_trigger,
             extraction_min_words=_int(memory_raw.get("extraction_min_words"), 50),
+        ),
+        context=ContextConfig(
+            auto_compact=_bool(context_raw.get("auto_compact"), True),
         ),
         a2a=A2AConfig(
             auth_token=_str(a2a_raw.get("auth_token"), ""),
@@ -210,6 +223,9 @@ def format_config(cfg: MinionConfig) -> str:
         f"  consolidation_threshold = {cfg.memory.consolidation_threshold}",
         f"  extraction_trigger      = {cfg.memory.extraction_trigger}",
         f"  extraction_min_words    = {cfg.memory.extraction_min_words}",
+        "",
+        "[context]",
+        f"  auto_compact = {cfg.context.auto_compact}",
         "",
         "[a2a]",
         f"  auth_token = {'(set)' if cfg.a2a.auth_token else '(not set)'}",

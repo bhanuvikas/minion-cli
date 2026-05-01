@@ -8,6 +8,7 @@ import anthropic
 
 from .base import (
     ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
+    InputTokenRateLimitError,
     LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk,
     ToolAccumulationStart, ToolUseBlock,
 )
@@ -107,7 +108,9 @@ class AnthropicClient(LLMClient):
                     output_tokens=response.usage.output_tokens,
                     model=response.model,
                 )
-            except anthropic.RateLimitError:
+            except anthropic.RateLimitError as e:
+                if "input tokens" in str(e).lower():
+                    raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     _rate_limit_wait()
                 else:
@@ -175,7 +178,9 @@ class AnthropicClient(LLMClient):
                         model=final.model,
                     )
                 return  # success
-            except anthropic.RateLimitError:
+            except anthropic.RateLimitError as e:
+                if "input tokens" in str(e).lower():
+                    raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     _rate_limit_wait()
                 else:
@@ -203,7 +208,9 @@ class AnthropicClient(LLMClient):
                     output_tokens=response.usage.output_tokens,
                     model=response.model,
                 )
-            except anthropic.RateLimitError:
+            except anthropic.RateLimitError as e:
+                if "input tokens" in str(e).lower():
+                    raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     from ..theme import console as _console
                     _console.print(
@@ -273,7 +280,9 @@ class AnthropicClient(LLMClient):
                         model=final.model,
                     )
                 return  # success
-            except anthropic.RateLimitError:
+            except anthropic.RateLimitError as e:
+                if "input tokens" in str(e).lower():
+                    raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     from ..theme import console as _console
                     _console.print(
