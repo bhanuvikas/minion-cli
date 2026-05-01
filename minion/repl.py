@@ -1304,15 +1304,18 @@ async def run_repl_async(
             console.print()
             continue
 
-        # Memory injection — off the hot path: runs in thread pool
-        augmented_prompt = base_system_prompt
+        # Memory injection — off the hot path: runs in thread pool.
+        # Dynamic content (memory + plan) is separated from the static base prompt
+        # so the static prefix can be cached by the Anthropic API.
         memory_tokens = 0
+        system_dynamic = ""
         if state.memory_enabled:
             with console.status("[muted]recalling memories...[/]", spinner="dots"):
                 memories = await asyncio.to_thread(memory_store.retrieve, user_input)
-            augmented_prompt = inject_memories(base_system_prompt, memories)
-            memory_tokens = (len(augmented_prompt) - len(base_system_prompt)) // 4
-            if memories:
+            mem_block = inject_memories("", memories)
+            if mem_block:
+                system_dynamic += mem_block
+                memory_tokens = len(mem_block) // 4
                 get_tracer().emit(
                     "context_inject",
                     memory_count=len(memories),
@@ -1322,7 +1325,7 @@ async def run_repl_async(
 
         if state.active_plan and state.active_plan.exists():
             goal_hint = state.active_plan_goal or state.active_plan.stem
-            augmented_prompt += (
+            system_dynamic += (
                 f"\n\n## Recently Executed Plan\n"
                 f"Goal: {goal_hint}\n"
                 f"Path: {state.active_plan}\n"
@@ -1331,7 +1334,10 @@ async def run_repl_async(
 
         if state.debug:
             console.print(f"[muted]── debug: system prompt ───────────────────[/]")
-            console.print(f"[muted]{augmented_prompt}[/]")
+            console.print(f"[muted]{base_system_prompt}[/]")
+            if system_dynamic:
+                console.print(f"[muted]── debug: dynamic context ──────────────────[/]")
+                console.print(f"[muted]{system_dynamic}[/]")
             console.print(f"[muted]────────────────────────────────────────────[/]")
 
         reflect_config = (
@@ -1340,7 +1346,8 @@ async def run_repl_async(
         )
         console.print()
         await run_prompt_async(
-            user_input, client, conversation, augmented_prompt,
+            user_input, client, conversation, base_system_prompt,
+            system_dynamic=system_dynamic,
             dry_run=dry_run,
             reflect_config=reflect_config,
             verbose=state.verbose,

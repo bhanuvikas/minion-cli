@@ -129,6 +129,7 @@ class LLMClient(ABC):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> Iterator[StreamEvent]:
         """Streaming call. Yields typed StreamEvent objects.
@@ -145,6 +146,7 @@ class LLMClient(ABC):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> AsyncIterator[StreamEvent]:
         """Async streaming call. Yields typed StreamEvent objects.

@@ -182,7 +182,8 @@ class TestAnthropicAsyncStream:
             await _collect(client.async_stream([_msg("hi")], system="Be concise"))
 
         call_kwargs = mock_stream.call_args[1]
-        assert call_kwargs.get("system") == "Be concise"
+        system = call_kwargs.get("system")
+        assert isinstance(system, list) and system[0]["text"] == "Be concise"
 
 
 # ─── AnthropicClient async_complete ──────────────────────────────────────────

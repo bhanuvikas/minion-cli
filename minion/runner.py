@@ -618,6 +618,7 @@ async def _stream_one_iteration_async(
     client: LLMClient,
     conversation: Conversation,
     system_prompt: str,
+    system_dynamic: str = "",
     tools: Optional[list] = None,
     silent: bool = False,
     flush_narration: bool = True,
@@ -639,7 +640,7 @@ async def _stream_one_iteration_async(
     )
     effective_spinner = spinner_label or _SPINNER_LABEL
 
-    gen = client.async_stream(conversation.messages, system=system_prompt, tools=effective_tools)
+    gen = client.async_stream(conversation.messages, system=system_prompt, system_dynamic=system_dynamic, tools=effective_tools)
     _in_live = _get_slot_cb() is not None
     _first_cm = contextlib.nullcontext() if _in_live else console.status(effective_spinner, spinner="dots")
 
@@ -949,6 +950,7 @@ async def run_prompt_async(
     client: LLMClient,
     conversation: Conversation,
     system_prompt: str,
+    system_dynamic: str = "",
     dry_run: bool = False,
     reflect_config: Optional[ReflectionConfig] = None,
     verbose: bool = False,
@@ -1028,7 +1030,8 @@ async def run_prompt_async(
     for _ in range(limit):
         try:
             result = await _stream_one_iteration_async(
-                client, conversation, system_prompt, tools=effective_tools,
+                client, conversation, system_prompt, system_dynamic=system_dynamic,
+                tools=effective_tools,
                 silent=render_markdown,
                 flush_narration=render_markdown,
                 spinner_label=spinner_label,
@@ -1150,7 +1153,7 @@ async def run_prompt_async(
         print_iteration_limit(limit)
 
     if not capture_output:
-        system_prompt_tokens = len(system_prompt) // 4 - memory_tokens
+        system_prompt_tokens = len(system_prompt) // 4
         if final_usage:
             conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)

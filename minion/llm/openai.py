@@ -70,6 +70,7 @@ class OpenAIClient(LLMClient):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> Iterator:
         # tools parameter accepted but ignored — OpenAI tool use deferred to a later phase.
@@ -77,9 +78,10 @@ class OpenAIClient(LLMClient):
         # usage data (prompt_tokens, completion_tokens). Without this flag,
         # OpenAI streaming gives no usage info at all.
         from .base import StreamComplete, TextChunk
+        full_system = system + system_dynamic
         response = self._client.chat.completions.create(
             model=self._model,
-            messages=self._build_messages(messages, system),
+            messages=self._build_messages(messages, full_system),
             max_tokens=8192,
             stream=True,
             stream_options={"include_usage": True},
@@ -116,6 +118,7 @@ class OpenAIClient(LLMClient):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> AsyncIterator[StreamEvent]:
         raise NotImplementedError("OpenAI async support is deferred to Phase 13")

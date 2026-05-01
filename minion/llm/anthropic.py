@@ -128,6 +128,7 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> Iterator[StreamEvent]:
         kwargs: dict = {
@@ -135,10 +136,19 @@ class AnthropicClient(LLMClient):
             "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
-        if system:
-            kwargs["system"] = system
+        if system and system_dynamic:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": system_dynamic},
+            ]
+        elif system:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+            ]
         if tools:
-            kwargs["tools"] = tools
+            tools_cached = [dict(t) for t in tools]
+            tools_cached[-1] = {**tools_cached[-1], "cache_control": {"type": "ephemeral"}}
+            kwargs["tools"] = tools_cached
 
         for attempt in range(_MAX_RETRY):
             # current_tool accumulates state for the tool_use content block being
@@ -228,6 +238,7 @@ class AnthropicClient(LLMClient):
         self,
         messages: list[Message],
         system: str = "",
+        system_dynamic: str = "",
         tools: Optional[list] = None,
     ) -> AsyncIterator[StreamEvent]:
         kwargs: dict = {
@@ -235,10 +246,19 @@ class AnthropicClient(LLMClient):
             "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
-        if system:
-            kwargs["system"] = system
+        if system and system_dynamic:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": system_dynamic},
+            ]
+        elif system:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+            ]
         if tools:
-            kwargs["tools"] = tools
+            tools_cached = [dict(t) for t in tools]
+            tools_cached[-1] = {**tools_cached[-1], "cache_control": {"type": "ephemeral"}}
+            kwargs["tools"] = tools_cached
 
         for attempt in range(_MAX_RETRY):
             current_tool: Optional[dict] = None
