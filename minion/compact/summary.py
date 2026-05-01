@@ -8,17 +8,21 @@ from ..llm.base import (
 )
 
 _COMPACT_SYSTEM = (
-    "You are a conversation summarizer. Produce a compact context stub that "
-    "preserves the essential information from the conversation so that the "
-    "assistant can continue helping without the full history.\n\n"
-    "Focus on:\n"
-    "- What the user is trying to accomplish\n"
-    "- What has been done (files created/modified, commands run, decisions made)\n"
-    "- Current state and any open issues\n"
-    "- Key facts the assistant must remember to continue correctly\n\n"
-    "Format as tight bullet points grouped by topic. "
-    "Target 150-350 words. Omit pleasantries, tool call details, and "
-    "anything a competent assistant could re-derive from the files on disk."
+    "You are a conversation summarizer for a coding assistant session. "
+    "Produce a context stub that lets the assistant continue accurately without "
+    "the full history.\n\n"
+    "Preserve specifics over narrative. Include:\n"
+    "- The user's goal and current task\n"
+    "- Every file created or modified (exact relative paths)\n"
+    "- Key architectural and design decisions made, and why\n"
+    "- Test / build status (exact counts, passing/failing)\n"
+    "- Current state: what's done, what's in progress, what's next\n"
+    "- Any errors encountered and how they were resolved\n"
+    "- Things the assistant must NOT do (constraints established during the session)\n\n"
+    "Format as bullet points grouped by topic. "
+    "Be as concise as possible while keeping all specifics — do not round down "
+    "file paths to 'several files' or test counts to 'many tests'. "
+    "Omit pleasantries, preamble, and anything re-derivable by reading the files."
 )
 
 
@@ -92,7 +96,12 @@ class SummaryStrategy(CompactionStrategy):
             "---\n"
             "The above is a summary of prior conversation. Continue from this context."
         )
-        conversation.messages = [Message(role="user", content=stub)]
+        # Two messages so the conversation ends on an assistant turn — the next
+        # user message stays valid (user → assistant → user alternation required by API).
+        conversation.messages = [
+            Message(role="user", content=stub),
+            Message(role="assistant", content="Understood. I have full context of the prior session."),
+        ]
         conversation._snapshot = None
 
         tokens_after = len(stub) // 4
