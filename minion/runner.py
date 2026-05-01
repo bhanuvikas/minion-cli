@@ -80,6 +80,30 @@ class _IterationResult:
     tool_blocks: list[ToolUseBlock] = field(default_factory=list)
     stop_reason: str = "end_turn"
     usage: Optional[LLMResponse] = None
+    cancelled: bool = False
+
+
+def _show_cancellation() -> None:
+    console.print(f"\n[{YELLOW}]⚠ Cancelled.[/]\n")
+
+
+def _complete_cancelled_tools(tool_blocks: list[ToolUseBlock], conversation: Conversation) -> None:
+    """Add [Cancelled by user] stubs for tool_use IDs that have no result yet.
+
+    Called after KeyboardInterrupt mid-tool-execution so the conversation
+    remains structurally valid (every tool_use block has a matching result).
+    """
+    completed_ids: set[str] = set()
+    for msg in reversed(conversation.messages):
+        if msg.role == "assistant":
+            break
+        if isinstance(msg.content, list):
+            for block in msg.content:
+                if hasattr(block, "tool_use_id"):
+                    completed_ids.add(block.tool_use_id)
+    for tb in tool_blocks:
+        if tb.id not in completed_ids:
+            conversation.add_tool_result(tb.id, "[Cancelled by user]")
 
 
 # ─── @mention resolution ──────────────────────────────────────────────────────
@@ -710,6 +734,8 @@ async def _stream_one_iteration_async(
                 tool_calls=[{"name": tb.name, "input": tb.input} for tb in tool_blocks],
             )
 
+    _cancelled = False
+
     if silent:
         _in_live2 = _get_slot_cb() is not None
         _silent_cm = contextlib.nullcontext() if _in_live2 else console.status(effective_spinner, spinner="dots")
@@ -719,8 +745,11 @@ async def _stream_one_iteration_async(
                 async for event in gen:
                     _process(event)
             except (KeyboardInterrupt, asyncio.CancelledError):
-                pass
-        if flush_narration and stop_reason == "tool_use" and text_chunks:
+                _cancelled = True
+                if _tool_spinner is not None:
+                    _tool_spinner.stop()
+                    _tool_spinner = None
+        if not _cancelled and flush_narration and stop_reason == "tool_use" and text_chunks:
             display_name = agent_label or "minion"
             console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
             sys.stdout.write("".join(text_chunks))
@@ -731,10 +760,22 @@ async def _stream_one_iteration_async(
             async for event in gen:
                 _process(event)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
+            _cancelled = True
+            if _tool_spinner is not None:
+                _tool_spinner.stop()
+                _tool_spinner = None
 
     if text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
         print()
+
+    if _cancelled:
+        return _IterationResult(
+            full_text="".join(text_chunks),
+            tool_blocks=[],
+            stop_reason="end_turn",
+            usage=usage,
+            cancelled=True,
+        )
 
     return _IterationResult(
         full_text="".join(text_chunks),
@@ -993,6 +1034,13 @@ async def run_prompt_async(
                 spinner_label=spinner_label,
                 agent_label=agent_label,
             )
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Ctrl+C before the first token arrived — nothing was committed to the
+            # conversation except possibly the initial user message (a plain string).
+            if conversation.messages and isinstance(conversation.messages[-1].content, str):
+                conversation.messages.pop()
+            _show_cancellation()
+            return None
         except InputTokenRateLimitError:
             if auto_compact and not _auto_compacted:
                 _auto_compacted = True
@@ -1025,6 +1073,15 @@ async def run_prompt_async(
             )
             return None
         if result is None:
+            return None
+
+        if result.cancelled:
+            if result.full_text:
+                conversation.add_assistant(result.full_text, result.usage)
+            elif conversation.messages and isinstance(conversation.messages[-1].content, str):
+                # First iteration, no output — clean up the pending user message
+                conversation.messages.pop()
+            _show_cancellation()
             return None
 
         if result.usage:
@@ -1080,7 +1137,12 @@ async def run_prompt_async(
                 if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name in DELEGATION_TOOLS:
                     side_effects_occurred = True
 
-            await _execute_tools_async(result.tool_blocks, executor, conversation)
+            try:
+                await _execute_tools_async(result.tool_blocks, executor, conversation)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                _complete_cancelled_tools(result.tool_blocks, conversation)
+                _show_cancellation()
+                return None
             if _get_slot_cb() is None:
                 print()
 

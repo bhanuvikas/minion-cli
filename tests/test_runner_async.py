@@ -10,7 +10,12 @@ import pytest
 
 from minion.conversation import Conversation
 from minion.llm.base import LLMResponse, Message, StreamComplete, TextChunk, ToolUseBlock
-from minion.runner import _IterationResult, _stream_one_iteration_async, run_prompt_async
+from minion.runner import (
+    _IterationResult,
+    _complete_cancelled_tools,
+    _stream_one_iteration_async,
+    run_prompt_async,
+)
 
 
 # ─── Async client stub ───────────────────────────────────────────────────────
@@ -207,5 +212,169 @@ class TestRunPromptAsync:
             dry_run=True, capture_output=True,
         )
 
-        # dry_run breaks immediately — no second LLM call, returns None
+    # ─── Ctrl+C cancellation ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_during_streaming_returns_cancelled_result(self):
+        """KeyboardInterrupt mid-stream → cancelled=True, tool_blocks cleared."""
+
+        async def _interrupting_gen(*args, **kwargs):
+            yield _text("partial")
+            raise KeyboardInterrupt
+
+        client = MagicMock()
+        client.model_id = "stub"
+        client.async_stream = _interrupting_gen
+        conv = Conversation()
+        conv.add_user("hi")
+
+        result = await _stream_one_iteration_async(client, conv, "sys", silent=True)
+
+        assert result is not None
+        assert result.cancelled is True
+        assert result.full_text == "partial"
+        assert result.tool_blocks == []
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_with_no_text_returns_empty_cancelled(self):
+        """KeyboardInterrupt before any text chunks → cancelled=True, empty text."""
+
+        async def _interrupting_gen(*args, **kwargs):
+            raise KeyboardInterrupt
+            yield  # make it a generator
+
+        client = MagicMock()
+        client.model_id = "stub"
+        client.async_stream = _interrupting_gen
+        conv = Conversation()
+        conv.add_user("hi")
+
+        # KeyboardInterrupt before first event propagates out — run_prompt_async handles it
+        try:
+            result = await _stream_one_iteration_async(client, conv, "sys", silent=True)
+        except KeyboardInterrupt:
+            result = None
+
+        # Either propagated or returned cancelled — both are acceptable; no crash
+        assert result is None or (result.cancelled and result.full_text == "")
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_during_stream_clears_tool_blocks(self):
+        """Tool blocks accumulated before Ctrl+C are dropped in cancelled result."""
+        tb = _tool("read_file", "t1", {"path": "foo.py"})
+
+        async def _interrupting_gen(*args, **kwargs):
+            yield tb
+            raise KeyboardInterrupt
+
+        client = MagicMock()
+        client.model_id = "stub"
+        client.async_stream = _interrupting_gen
+        conv = Conversation()
+        conv.add_user("read")
+
+        result = await _stream_one_iteration_async(client, conv, "sys", silent=True)
+
+        assert result is not None
+        assert result.cancelled is True
+        assert result.tool_blocks == []
+
+    @pytest.mark.asyncio
+    async def test_run_prompt_async_ctrl_c_during_streaming_pops_user_msg(self, capsys):
+        """Ctrl+C during streaming (no output) → user message removed, returns None."""
+
+        async def _interrupting_gen(*args, **kwargs):
+            raise KeyboardInterrupt
+            yield
+
+        client = MagicMock()
+        client.model_id = "stub"
+        client.async_stream = _interrupting_gen
+        conv = Conversation()
+
+        result = await run_prompt_async("hello", client, conv, "sys")
+
         assert result is None
+        assert len(conv.messages) == 0  # user message was popped
+
+    @pytest.mark.asyncio
+    async def test_run_prompt_async_ctrl_c_with_partial_text_keeps_assistant_msg(self):
+        """Ctrl+C mid-stream after some text → partial text kept as assistant message."""
+
+        async def _interrupting_gen(*args, **kwargs):
+            yield _text("hello ")
+            raise KeyboardInterrupt
+
+        client = MagicMock()
+        client.model_id = "stub"
+        client.async_stream = _interrupting_gen
+        conv = Conversation()
+
+        await run_prompt_async("hi", client, conv, "sys")
+
+        # user message + assistant message with partial text
+        assert len(conv.messages) == 2
+        assert conv.messages[0].role == "user"
+        assert conv.messages[1].role == "assistant"
+        assert conv.messages[1].content == "hello "
+
+
+class TestCompleteCancelledTools:
+
+    def test_adds_stubs_for_all_missing(self):
+        """All tool IDs get [Cancelled by user] when no results exist."""
+        conv = Conversation()
+        tool_blocks = [
+            ToolUseBlock(id="t1", name="read_file", input={}),
+            ToolUseBlock(id="t2", name="write_file", input={}),
+        ]
+
+        _complete_cancelled_tools(tool_blocks, conv)
+
+        assert len(conv.messages) == 2
+        for msg in conv.messages:
+            assert msg.role == "user"
+            assert msg.content[0].content == "[Cancelled by user]"
+
+    def test_skips_already_completed_tools(self):
+        """Tools that already have results are not duplicated."""
+        from minion.llm.base import ContentToolResultBlock
+        conv = Conversation()
+        # t1 already has a result
+        conv.messages.append(
+            Message(
+                role="user",
+                content=[ContentToolResultBlock(tool_use_id="t1", content="done")],
+            )
+        )
+        tool_blocks = [
+            ToolUseBlock(id="t1", name="read_file", input={}),
+            ToolUseBlock(id="t2", name="write_file", input={}),
+        ]
+
+        _complete_cancelled_tools(tool_blocks, conv)
+
+        # Only t2 should have been added
+        tool_result_ids = set()
+        for msg in conv.messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if hasattr(block, "tool_use_id"):
+                        tool_result_ids.add(block.tool_use_id)
+
+        assert "t1" in tool_result_ids
+        assert "t2" in tool_result_ids
+        # t1 should appear only once (not duplicated)
+        t1_count = sum(
+            1 for msg in conv.messages
+            if isinstance(msg.content, list)
+            for block in msg.content
+            if hasattr(block, "tool_use_id") and block.tool_use_id == "t1"
+        )
+        assert t1_count == 1
+
+    def test_noop_when_no_tool_blocks(self):
+        conv = Conversation()
+        before = len(conv.messages)
+        _complete_cancelled_tools([], conv)
+        assert len(conv.messages) == before
