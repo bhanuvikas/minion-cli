@@ -231,8 +231,7 @@ class TestToolExecutorConfirmCallback:
         assert result == "wrote"
         question, detail = callback_calls[0]
         assert "foo.py" in question     # path in question
-        assert "content" in detail      # content preview in detail
-        assert "line1" in detail
+        assert "line1" in detail        # new-file diff shows lines as additions
 
     @pytest.mark.asyncio
     async def test_confirm_callback_used_in_execute_async(self):

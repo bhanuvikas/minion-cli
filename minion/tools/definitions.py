@@ -95,6 +95,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Write content to a file, creating it if it doesn't exist or overwriting it completely "
             "if it does. Use this to create new files or replace file contents. "
+            "For targeted edits, supply start_line and end_line to replace only that range of lines "
+            "(1-indexed, inclusive) rather than rewriting the whole file. "
             "Requires user confirmation before executing."
         ),
         "input_schema": {
@@ -106,7 +108,15 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "The complete content to write. Overwrites the entire file.",
+                    "description": "Content to write. Full file when start_line/end_line are omitted; replacement lines when they are set.",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to replace (1-indexed, inclusive). Omit to overwrite the whole file.",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Last line to replace (1-indexed, inclusive). Required when start_line is given.",
                 },
             },
             "required": ["path", "content"],

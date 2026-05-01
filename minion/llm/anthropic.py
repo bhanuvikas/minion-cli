@@ -6,7 +6,8 @@ import anthropic
 
 from .base import (
     ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
-    LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk, ToolUseBlock,
+    LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk,
+    ToolAccumulationStart, ToolUseBlock,
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -121,6 +122,7 @@ class AnthropicClient(LLMClient):
                     block = event.content_block
                     if block.type == "tool_use":
                         current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                        yield ToolAccumulationStart(name=block.name)
 
                 elif event_type == "content_block_delta":
                     delta = event.delta
@@ -200,6 +202,7 @@ class AnthropicClient(LLMClient):
                     block = event.content_block
                     if block.type == "tool_use":
                         current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                        yield ToolAccumulationStart(name=block.name)
 
                 elif event_type == "content_block_delta":
                     delta = event.delta

@@ -77,10 +77,37 @@ def read_file(
 
 # ─── write_file ───────────────────────────────────────────────────────────────
 
-def write_file(path: str, content: str) -> str:
+def write_file(
+    path: str,
+    content: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+) -> str:
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+
+        if start_line is not None or end_line is not None:
+            if not p.exists():
+                return f"Error: cannot partial-write '{path}': file does not exist."
+            existing = p.read_text(encoding="utf-8")
+            old_lines = existing.splitlines(keepends=True)
+            total = len(old_lines)
+            start = max(1, start_line or 1) - 1   # 0-indexed inclusive start
+            end = min(total, end_line or total)    # 0-indexed exclusive end
+            if start >= total:
+                return f"Error: start_line={start + 1} exceeds file length ({total} lines)."
+            new_lines = content.splitlines(keepends=True)
+            # Ensure the replacement block ends with a newline when the original did.
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+            merged = old_lines[:start] + new_lines + old_lines[end:]
+            p.write_text("".join(merged), encoding="utf-8")
+            return (
+                f"Replaced lines {start + 1}–{end} of '{path}' "
+                f"({len(new_lines)} new lines, was {end - start})."
+            )
+
         p.write_text(content, encoding="utf-8")
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"Wrote {len(content):,} chars ({lines} lines) to '{path}'."

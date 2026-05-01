@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .conversation import Conversation
-from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolUseBlock
+from .llm.base import ContentTextBlock, ContentToolUseBlock, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
@@ -33,7 +33,7 @@ from .theme import (
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
-from .tools.executor import ToolExecutor
+from .tools.executor import ToolExecutor, TOOL_SPINNER_LABELS
 from .tracing import get_tracer
 
 MAX_ITERATIONS = 20
@@ -183,9 +183,11 @@ def _stream_one_iteration(
     stop_reason = "end_turn"
     usage: Optional[LLMResponse] = None
     printed_prefix = False
+    _tool_spinner = None          # spinner shown while model generates tool JSON
+    _tool_newline_printed = False  # True once we've ended the text line for the spinner
 
     def _process(event) -> None:
-        nonlocal printed_prefix, stop_reason, usage
+        nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
         if isinstance(event, TextChunk):
             text_chunks.append(event.text)
             _slot_cb = _get_slot_cb()
@@ -201,9 +203,25 @@ def _stream_one_iteration(
                     printed_prefix = True
                 sys.stdout.write(event.text)
                 sys.stdout.flush()
+        elif isinstance(event, ToolAccumulationStart):
+            # Model is about to stream a (potentially large) tool call JSON.
+            # If text was already shown, end the line and start a spinner so
+            # the user isn't staring at a static cursor waiting for the tool
+            # confirmation prompt to appear.
+            if not silent and printed_prefix and _get_slot_cb() is None:
+                print()  # close the streamed text line
+                _tool_newline_printed = True
+                _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
+                _tool_spinner.start()
         elif isinstance(event, ToolUseBlock):
+            if _tool_spinner is not None:
+                _tool_spinner.stop()
+                _tool_spinner = None
             tool_blocks.append(event)
         elif isinstance(event, StreamComplete):
+            if _tool_spinner is not None:
+                _tool_spinner.stop()
+                _tool_spinner = None
             stop_reason = event.stop_reason
             usage = LLMResponse(
                 content="",
@@ -251,8 +269,10 @@ def _stream_one_iteration(
         except KeyboardInterrupt:
             pass  # Ctrl+C mid-stream — stop cleanly, no traceback
 
-    if text_chunks and not silent and _get_slot_cb() is None:
-        print()  # newline after streamed text
+    # Print trailing newline after streamed text, unless ToolAccumulationStart
+    # already printed it (to make room for the spinner).
+    if text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
+        print()
 
     return _IterationResult(
         full_text="".join(text_chunks),
@@ -628,9 +648,11 @@ async def _stream_one_iteration_async(
     stop_reason = "end_turn"
     usage: Optional[LLMResponse] = None
     printed_prefix = False
+    _tool_spinner = None
+    _tool_newline_printed = False
 
     def _process(event) -> None:
-        nonlocal printed_prefix, stop_reason, usage
+        nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
         if isinstance(event, TextChunk):
             text_chunks.append(event.text)
             _slot_cb = _get_slot_cb()
@@ -644,9 +666,21 @@ async def _stream_one_iteration_async(
                     printed_prefix = True
                 sys.stdout.write(event.text)
                 sys.stdout.flush()
+        elif isinstance(event, ToolAccumulationStart):
+            if not silent and printed_prefix and _get_slot_cb() is None:
+                print()
+                _tool_newline_printed = True
+                _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
+                _tool_spinner.start()
         elif isinstance(event, ToolUseBlock):
+            if _tool_spinner is not None:
+                _tool_spinner.stop()
+                _tool_spinner = None
             tool_blocks.append(event)
         elif isinstance(event, StreamComplete):
+            if _tool_spinner is not None:
+                _tool_spinner.stop()
+                _tool_spinner = None
             stop_reason = event.stop_reason
             usage = LLMResponse(
                 content="",
@@ -688,7 +722,7 @@ async def _stream_one_iteration_async(
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
 
-    if text_chunks and not silent and _get_slot_cb() is None:
+    if text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
         print()
 
     return _IterationResult(

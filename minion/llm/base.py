@@ -69,6 +69,17 @@ class ToolUseBlock:
 
 
 @dataclass
+class ToolAccumulationStart:
+    """Emitted when the model begins streaming a tool call's JSON input.
+
+    Arrives before the corresponding ToolUseBlock (which is only emitted after the
+    full input JSON has been assembled). Lets the runner show a progress indicator
+    while the model is generating potentially large tool inputs (e.g. write_file).
+    """
+    name: str  # tool name, e.g. "write_file"
+
+
+@dataclass
 class StreamComplete:
     """Signals the end of a streaming response, carrying stop reason and usage.
 
@@ -82,7 +93,7 @@ class StreamComplete:
     model: str
 
 
-StreamEvent = Union[TextChunk, ToolUseBlock, StreamComplete]
+StreamEvent = Union[TextChunk, ToolAccumulationStart, ToolUseBlock, StreamComplete]
 
 
 class LLMClient(ABC):

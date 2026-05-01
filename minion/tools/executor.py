@@ -43,14 +43,56 @@ from .implementations import (
     write_file,
 )
 
-_TOOL_SPINNER_LABELS: dict[str, str] = {
+TOOL_SPINNER_LABELS: dict[str, str] = {
     "write_file":       "[muted]writing...[/]",
     "run_shell":        "[muted]running...[/]",
     "read_file":        "[muted]reading...[/]",
     "list_directory":   "[muted]listing...[/]",
     "search_code":      "[muted]searching...[/]",
     "get_file_outline": "[muted]analyzing...[/]",
+    "spawn_agent":      "[muted]planning task...[/]",
+    "send_remote_task": "[muted]planning task...[/]",
 }
+
+def _diff_detail(
+    path: str,
+    new_content: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
+    """Return a rich-markup diff string for the write_file confirmation.
+
+    Delegates to minion.diff.format_diff_rich for consistent styling (line numbers,
+    inline character-level highlights, background colors matching the reflection diff).
+
+    When start_line/end_line are given (partial write), the full resulting file is
+    reconstructed first so the diff accurately reflects what will change in context.
+    New file: treated as diffing empty string → all lines shown as additions.
+    """
+    from pathlib import Path as _Path
+    from ..diff import format_diff_rich
+
+    try:
+        existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
+    except Exception:
+        existing = ""
+
+    # For a partial write, reconstruct the full resulting file before diffing.
+    if existing and (start_line is not None or end_line is not None):
+        old_lines = existing.splitlines(keepends=True)
+        total = len(old_lines)
+        start = max(1, start_line or 1) - 1
+        end = min(total, end_line or total)
+        rep_lines = new_content.splitlines(keepends=True)
+        if rep_lines and not rep_lines[-1].endswith("\n"):
+            rep_lines[-1] += "\n"
+        resulting_content = "".join(old_lines[:start] + rep_lines + old_lines[end:])
+    else:
+        resulting_content = new_content
+
+    markup = format_diff_rich(existing, resulting_content)
+    return markup if markup else "[muted](no changes)[/]"
+
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
     """Return (question, detail) for a dangerous tool confirmation.
@@ -87,8 +129,14 @@ def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
 
     if name == "write_file":
         path = inputs.get("path") or ""
+        content = inputs.get("content") or ""
         question = f"Allow write_file?  {path}" if path else "Allow write_file?"
-        return question, _fmt_inputs(skip=frozenset({"path"}))
+        detail = _diff_detail(
+            path, content,
+            start_line=inputs.get("start_line"),
+            end_line=inputs.get("end_line"),
+        )
+        return question, detail
 
     return f"Allow {name}?", _fmt_inputs()
 
@@ -191,7 +239,11 @@ class ToolExecutor:
             else:
                 with _CONFIRM_LOCK:
                     if detail:
-                        console.print(f"[muted]{detail}[/]")
+                        # write_file detail is a rich-formatted diff; others are plain muted text.
+                        if name == "write_file":
+                            console.print(detail)
+                        else:
+                            console.print(f"[muted]{detail}[/]")
                     confirmed = questionary.confirm(
                         f"  {question}",
                         default=False,
@@ -235,7 +287,7 @@ class ToolExecutor:
 
         get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
-            spinner_label = _TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
+            spinner_label = TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
             _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
             with _spin_cm:
                 result = fn(**inputs)
@@ -318,7 +370,10 @@ class ToolExecutor:
             else:
                 async with _get_async_confirm_lock():
                     if detail:
-                        console.print(f"[muted]{detail}[/]")
+                        if name == "write_file":
+                            console.print(detail)
+                        else:
+                            console.print(f"[muted]{detail}[/]")
                     confirmed = await asyncio.to_thread(
                         lambda: questionary.confirm(
                             f"  {question}", default=False, style=MINION_STYLE
@@ -359,7 +414,7 @@ class ToolExecutor:
 
         get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
-            spinner_label = _TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
+            spinner_label = TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
             _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
             with _spin_cm:
                 result = await asyncio.to_thread(fn, **inputs)
