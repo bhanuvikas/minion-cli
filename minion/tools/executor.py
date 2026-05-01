@@ -11,6 +11,7 @@ out of runner.py.
 
 import asyncio
 import contextlib
+import sys
 import threading
 from typing import Optional
 
@@ -23,6 +24,20 @@ _CONFIRM_LOCK = threading.Lock()
 
 # Async confirmation lock — lazy-initialised on first use inside an event loop.
 _ASYNC_CONFIRM_LOCK: Optional[asyncio.Lock] = None
+
+
+def _flush_stdin() -> None:
+    """Drain any buffered stdin keystrokes before showing a confirmation prompt.
+
+    Prevents Enter presses made during the preceding spinner (e.g. while the
+    model was streaming tool-call JSON) from being consumed by questionary and
+    auto-declining the prompt without the user seeing it.
+    """
+    try:
+        import termios
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass  # Windows or non-tty — best-effort only
 
 
 def _get_async_confirm_lock() -> asyncio.Lock:
@@ -244,6 +259,7 @@ class ToolExecutor:
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")
+                    _flush_stdin()
                     confirmed = questionary.confirm(
                         f"  {question}",
                         default=False,
@@ -261,6 +277,7 @@ class ToolExecutor:
             if "__" in name and self._mcp_manager is not None:
                 if self._mcp_manager.is_dangerous(name):
                     with _CONFIRM_LOCK:
+                        _flush_stdin()
                         confirmed = questionary.confirm(
                             f"  Allow {name}?",
                             default=False,
@@ -374,6 +391,7 @@ class ToolExecutor:
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")
+                    _flush_stdin()
                     confirmed = await asyncio.to_thread(
                         lambda: questionary.confirm(
                             f"  {question}", default=False, style=MINION_STYLE
@@ -390,6 +408,7 @@ class ToolExecutor:
             if "__" in name and self._mcp_manager is not None:
                 if self._mcp_manager.is_dangerous(name):
                     async with _get_async_confirm_lock():
+                        _flush_stdin()
                         confirmed = await asyncio.to_thread(
                             lambda: questionary.confirm(
                                 f"  Allow {name}?", default=False, style=MINION_STYLE
