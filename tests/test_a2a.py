@@ -108,9 +108,14 @@ class TestA2AModels(unittest.TestCase):
         )
         d = t.to_dict()
         self.assertEqual(d["id"], "abc")
-        self.assertEqual(d["status"], "completed")
-        self.assertEqual(d["input"]["message"], "do stuff")
-        self.assertEqual(d["artifacts"], [{"text": "result text"}])
+        # Spec: status is {state, timestamp} object
+        self.assertEqual(d["status"]["state"], "completed")
+        self.assertIn("timestamp", d["status"])
+        # Spec: input is a Message object with parts
+        self.assertEqual(d["input"]["parts"][0]["text"], "do stuff")
+        # Spec: artifact is {artifactId, parts}
+        self.assertEqual(d["artifacts"][0]["parts"][0]["text"], "result text")
+        self.assertIn("artifactId", d["artifacts"][0])
         self.assertNotIn("error", d)
 
     def test_task_from_dict_roundtrip(self):
@@ -132,9 +137,17 @@ class TestA2AModels(unittest.TestCase):
     def test_artifact_text(self):
         a = Artifact(text="hello world")
         self.assertEqual(a.text, "hello world")
-        self.assertEqual(a.to_dict(), {"text": "hello world"})
+        d = a.to_dict()
+        # Spec: {artifactId, parts: [{type, text}]}
+        self.assertIn("artifactId", d)
+        self.assertEqual(d["parts"], [{"type": "text", "text": "hello world"}])
 
-    def test_artifact_from_dict(self):
+    def test_artifact_from_dict_spec_format(self):
+        a = Artifact.from_dict({"artifactId": "x", "parts": [{"type": "text", "text": "foo"}]})
+        self.assertEqual(a.text, "foo")
+
+    def test_artifact_from_dict_legacy_format(self):
+        # Legacy fallback: servers that still send {text: "..."} are handled gracefully
         a = Artifact.from_dict({"text": "foo"})
         self.assertEqual(a.text, "foo")
 
@@ -147,8 +160,13 @@ class TestA2AModels(unittest.TestCase):
         )
         self.assertEqual(card.name, "minion")
         self.assertEqual(card.url, "http://localhost:8080")
-        self.assertEqual(card.capabilities, {"streaming": True})
+        # Spec: capabilities includes streaming, pushNotifications, stateTransitionHistory
+        self.assertTrue(card.capabilities.get("streaming"))
+        self.assertIn("pushNotifications", card.capabilities)
         self.assertEqual(card.skills, [])
+        # Spec: defaultInputModes and defaultOutputModes
+        self.assertEqual(card.default_input_modes, ["text"])
+        self.assertEqual(card.default_output_modes, ["text"])
 
     def test_agent_card_to_json_parseable(self):
         card = AgentCard(
@@ -157,6 +175,9 @@ class TestA2AModels(unittest.TestCase):
         parsed = json.loads(card.to_json())
         self.assertEqual(parsed["name"], "x")
         self.assertEqual(parsed["url"], "http://h:1")
+        # Spec: card includes defaultInputModes and defaultOutputModes
+        self.assertEqual(parsed["defaultInputModes"], ["text"])
+        self.assertEqual(parsed["defaultOutputModes"], ["text"])
 
     def test_agent_card_from_dict_roundtrip(self):
         card = AgentCard(
@@ -167,6 +188,84 @@ class TestA2AModels(unittest.TestCase):
         c2 = AgentCard.from_dict(card.to_dict())
         self.assertEqual(c2.name, "bot")
         self.assertEqual(c2.skills, [{"id": "code", "name": "Coding"}])
+
+    def test_agent_card_provider_field_omitted_when_none(self):
+        card = AgentCard(name="x", description="d", url="http://h:1", version="1.0")
+        d = card.to_dict()
+        self.assertNotIn("provider", d)
+        self.assertNotIn("authentication", d)
+
+    def test_agent_card_provider_field_included_when_set(self):
+        card = AgentCard(
+            name="x", description="d", url="http://h:1", version="1.0",
+            provider={"organization": "Acme", "url": "https://acme.com"},
+        )
+        d = card.to_dict()
+        self.assertIn("provider", d)
+        self.assertEqual(d["provider"]["organization"], "Acme")
+        self.assertEqual(d["provider"]["url"], "https://acme.com")
+
+    def test_agent_card_authentication_field_included_when_set(self):
+        card = AgentCard(
+            name="x", description="d", url="http://h:1", version="1.0",
+            authentication={"schemes": ["Bearer"]},
+        )
+        d = card.to_dict()
+        self.assertIn("authentication", d)
+        self.assertEqual(d["authentication"]["schemes"], ["Bearer"])
+
+    def test_agent_card_from_dict_preserves_provider_and_authentication(self):
+        original = AgentCard(
+            name="bot", description="d", url="http://h:1", version="1.0",
+            provider={"organization": "Corp", "url": "https://corp.com"},
+            authentication={"schemes": ["Bearer"]},
+        )
+        c2 = AgentCard.from_dict(original.to_dict())
+        self.assertEqual(c2.provider, {"organization": "Corp", "url": "https://corp.com"})
+        self.assertEqual(c2.authentication, {"schemes": ["Bearer"]})
+
+    def test_task_to_dict_includes_context_id_when_set(self):
+        t = Task(id="t1", status=TaskStatus.SUBMITTED, input_message="hi",
+                 context_id="ctx-abc")
+        d = t.to_dict()
+        self.assertEqual(d["contextId"], "ctx-abc")
+
+    def test_task_to_dict_omits_context_id_when_none(self):
+        t = Task(id="t1", status=TaskStatus.SUBMITTED, input_message="hi")
+        d = t.to_dict()
+        self.assertNotIn("contextId", d)
+
+    def test_task_from_dict_reads_context_id(self):
+        data = {
+            "id": "t2", "status": {"state": "working", "timestamp": "2025-01-01T00:00:00Z"},
+            "input": {"role": "user", "parts": [{"type": "text", "text": "q"}]},
+            "contextId": "ctx-xyz",
+        }
+        t = Task.from_dict(data)
+        self.assertEqual(t.context_id, "ctx-xyz")
+
+    def test_task_from_dict_context_id_defaults_to_none(self):
+        data = {
+            "id": "t3", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"},
+            "input": {"role": "user", "parts": [{"type": "text", "text": "q"}]},
+        }
+        t = Task.from_dict(data)
+        self.assertIsNone(t.context_id)
+
+    def test_task_status_event_includes_context_id(self):
+        t = Task(id="t4", status=TaskStatus.WORKING, input_message="q", context_id="ctx-1")
+        ev = t.status_event(final=False)
+        self.assertEqual(ev["contextId"], "ctx-1")
+
+    def test_task_artifact_event_includes_context_id(self):
+        t = Task(id="t5", status=TaskStatus.COMPLETED, input_message="q", context_id="ctx-2")
+        ev = t.artifact_event(Artifact(text="result"))
+        self.assertEqual(ev["contextId"], "ctx-2")
+
+    def test_task_events_omit_context_id_when_none(self):
+        t = Task(id="t6", status=TaskStatus.WORKING, input_message="q")
+        self.assertNotIn("contextId", t.status_event())
+        self.assertNotIn("contextId", t.artifact_event(Artifact(text="r")))
 
 
 # ── TestA2AConfig ───────────────────────────────────────────────────────────────
@@ -233,6 +332,39 @@ class TestA2AConfig(unittest.TestCase):
         configs = load_a2a_config(Path(self._tmpdir))
         self.assertEqual(configs["agent"].url, "http://localhost:8080")
 
+    def test_load_config_project_shadows_user(self):
+        """Project-tier agent entry overrides same-named user-tier entry."""
+        import os
+        user_home = Path(self._tmpdir) / "fake_home"
+        user_home.mkdir()
+        user_conf = user_home / ".minion" / "a2a.json"
+        user_conf.parent.mkdir()
+        user_conf.write_text(json.dumps({
+            "agents": {
+                "shared_agent": {"url": "http://user-host:8080"},
+                "user_only": {"url": "http://user-host:9090"},
+            }
+        }))
+
+        project_dir = Path(self._tmpdir) / "project"
+        project_dir.mkdir()
+        proj_conf = project_dir / ".minion" / "a2a.json"
+        proj_conf.parent.mkdir()
+        proj_conf.write_text(json.dumps({
+            "agents": {
+                "shared_agent": {"url": "http://project-host:8080"},
+            }
+        }))
+
+        # Patch Path.home() so user tier reads from our fake home
+        with patch("pathlib.Path.home", return_value=user_home):
+            configs = load_a2a_config(project_dir)
+
+        # Project shadows user for shared_agent
+        self.assertEqual(configs["shared_agent"].url, "http://project-host:8080")
+        # user_only still present
+        self.assertIn("user_only", configs)
+
 
 # ── TestA2AClient ───────────────────────────────────────────────────────────────
 
@@ -243,12 +375,13 @@ class TestA2AClient(unittest.TestCase):
 
     def test_send_task_polls_until_completed(self):
         client = self._make_client()
-        submit_resp = _json_resp({"id": "task-1", "status": "submitted"}, status=202)
-        poll_working = _json_resp({"id": "task-1", "status": "working",
-                                   "input": {"message": "do it"}})
-        poll_done = _json_resp({"id": "task-1", "status": "completed",
-                                "input": {"message": "do it"},
-                                "artifacts": [{"text": "done result"}]})
+        # Spec format: status is {state, timestamp}, artifact is {parts}
+        submit_resp = _json_resp({"id": "task-1", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"}}, status=202)
+        poll_working = _json_resp({"id": "task-1", "status": {"state": "working", "timestamp": "2025-01-01T00:00:00Z"},
+                                   "input": {"role": "user", "parts": [{"type": "text", "text": "do it"}]}})
+        poll_done = _json_resp({"id": "task-1", "status": {"state": "completed", "timestamp": "2025-01-01T00:00:00Z"},
+                                "input": {"role": "user", "parts": [{"type": "text", "text": "do it"}]},
+                                "artifacts": [{"artifactId": "a1", "parts": [{"type": "text", "text": "done result"}]}]})
 
         connections = [_mock_conn(submit_resp), _mock_conn(poll_working), _mock_conn(poll_done)]
         conn_iter = iter(connections)
@@ -261,10 +394,10 @@ class TestA2AClient(unittest.TestCase):
 
     def test_send_task_raises_on_failed(self):
         client = self._make_client()
-        submit_resp = _json_resp({"id": "task-2", "status": "submitted"}, status=202)
+        submit_resp = _json_resp({"id": "task-2", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"}}, status=202)
         poll_fail = _json_resp({
-            "id": "task-2", "status": "failed",
-            "input": {"message": "x"}, "error": "boom"
+            "id": "task-2", "status": {"state": "failed", "timestamp": "2025-01-01T00:00:00Z"},
+            "input": {"role": "user", "parts": [{"type": "text", "text": "x"}]}, "error": "boom"
         })
 
         connections = [_mock_conn(submit_resp), _mock_conn(poll_fail)]
@@ -278,13 +411,12 @@ class TestA2AClient(unittest.TestCase):
 
     def test_send_task_raises_on_timeout(self):
         client = self._make_client()
-        submit_resp = _json_resp({"id": "task-3", "status": "submitted"}, status=202)
+        submit_resp = _json_resp({"id": "task-3", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"}}, status=202)
 
-        # Always return "working" so timeout triggers
         def always_working():
             return _mock_conn(_json_resp({
-                "id": "task-3", "status": "working",
-                "input": {"message": "slow"}
+                "id": "task-3", "status": {"state": "working", "timestamp": "2025-01-01T00:00:00Z"},
+                "input": {"role": "user", "parts": [{"type": "text", "text": "slow"}]},
             }))
 
         import time
@@ -341,10 +473,12 @@ class TestA2AClient(unittest.TestCase):
 
     def test_send_task_streaming_reads_sse_events(self):
         client = self._make_client()
+        # Spec SSE format: TaskStatusUpdateEvent + TaskArtifactUpdateEvent
         sse_body = (
-            b'data: {"id":"t1","status":"submitted"}\n\n'
-            b'data: {"id":"t1","status":"working"}\n\n'
-            b'data: {"id":"t1","status":"completed","artifacts":[{"text":"streamed!"}]}\n\n'
+            b'data: {"id":"t1","status":{"state":"submitted","timestamp":"2025-01-01T00:00:00Z"},"final":false}\n\n'
+            b'data: {"id":"t1","status":{"state":"working","timestamp":"2025-01-01T00:00:00Z"},"final":false}\n\n'
+            b'data: {"id":"t1","artifact":{"artifactId":"a1","parts":[{"type":"text","text":"streamed!"}]},"final":false}\n\n'
+            b'data: {"id":"t1","status":{"state":"completed","timestamp":"2025-01-01T00:00:00Z"},"final":true}\n\n'
         )
         sse_resp = _FakeResponse(sse_body, content_type="text/event-stream")
         conn = _mock_conn(sse_resp)
@@ -366,9 +500,10 @@ class TestA2AClient(unittest.TestCase):
     def test_parse_task_completed_with_artifact(self):
         client = self._make_client()
         data = {
-            "id": "x", "status": "completed",
-            "input": {"message": "q"},
-            "artifacts": [{"text": "answer"}],
+            "id": "x",
+            "status": {"state": "completed", "timestamp": "2025-01-01T00:00:00Z"},
+            "input": {"role": "user", "parts": [{"type": "text", "text": "q"}]},
+            "artifacts": [{"artifactId": "a1", "parts": [{"type": "text", "text": "answer"}]}],
         }
         task = Task.from_dict(data)
         self.assertEqual(task.status, TaskStatus.COMPLETED)
@@ -377,8 +512,8 @@ class TestA2AClient(unittest.TestCase):
     def test_send_task_streaming_raises_on_failed_sse(self):
         client = self._make_client()
         sse_body = (
-            b'data: {"id":"t2","status":"submitted"}\n\n'
-            b'data: {"id":"t2","status":"failed","error":"remote error"}\n\n'
+            b'data: {"id":"t2","status":{"state":"submitted","timestamp":"2025-01-01T00:00:00Z"},"final":false}\n\n'
+            b'data: {"id":"t2","status":{"state":"failed","timestamp":"2025-01-01T00:00:00Z"},"error":"remote error"}\n\n'
         )
         sse_resp = _FakeResponse(sse_body, content_type="text/event-stream")
         conn = _mock_conn(sse_resp)
@@ -387,6 +522,150 @@ class TestA2AClient(unittest.TestCase):
             with self.assertRaises(A2AError) as ctx:
                 client.send_task_streaming("bad task")
         self.assertIn("remote error", str(ctx.exception))
+
+    def test_send_task_concatenates_multiple_artifacts(self):
+        client = self._make_client()
+        submit_resp = _json_resp(
+            {"id": "task-m", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"}},
+            status=202,
+        )
+        poll_done = _json_resp({
+            "id": "task-m",
+            "status": {"state": "completed", "timestamp": "2025-01-01T00:00:00Z"},
+            "input": {"role": "user", "parts": [{"type": "text", "text": "q"}]},
+            "artifacts": [
+                {"artifactId": "a1", "parts": [{"type": "text", "text": "part one"}]},
+                {"artifactId": "a2", "parts": [{"type": "text", "text": "part two"}]},
+            ],
+        })
+        connections = [_mock_conn(submit_resp), _mock_conn(poll_done)]
+        conn_iter = iter(connections)
+        with patch.object(client, "_make_connection", side_effect=lambda: next(conn_iter)):
+            with patch("time.sleep"):
+                result = client.send_task("q")
+        self.assertEqual(result, "part one\n\npart two")
+
+    def test_send_task_streaming_concatenates_multiple_artifacts(self):
+        client = self._make_client()
+        # Two artifact events followed by a final status event
+        sse_body = (
+            b'event: task-status-update\n'
+            b'data: {"id":"tm","status":{"state":"working","timestamp":"2025-01-01T00:00:00Z"},"final":false}\n\n'
+            b'event: task-artifact-update\n'
+            b'data: {"id":"tm","artifact":{"artifactId":"a1","parts":[{"type":"text","text":"first"}]},"final":false}\n\n'
+            b'event: task-artifact-update\n'
+            b'data: {"id":"tm","artifact":{"artifactId":"a2","parts":[{"type":"text","text":"second"}]},"final":false}\n\n'
+            b'event: task-status-update\n'
+            b'data: {"id":"tm","status":{"state":"completed","timestamp":"2025-01-01T00:00:00Z"},"final":true}\n\n'
+        )
+        sse_resp = _FakeResponse(sse_body, content_type="text/event-stream")
+        conn = _mock_conn(sse_resp)
+        with patch.object(client, "_make_connection", return_value=conn):
+            result = client.send_task_streaming("q")
+        self.assertEqual(result, "first\n\nsecond")
+
+    def test_send_task_streaming_uses_event_type_for_discrimination(self):
+        """When server emits named SSE events, client uses event type (not just key inspection)."""
+        client = self._make_client()
+        # Payload has both "artifact" and "status" keys; event name determines type
+        sse_body = (
+            b'event: task-artifact-update\n'
+            b'data: {"id":"tx","artifact":{"artifactId":"a1","parts":[{"type":"text","text":"ok"}]},"status":{"state":"working"},"final":false}\n\n'
+            b'event: task-status-update\n'
+            b'data: {"id":"tx","status":{"state":"completed","timestamp":"2025-01-01T00:00:00Z"},"final":true}\n\n'
+        )
+        sse_resp = _FakeResponse(sse_body, content_type="text/event-stream")
+        conn = _mock_conn(sse_resp)
+        with patch.object(client, "_make_connection", return_value=conn):
+            result = client.send_task_streaming("q")
+        self.assertEqual(result, "ok")
+
+    def test_client_cancel_task_sends_delete(self):
+        client = self._make_client()
+        conn = _mock_conn(_json_resp(
+            {"id": "t-cancel", "status": {"state": "canceled", "timestamp": "2025-01-01T00:00:00Z"}},
+        ))
+        with patch.object(client, "_make_connection", return_value=conn):
+            client.cancel_task("t-cancel")  # should not raise
+        conn.request.assert_called_once_with(
+            "DELETE", "/tasks/t-cancel", headers={"Accept": "application/json"}
+        )
+
+    def test_client_cancel_task_raises_on_connection_error(self):
+        client = self._make_client()
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        conn.request.side_effect = ConnectionRefusedError("refused")
+        with patch.object(client, "_make_connection", return_value=conn):
+            with self.assertRaises(A2AError) as ctx:
+                client.cancel_task("t-x")
+        self.assertIn("cancel", str(ctx.exception).lower())
+
+    def test_client_has_context_id(self):
+        client = self._make_client()
+        self.assertTrue(hasattr(client, "_context_id"))
+        self.assertIsInstance(client._context_id, str)
+        self.assertEqual(len(client._context_id), 36)  # UUID4 string length
+
+    def test_different_client_instances_have_different_context_ids(self):
+        c1 = self._make_client()
+        c2 = self._make_client()
+        self.assertNotEqual(c1._context_id, c2._context_id)
+
+    def test_submit_task_sends_context_id_in_body(self):
+        client = self._make_client()
+        submit_resp = _json_resp(
+            {"id": "t-ctx", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"},
+             "contextId": client._context_id},
+            status=202,
+        )
+        poll_done = _json_resp({
+            "id": "t-ctx", "status": {"state": "completed", "timestamp": "2025-01-01T00:00:00Z"},
+            "contextId": client._context_id,
+            "input": {"role": "user", "parts": [{"type": "text", "text": "q"}]},
+            "artifacts": [{"artifactId": "a1", "parts": [{"type": "text", "text": "done"}]}],
+        })
+        connections = [_mock_conn(submit_resp), _mock_conn(poll_done)]
+        conn_iter = iter(connections)
+
+        captured_bodies = []
+
+        def capturing_conn():
+            conn = next(conn_iter)
+            original_request = conn.request
+            def capturing_request(method, path, body=None, headers=None):
+                if body:
+                    captured_bodies.append(json.loads(body.decode()))
+                return original_request(method, path, body=body, headers=headers)
+            conn.request = capturing_request
+            return conn
+
+        with patch.object(client, "_make_connection", side_effect=capturing_conn):
+            with patch("time.sleep"):
+                client.send_task("q")
+
+        # First call is the POST /tasks/send
+        self.assertEqual(captured_bodies[0]["contextId"], client._context_id)
+
+    def test_streaming_sends_context_id_in_body(self):
+        client = self._make_client()
+        sse_body = (
+            b'data: {"id":"t1","status":{"state":"completed","timestamp":"2025-01-01T00:00:00Z"},"final":true}\n\n'
+        )
+        sse_resp = _FakeResponse(sse_body, content_type="text/event-stream")
+        conn = _mock_conn(sse_resp)
+
+        captured_bodies = []
+        original_request = conn.request
+        def capturing_request(method, path, body=None, headers=None):
+            if body:
+                captured_bodies.append(json.loads(body.decode()))
+            return original_request(method, path, body=body, headers=headers)
+        conn.request = capturing_request
+
+        with patch.object(client, "_make_connection", return_value=conn):
+            client.send_task_streaming("q")
+
+        self.assertEqual(captured_bodies[0]["contextId"], client._context_id)
 
 
 # ── TestA2AManager ──────────────────────────────────────────────────────────────

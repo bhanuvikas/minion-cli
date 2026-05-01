@@ -102,7 +102,11 @@ class AgentLiveDisplay:
         self._lock = threading.Lock()
         self._states: dict[str, dict] = {}  # key → state dict
         self._order: list[str] = []          # insertion order for stable rendering
-        self._live = Live(Text(""), refresh_per_second=8, transient=False)
+        # transient=True: stop() clears the live area instead of freezing it.
+        # This prevents duplication when pause()/resume() are called mid-run —
+        # stop() clears, start() re-renders from the current state. __exit__
+        # then prints the final state once as permanent output.
+        self._live = Live(Text(""), refresh_per_second=8, transient=True)
 
     def __enter__(self) -> "AgentLiveDisplay":
         self._live.__enter__()
@@ -110,6 +114,32 @@ class AgentLiveDisplay:
 
     def __exit__(self, *args) -> None:
         self._live.__exit__(*args)
+        # Print final state permanently after the transient live area clears.
+        self._live.console.print(self._render())
+
+    def pause(self) -> None:
+        """Clear the live area so questionary owns a clean terminal."""
+        self._live.stop()
+
+    def resume(self) -> None:
+        """Restart the live area after questionary finishes."""
+        self._live.start()
+
+    def prompt_user_confirmation(self, message: str) -> str:
+        """Print a confirmation prompt above the live area and read one line of input.
+
+        Uses the Live's internal console so the print is correctly coordinated
+        with the refresh thread — the message appears permanently above the live
+        area without stopping or restarting the display.  The live area continues
+        updating while the user types, which keeps other parallel agents visible.
+
+        Returns the raw input string, or "" on KeyboardInterrupt / EOF.
+        """
+        self._live.console.print(message, end="")
+        try:
+            return input()
+        except (KeyboardInterrupt, EOFError):
+            return ""
 
     def pre_register(self, slots: list[SlotSpec]) -> None:
         """Register all slots as 'pending' before the Live context starts.

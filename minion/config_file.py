@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-_CONFIG_PATH = Path.home() / ".minion" / "config.toml"
+_GLOBAL_CONFIG_PATH = Path.home() / ".minion" / "config.toml"
 
 _VALID_EXTRACTION_TRIGGERS = {"substantial", "every_5", "manual", "always"}
 
@@ -101,21 +101,42 @@ def _get(data: dict, *keys: str, default: Any = None) -> Any:
     return node
 
 
-def load_config(path: Path | None = None) -> MinionConfig:
-    """Load MinionConfig from config.toml.
+def _load_toml(path: Path) -> dict:
+    """Load a TOML file, returning an empty dict on any error."""
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, FileNotFoundError):
+        return {}
 
-    Returns defaults if the file doesn't exist or is unreadable.
+
+def _merge(base: dict, override: dict) -> dict:
+    """Shallow-merge two TOML dicts: for each section, override keys win."""
+    merged = dict(base)
+    for section, values in override.items():
+        if isinstance(values, dict) and isinstance(merged.get(section), dict):
+            merged[section] = {**merged[section], **values}
+        else:
+            merged[section] = values
+    return merged
+
+
+def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConfig:
+    """Load MinionConfig from config.toml with two-tier loading.
+
+    Loading priority (lowest → highest):
+        hardcoded defaults → ~/.minion/config.toml → <cwd>/.minion/config.toml
+
+    Returns defaults if no files exist or are unreadable.
     Unknown keys are silently ignored (forward-compatible).
     Invalid values are ignored and the default is used.
     """
-    config_path = path or _CONFIG_PATH
-    raw: dict = {}
+    global_path = path or _GLOBAL_CONFIG_PATH
+    raw: dict = _load_toml(global_path)
 
-    if config_path.exists():
-        try:
-            raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (tomllib.TOMLDecodeError, OSError):
-            pass  # fall back to defaults silently
+    if cwd is not None:
+        project_path = Path(cwd) / ".minion" / "config.toml"
+        if project_path != global_path:
+            raw = _merge(raw, _load_toml(project_path))
 
     def _bool(val: Any, default: bool) -> bool:
         return bool(val) if isinstance(val, bool) else default

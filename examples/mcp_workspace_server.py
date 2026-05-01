@@ -5,7 +5,7 @@ An MCP server that exposes your workspace (a configurable directory) as tools,
 demonstrating every interesting feature of the Streamable HTTP transport:
 
   POST /mcp → JSON response  : list_files, read_file, write_file, delete_file
-  POST /mcp → SSE stream     : search_files (streams matching lines as they're found)
+  POST /mcp → SSE stream     : search_files (streams notifications/message events per match)
   GET  /mcp → SSE stream     : persistent notification stream for file change events
   DELETE /mcp                : session cleanup
 
@@ -34,7 +34,7 @@ Tools:
     search_files — search for a query string across files, streaming results via SSE
 
 GET stream events (sent every 5 seconds if files have changed):
-    notifications/workspace/file_changed  — {path, event: "modified"|"created"|"deleted", mtime}
+    notifications/message  — level=info, logger="workspace", data={path, event, mtime}
 
 Streamable HTTP features exercised:
     * Mcp-Session-Id: assigned on initialize, echoed on all requests
@@ -67,7 +67,7 @@ WORKSPACE_ROOT: Path = DEFAULT_WORKSPACE
 
 # ── Protocol constants ─────────────────────────────────────────────────────────
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2025-11-25"
 SERVER_INFO = {"name": "mcp-workspace-server", "version": "0.1.0"}
 
 TOOL_SCHEMAS = [
@@ -423,6 +423,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             _mark_initialized(session_id)
             return
 
+        if method == "ping":
+            self._send_json(200, _ok(msg_id, {}))
+            return
+
         if method == "notifications/initialized":
             # Notification — no response body, just 202
             self.send_response(202)
@@ -446,7 +450,13 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(200, _ok(msg_id, result))
             return
 
-        # Unknown method
+        # Unknown notifications (no id) must be silently ignored per JSON-RPC spec
+        if msg_id is None:
+            self.send_response(202)
+            self.end_headers()
+            return
+
+        # Unknown request method — return error
         self._send_json(200, _err(msg_id, -32601, f"Method not found: {method!r}"))
 
     def do_GET(self) -> None:
@@ -470,7 +480,6 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Transfer-Encoding", "chunked")
         if session_id:
             self.send_header("Mcp-Session-Id", session_id)
         self.end_headers()
@@ -481,8 +490,12 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 for ev in events:
                     seq = ev["_seq"]
                     notification = _notification(
-                        "notifications/workspace/file_changed",
-                        {"path": ev["path"], "event": ev["event"], "mtime": ev["mtime"]},
+                        "notifications/message",
+                        {
+                            "level": "info",
+                            "logger": "workspace",
+                            "data": {"path": ev["path"], "event": ev["event"], "mtime": ev["mtime"]},
+                        },
                     )
                     self._sse_send(str(seq), json.dumps(notification))
                     last_seq = seq
@@ -534,7 +547,6 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
         matches: list[str] = []
@@ -544,10 +556,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                     matches = [f"Error: {line_text}"]
                     break
                 matches.append(f"{rel}:{lineno}: {line_text}")
-                # Stream each match as a progress notification (no id = notification)
+                # Stream each match as a logging notification (spec-compliant)
                 progress = _notification(
-                    "notifications/search/progress",
-                    {"match": f"{rel}:{lineno}: {line_text}"},
+                    "notifications/message",
+                    {"level": "debug", "logger": "search", "data": f"{rel}:{lineno}: {line_text}"},
                 )
                 self._sse_send(None, json.dumps(progress))
         except (BrokenPipeError, ConnectionResetError):

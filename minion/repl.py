@@ -161,21 +161,24 @@ class _InputLexer(Lexer):
     """Highlight /commands (yellow) and @file mentions (blue) as the user types."""
 
     def lex_document(self, document):
-        text = document.text
+        # Split once; get_line is called per-line by prompt_toolkit in multiline mode.
+        lines = document.text.split("\n")
 
         def get_line(lineno):
+            if lineno >= len(lines):
+                return []
+            line = lines[lineno]
             tokens = []
             pos = 0
 
-            # Highlight the leading /command token (up to first whitespace)
-            if text.startswith('/'):
-                m = re.match(r'/\S*', text)
+            # /command highlighting only on the first line
+            if lineno == 0 and line.startswith('/'):
+                m = re.match(r'/\S*', line)
                 if m:
                     tokens.append(('class:slash-command', m.group()))
                     pos = m.end()
 
-            # Scan the remainder for @path mentions
-            remaining = text[pos:]
+            remaining = line[pos:]
             cursor = 0
             for m in _MENTION_RE.finditer(remaining):
                 if m.start() > cursor:
@@ -215,6 +218,21 @@ def _enter_with_completion(event):
             buf.apply_completion(state.completions[0])
             return  # same — let user add arguments before submitting
     buf.validate_and_handle()
+
+
+@_kb.add("escape", "enter")
+def _insert_newline(event):
+    """Option+Enter (Mac) / Alt+Enter inserts a newline for multi-line prompts."""
+    event.app.current_buffer.insert_text("\n")
+
+
+@_kb.add("c-j")
+def _paste_newline(event):
+    """Ctrl+J (raw LF) arrives as each newline in a pasted block on terminals
+    that don't honour bracketed paste. Insert as newline rather than submit so
+    the full pasted text accumulates in the buffer before the user hits Enter.
+    """
+    event.app.current_buffer.insert_text("\n")
 
 
 # ─── /init template generator ────────────────────────────────────────────────
@@ -335,6 +353,7 @@ def _handle_slash_command(
     base_system_prompt: str = "",
     skill_registry: "SkillRegistry | None" = None,
     agent_registry=None,
+    cwd: "Path | None" = None,
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -565,7 +584,7 @@ def _handle_slash_command(
 
     if cmd == "/config":
         from .config_file import format_config, load_config as _load_cfg
-        cfg = _load_cfg()
+        cfg = _load_cfg(cwd=cwd)
         console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + CLI flags):[/]\n")
         console.print(format_config(cfg))
         console.print()
@@ -1110,7 +1129,7 @@ async def run_repl_async(
     from .memory.triggers import (
         AlwaysTrigger, EveryNTurnsTrigger, ManualOnlyTrigger, SubstantialContentTrigger,
     )
-    _file_cfg = _load_cfg()
+    _file_cfg = _load_cfg(cwd=project_cwd)
     _mcfg = _file_cfg.memory
     _trigger_map = {
         "substantial": SubstantialContentTrigger(min_words=_mcfg.extraction_min_words),
@@ -1167,6 +1186,7 @@ async def run_repl_async(
 
     from .mcp import load_mcp_manager_async
     mcp_manager = await load_mcp_manager_async(project_cwd)
+    mcp_manager.set_llm_client(client)  # enables sampling/createMessage from MCP servers
     if mcp_manager.has_tools():
         tool_count = len(mcp_manager.get_tool_definitions())
         server_count = len(mcp_manager.server_summary())
@@ -1185,6 +1205,7 @@ async def run_repl_async(
         key_bindings=_kb,
         lexer=_InputLexer(),
         style=_INPUT_STYLE,
+        multiline=True,  # renders \n in buffer as real line breaks; Enter still submits via our binding
     )
     you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
 
@@ -1238,6 +1259,7 @@ async def run_repl_async(
             base_system_prompt=base_system_prompt,
             skill_registry=skill_registry,
             agent_registry=agent_registry,
+            cwd=project_cwd,
         ):
             console.print()
             continue

@@ -307,6 +307,30 @@ def print_critique(score: int, response_type: str, critique_text: str) -> None:
     )
 
 
+# ─── Spinner coordination (A2A remote wait) ──────────────────────────────────
+# Allows nested code (e.g. A2A client) to pause the spinner before showing an
+# interactive questionary prompt, then resume it after the user answers.
+
+_active_status = None  # Rich Status object, set by executor while polling
+
+
+def set_active_status(status) -> None:
+    global _active_status
+    _active_status = status
+
+
+def pause_spinner() -> None:
+    """Stop the active spinner so interactive prompts can render cleanly."""
+    if _active_status is not None:
+        _active_status.stop()
+
+
+def resume_spinner() -> None:
+    """Restart the active spinner after an interactive prompt completes."""
+    if _active_status is not None:
+        _active_status.start()
+
+
 def print_diff(original: str, revised: str) -> None:
     """Compute and print a unified diff between original and revised response.
 

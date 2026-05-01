@@ -23,17 +23,26 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.client.stdio import stdio_client
+import mcp.types as mcp_types
 
 from ..theme import console
 from ..tracing import get_tracer
 from .config import MCPServerConfig, load_mcp_config
+
+
+@asynccontextmanager
+async def _http_transport(url: str):
+    """Adapt streamable_http_client's 3-tuple yield to (read, write) for ClientSession."""
+    async with streamable_http_client(url=url) as (r, w, _):
+        yield r, w
 
 
 @dataclass
@@ -70,7 +79,272 @@ class _ServerState:
     prompts: list[_MCPPrompt] = field(default_factory=list)
     has_resources: bool = False
     task: Optional[asyncio.Task] = None
+    llm_client: Optional[object] = None  # set by MCPManager.set_llm_client() for sampling
 
+
+# ─── Notification / request callbacks ────────────────────────────────────────
+
+async def _console_print_safe(text: str) -> None:
+    """Print an MCP notification, coordinating with the active prompt_toolkit prompt.
+
+    When the 'you ›' prompt is waiting for input, uses run_in_terminal() to
+    print the message above the prompt line cleanly.  When no prompt is active
+    (agent processing, startup) falls back to a direct console.print().
+    """
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        app = get_app_or_none()
+        if app is not None and app.is_running:
+            await app.run_in_terminal(lambda: console.print(text))
+            return
+    except Exception:
+        pass
+    console.print(text)
+
+
+async def _logging_callback(state: _ServerState,
+                             params: mcp_types.LoggingMessageNotificationParams) -> None:
+    """Handle notifications/message — server log lines, routed by level."""
+    level = str(params.level)
+    data = params.data
+    logger = params.logger or state.name
+
+    if isinstance(data, str):
+        msg = data
+    elif isinstance(data, dict):
+        # Format structured payloads: prefer a "message" key, then event+path
+        # for file-change events, then compact JSON for anything else.
+        if "message" in data:
+            msg = str(data["message"])
+        elif "event" in data and "path" in data:
+            path_str = str(data["path"])
+            # Suppress internal .minion/ directory events (memory writes, config, etc.)
+            if any(p == ".minion" for p in Path(path_str).parts):
+                return
+            msg = f"{data['event']}  {data['path']}"
+        else:
+            import json as _json
+            msg = _json.dumps(data, separators=(",", ":"))
+    else:
+        msg = str(data) if data is not None else ""
+
+    get_tracer().emit("mcp_notification", server_name=state.name,
+                      method="notifications/message", level=level, message=msg)
+
+    if level == "debug":
+        pass  # Nefario only — too noisy for the console
+    elif level in ("info", "notice"):
+        await _console_print_safe(f"[muted][{logger}] {msg}[/]\n")
+    elif level == "warning":
+        await _console_print_safe(f"[yellow][{logger}] ⚠ {msg}[/]\n")
+    else:  # error, critical, alert, emergency
+        await _console_print_safe(f"[bold red][{logger}] ✗ {msg}[/]\n")
+
+
+async def _message_handler(state: _ServerState, message: object) -> None:
+    """Catch-all for server notifications not handled by specific callbacks.
+
+    Handles: tools/list_changed, resources/list_changed, prompts/list_changed,
+             resources/updated, progress.
+    """
+    if not isinstance(message, mcp_types.ServerNotification):
+        return  # Requests are handled by their dedicated callbacks; errors ignored here.
+
+    match message.root:
+        case mcp_types.ToolListChangedNotification():
+            if state.session is None:
+                return
+            try:
+                tools_result = await state.session.list_tools()
+                state.tools.clear()
+                for t in tools_result.tools:
+                    destructive = bool(
+                        (t.annotations and getattr(t.annotations, "destructiveHint", False))
+                        or state.config.confirm_all
+                    )
+                    schema = t.inputSchema if isinstance(t.inputSchema, dict) else {}
+                    state.tools.append(_MCPTool(
+                        name=t.name, description=t.description or "",
+                        input_schema=schema, destructive=destructive,
+                    ))
+                get_tracer().emit("mcp_notification", server_name=state.name,
+                                  method="notifications/tools/list_changed",
+                                  tool_count=len(state.tools))
+                await _console_print_safe(
+                    f"[muted][{state.name}] Tool list updated "
+                    f"({len(state.tools)} available)[/]"
+                )
+            except Exception as e:
+                await _console_print_safe(f"[muted][{state.name}] Failed to refresh tools: {e}[/]")
+
+        case mcp_types.ResourceListChangedNotification():
+            if state.session is None:
+                return
+            try:
+                await state.session.list_resources()
+                state.has_resources = True
+                get_tracer().emit("mcp_notification", server_name=state.name,
+                                  method="notifications/resources/list_changed")
+            except Exception:
+                pass
+
+        case mcp_types.PromptListChangedNotification():
+            if state.session is None:
+                return
+            try:
+                prompts_result = await state.session.list_prompts()
+                state.prompts.clear()
+                for p in prompts_result.prompts:
+                    args = [
+                        _MCPPromptArg(name=a.name, description=a.description or "",
+                                      required=bool(a.required))
+                        for a in (p.arguments or [])
+                    ]
+                    state.prompts.append(_MCPPrompt(
+                        name=p.name, description=p.description or "", arguments=args,
+                    ))
+                get_tracer().emit("mcp_notification", server_name=state.name,
+                                  method="notifications/prompts/list_changed",
+                                  prompt_count=len(state.prompts))
+            except Exception:
+                pass
+
+        case mcp_types.ResourceUpdatedNotification(params=params):
+            uri = str(params.uri)
+            get_tracer().emit("mcp_notification", server_name=state.name,
+                              method="notifications/resources/updated", uri=uri)
+            await _console_print_safe(f"[muted][{state.name}] Resource updated: {uri}[/]")
+
+        case mcp_types.ProgressNotification(params=params):
+            msg = params.message or ""
+            progress = int(params.progress) if params.progress is not None else 0
+            total = int(params.total) if params.total is not None else None
+            bar = f"{progress}/{total}" if total else str(progress)
+            await _console_print_safe(f"[muted][{state.name}] ▶ {bar} {msg}[/]".rstrip())
+
+        case _:
+            pass  # cancelled handled by SDK; other unknown notifications silently ignored
+
+
+async def _sampling_callback(
+    state: _ServerState,
+    context: object,
+    params: mcp_types.CreateMessageRequestParams,
+) -> mcp_types.CreateMessageResult | mcp_types.ErrorData:
+    """Handle sampling/createMessage — server asks our LLM to generate a response."""
+    if state.llm_client is None:
+        return mcp_types.ErrorData(code=-32603, message="No LLM client configured for sampling")
+
+    from ..llm.base import Message
+
+    # Convert MCP SamplingMessages to our Message format (text only)
+    messages: list[Message] = []
+    for m in params.messages:
+        content = m.content
+        text = content.text if hasattr(content, "text") else str(content)
+        messages.append(Message(role=str(m.role), content=text))
+
+    system = params.systemPrompt or ""
+
+    try:
+        response = await state.llm_client.async_complete(messages, system=system)
+        get_tracer().emit("mcp_notification", server_name=state.name,
+                          method="sampling/createMessage",
+                          model=response.model, tokens=response.output_tokens)
+        return mcp_types.CreateMessageResult(
+            role="assistant",
+            content=mcp_types.TextContent(type="text", text=response.content),
+            model=response.model,
+            stopReason="endTurn",
+        )
+    except Exception as e:
+        return mcp_types.ErrorData(code=-32603, message=f"Sampling failed: {e}")
+
+
+async def _roots_callback(context: object) -> mcp_types.ListRootsResult:
+    """Handle roots/list — return current working directory as the exposed root."""
+    cwd = Path.cwd()
+    return mcp_types.ListRootsResult(
+        roots=[mcp_types.Root(uri=cwd.as_uri(), name=cwd.name)]
+    )
+
+
+async def _elicitation_callback(
+    state: _ServerState,
+    context: object,
+    params: object,
+) -> mcp_types.ElicitResult | mcp_types.ErrorData:
+    """Handle elicitation/create — surface interactive form or URL prompt to user."""
+    import questionary
+
+    message = getattr(params, "message", "Input required")
+    console.print(f"\n[bold yellow][{state.name}] Input required:[/] {message}")
+
+    # URL elicitation: open browser, wait for user to confirm
+    if hasattr(params, "url") and params.url:
+        import webbrowser
+        url = str(params.url)
+        console.print(f"[muted]Opening: {url}[/]")
+        webbrowser.open(url)
+        confirmed = await asyncio.to_thread(
+            lambda: questionary.confirm("Press Enter when done (n to cancel)").ask()
+        )
+        if not confirmed:
+            return mcp_types.ElicitResult(action="cancel", content=None)
+        return mcp_types.ElicitResult(action="accept", content={})
+
+    # Form elicitation: render each field via questionary
+    schema = getattr(params, "requestedSchema", None)
+    if schema is None:
+        return mcp_types.ElicitResult(action="accept", content={})
+
+    raw = schema.model_dump() if hasattr(schema, "model_dump") else (schema if isinstance(schema, dict) else {})
+    properties: dict = raw.get("properties", {})
+    required: list = raw.get("required", [])
+
+    answers: dict = {}
+    try:
+        for field_name, field_schema in properties.items():
+            if not isinstance(field_schema, dict):
+                continue
+            field_type = field_schema.get("type", "string")
+            description = field_schema.get("description", field_name)
+            is_required = field_name in required
+            label = f"  {description}{' *' if is_required else ''}"
+
+            if field_type == "boolean":
+                answer = await asyncio.to_thread(
+                    lambda lb=label: questionary.confirm(lb).ask()
+                )
+            elif "enum" in field_schema:
+                answer = await asyncio.to_thread(
+                    lambda lb=label, ch=field_schema["enum"]: questionary.select(lb, choices=ch).ask()
+                )
+            elif field_type in ("number", "integer"):
+                raw_answer = await asyncio.to_thread(
+                    lambda lb=label: questionary.text(lb).ask()
+                )
+                if raw_answer is None:
+                    return mcp_types.ElicitResult(action="cancel", content=None)
+                try:
+                    answer = int(raw_answer) if field_type == "integer" else float(raw_answer)
+                except ValueError:
+                    answer = raw_answer
+            else:
+                answer = await asyncio.to_thread(
+                    lambda lb=label: questionary.text(lb).ask()
+                )
+
+            if answer is None:  # user hit Ctrl+C
+                return mcp_types.ElicitResult(action="cancel", content=None)
+            answers[field_name] = answer
+
+        return mcp_types.ElicitResult(action="accept", content=answers)
+    except (KeyboardInterrupt, EOFError):
+        return mcp_types.ElicitResult(action="cancel", content=None)
+
+
+# ─── Server background task ───────────────────────────────────────────────────
 
 async def _run_server(state: _ServerState) -> None:
     """Background task that owns the server's transport + session lifetime."""
@@ -78,7 +352,7 @@ async def _run_server(state: _ServerState) -> None:
     name = state.name
     try:
         if cfg.transport == "http":
-            transport_cm = sse_client(url=cfg.url)
+            transport_cm = _http_transport(cfg.url)
         else:
             env = {**os.environ, **cfg.env}
             params = StdioServerParameters(
@@ -89,7 +363,14 @@ async def _run_server(state: _ServerState) -> None:
             transport_cm = stdio_client(params)
 
         async with transport_cm as (r, w):
-            async with ClientSession(r, w) as session:
+            async with ClientSession(
+                r, w,
+                logging_callback=lambda params: _logging_callback(state, params),
+                message_handler=lambda msg: _message_handler(state, msg),
+                sampling_callback=lambda ctx, params: _sampling_callback(state, ctx, params),
+                list_roots_callback=lambda ctx: _roots_callback(ctx),
+                elicitation_callback=lambda ctx, params: _elicitation_callback(state, ctx, params),
+            ) as session:
                 await session.initialize()
 
                 # Populate tools
@@ -219,6 +500,16 @@ class MCPManager:
         configs = load_mcp_config(cwd)
         if configs:
             await self.connect_all(configs)
+
+    def set_llm_client(self, client: object) -> None:
+        """Inject the LLM client into all server states for sampling support.
+
+        Call this after connect_all() and after the client is constructed.
+        The sampling callback reads state.llm_client lazily at call time so
+        servers connected before this call still get the client.
+        """
+        for state in self._states.values():
+            state.llm_client = client
 
     # ── Sync metadata (no I/O) ────────────────────────────────────────────────
 

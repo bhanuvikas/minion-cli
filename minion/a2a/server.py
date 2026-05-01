@@ -33,7 +33,7 @@ from typing import Callable, Optional
 
 from ..tracing import get_tracer
 from .card import generate_agent_card
-from .models import Artifact, Task, TaskStatus
+from .models import Artifact, Task, TaskStatus, _extract_text_from_message
 
 # ─── Module-level shared state (lock-protected) ───────────────────────────────
 
@@ -44,6 +44,41 @@ _tasks_lock = threading.Lock()
 # Pending approval requests: task_id → {event, prompt, response}
 _pending_approvals: dict[str, dict] = {}
 _approvals_lock = threading.Lock()
+
+# Context history: contextId → list of {request, response} turns (capped at 20)
+_context_history: dict[str, list[dict]] = {}
+_context_lock = threading.Lock()
+_MAX_HISTORY_TURNS = 20
+
+
+def _get_context_history(context_id: str) -> list[dict]:
+    with _context_lock:
+        return list(_context_history.get(context_id, []))
+
+
+def _append_context_history(context_id: str, request: str, response: str) -> None:
+    with _context_lock:
+        turns = _context_history.setdefault(context_id, [])
+        turns.append({"request": request, "response": response})
+        if len(turns) > _MAX_HISTORY_TURNS:
+            turns.pop(0)
+
+
+def _build_message_with_history(message: str, context_id: Optional[str]) -> str:
+    """Prepend prior session turns to the message so the agent has full context."""
+    if not context_id:
+        return message
+    history = _get_context_history(context_id)
+    if not history:
+        return message
+    n = len(history)
+    lines = [f"[Session context — {n} prior turn{'s' if n > 1 else ''}:]", ""]
+    for i, turn in enumerate(history, 1):
+        lines.append(f"Turn {i} — User: {turn['request']}")
+        lines.append(f"Turn {i} — Agent: {turn['response']}")
+        lines.append("")
+    lines += ["--- Current request ---", message]
+    return "\n".join(lines)
 
 
 def _store_task(task: Task) -> threading.Event:
@@ -77,12 +112,23 @@ def _update_task_status(task_id: str, status: TaskStatus,
             task.input_data = input_data  # type: ignore[attr-defined]
 
 
-def _make_confirm_callback(task_id: str) -> Callable[[str], bool]:
-    """Return a callback that pauses the agent with input-required and waits for approval."""
-    def _confirm(prompt: str) -> bool:
+def _make_confirm_callback(task_id: str) -> Callable[[str, str], bool]:
+    """Return a callback that pauses the agent with input-required and waits for approval.
+
+    Signature: (question: str, detail: str = "") -> bool
+      question — short one-liner for the y/N prompt
+      detail   — multi-line context (tool inputs, content preview)
+
+    Both are stored as text parts in input_data so the orchestrator can display them
+    as a spec-compliant multi-part A2A Message in the input-required status event.
+    """
+    def _confirm(question: str, detail: str = "") -> bool:
+        parts = [{"type": "text", "text": question}]
+        if detail:
+            parts.append({"type": "text", "text": detail})
         _update_task_status(
             task_id, TaskStatus.INPUT_REQUIRED,
-            input_data={"prompt": prompt, "type": "confirm"},
+            input_data={"parts": parts, "type": "confirm"},
         )
         entry: dict = {"event": threading.Event(), "response": None}
         with _approvals_lock:
@@ -119,6 +165,13 @@ class _A2AHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not found"})
 
+    def do_DELETE(self) -> None:
+        if self.path.startswith("/tasks/") and len(self.path) > 7:
+            task_id = self.path[7:].strip("/")
+            self._handle_cancel_task(task_id)
+        else:
+            self._send_json(404, {"error": "not found"})
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
         body_bytes = self.rfile.read(length) if length > 0 else b""
@@ -132,6 +185,12 @@ class _A2AHandler(BaseHTTPRequestHandler):
             self._handle_send(body)
         elif self.path == "/tasks/sendSubscribe":
             self._handle_subscribe(body)
+        elif self.path == "/tasks/cancel":
+            task_id = body.get("id", "")
+            if task_id:
+                self._handle_cancel_task(task_id)
+            else:
+                self._send_json(400, {"error": "request body must include 'id'"})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -149,32 +208,38 @@ class _A2AHandler(BaseHTTPRequestHandler):
     def _handle_send(self, body: dict) -> None:
         """POST /tasks/send — create new task OR continue an existing one.
 
-        Continuation body: {"task_id": "<id>", "message": "yes"|"no"}
-        New task body:     {"message": "<task text>"}
+        Continuation body (spec): {"id": "<task-id>", "message": Message}
+        New task body (spec):     {"message": Message}
+        where Message = {"role": "user", "parts": [{"type": "text", "text": "..."}]}
         """
-        # ── Task continuation (input-required approval) ────────────────────────
-        if "task_id" in body:
-            task_id = body["task_id"]
+        # ── Task continuation (input-required approval) — spec uses "id" field ─
+        if "id" in body and _get_task(body["id"]) is not None:
+            task_id = body["id"]
             with _approvals_lock:
                 entry = _pending_approvals.pop(task_id, None)
             if entry is None:
                 self._send_json(404, {"error": f"task '{task_id}' not awaiting approval"})
                 return
-            response = body.get("message", "").strip().lower() in ("yes", "y", "true", "1")
-            entry["response"] = response
+            raw_msg = body.get("message", "")
+            answer_text = _extract_text_from_message(raw_msg).strip().lower()
+            entry["response"] = answer_text in ("yes", "y", "true", "1")
             entry["event"].set()
             _update_task_status(task_id, TaskStatus.WORKING)
-            self._send_json(200, {"id": task_id, "status": TaskStatus.WORKING.value})
+            task = _get_task(task_id)
+            self._send_json(200, task.to_dict() if task else {"id": task_id})
             return
 
         # ── New task ──────────────────────────────────────────────────────────
-        message = body.get("message", "")
+        raw_message = body.get("message", "")
+        message = _extract_text_from_message(raw_message)
         if not message:
             self._send_json(400, {"error": "request body must include 'message'"})
             return
 
+        context_id: Optional[str] = body.get("contextId") or None
         task_id = str(uuid.uuid4())
-        task = Task(id=task_id, status=TaskStatus.SUBMITTED, input_message=message)
+        task = Task(id=task_id, status=TaskStatus.SUBMITTED, input_message=message,
+                    context_id=context_id)
         done_event = _store_task(task)
 
         remote_addr = self.client_address[0] if self.client_address else ""
@@ -185,9 +250,11 @@ class _A2AHandler(BaseHTTPRequestHandler):
             remote_addr=remote_addr,
         )
 
+        # Capture submitted state before thread pool can advance the status
+        submitted_dict = task.to_dict()
         confirm_cb = _make_confirm_callback(task_id)
-        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb)
-        self._send_json(202, {"id": task_id, "status": TaskStatus.SUBMITTED.value})
+        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb, context_id)
+        self._send_json(202, submitted_dict)
 
     def _handle_get_task(self, task_id: str) -> None:
         """GET /tasks/{id} — return current task state."""
@@ -196,22 +263,31 @@ class _A2AHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"task '{task_id}' not found"})
             return
         d = task.to_dict()
-        # Include input_data for input-required state
+        # For input-required: embed approval prompt in status.message per spec
         if task.status == TaskStatus.INPUT_REQUIRED:
             input_data = getattr(task, "input_data", None)
             if input_data:
-                d["input"] = input_data
+                parts = input_data.get("parts") or [
+                    {"type": "text", "text": input_data.get("prompt", "Approve action?")}
+                ]
+                d["status"]["message"] = {"role": "agent", "parts": parts}
         self._send_json(200, d)
 
     def _handle_subscribe(self, body: dict) -> None:
-        """POST /tasks/sendSubscribe — create task, stream SSE events until completion."""
-        message = body.get("message", "")
+        """POST /tasks/sendSubscribe — create task, stream spec SSE events until completion.
+
+        Emits TaskStatusUpdateEvent and TaskArtifactUpdateEvent per A2A spec.
+        """
+        raw_message = body.get("message", "")
+        message = _extract_text_from_message(raw_message)
         if not message:
             self._send_json(400, {"error": "request body must include 'message'"})
             return
 
+        context_id: Optional[str] = body.get("contextId") or None
         task_id = str(uuid.uuid4())
-        task = Task(id=task_id, status=TaskStatus.SUBMITTED, input_message=message)
+        task = Task(id=task_id, status=TaskStatus.SUBMITTED, input_message=message,
+                    context_id=context_id)
         done_event = _store_task(task)
 
         remote_addr = self.client_address[0] if self.client_address else ""
@@ -222,55 +298,97 @@ class _A2AHandler(BaseHTTPRequestHandler):
             remote_addr=remote_addr,
         )
 
-        # Set response headers for SSE stream
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
 
-        # Send submitted event immediately
-        self._write_sse({"id": task_id, "status": TaskStatus.SUBMITTED.value})
+        self._write_sse(task.status_event(final=False), event="task-status-update")
 
-        # Transition to working and send working event before submitting to pool
         _update_task_status(task_id, TaskStatus.WORKING)
-        self._write_sse({"id": task_id, "status": TaskStatus.WORKING.value})
+        working_snap = _get_task(task_id)
+        if working_snap:
+            self._write_sse(working_snap.status_event(final=False), event="task-status-update")
 
-        # Run agent in thread pool
         confirm_cb = _make_confirm_callback(task_id)
-        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb)
+        self.__class__._executor.submit(self._run_task, task_id, message, done_event, confirm_cb, context_id)
 
-        # Block until done; periodically flush input-required SSE events
+        # Poll until done; emit input-required status events as they occur
         while not done_event.wait(timeout=1.0):
             task_snap = _get_task(task_id)
             if task_snap and task_snap.status == TaskStatus.INPUT_REQUIRED:
-                d = task_snap.to_dict()
+                ev = task_snap.status_event(final=False)
                 input_data = getattr(task_snap, "input_data", None)
                 if input_data:
-                    d["input"] = input_data
-                self._write_sse(d)
+                    parts = input_data.get("parts") or [
+                        {"type": "text", "text": input_data.get("prompt", "Approve action?")}
+                    ]
+                    ev["status"]["message"] = {"role": "agent", "parts": parts}
+                self._write_sse(ev, event="task-status-update")
 
         final_task = _get_task(task_id)
         if final_task is not None:
-            self._write_sse(final_task.to_dict())
+            # Emit artifact event then final status event
+            for artifact in final_task.artifacts:
+                self._write_sse(final_task.artifact_event(artifact, final=False), event="task-artifact-update")
+            self._write_sse(final_task.status_event(final=True), event="task-status-update")
+
+    def _handle_cancel_task(self, task_id: str) -> None:
+        """Cancel a task that is submitted or working."""
+        task = _get_task(task_id)
+        if task is None:
+            self._send_json(404, {"error": f"task '{task_id}' not found"})
+            return
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED):
+            self._send_json(409, {"error": f"task '{task_id}' is already in terminal state"})
+            return
+        _update_task_status(task_id, TaskStatus.CANCELED)
+        # Release any pending approval so the worker thread unblocks
+        with _approvals_lock:
+            entry = _pending_approvals.pop(task_id, None)
+        if entry:
+            entry["response"] = False
+            entry["event"].set()
+        task = _get_task(task_id)
+        self._send_json(200, task.to_dict() if task else {"id": task_id})
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @classmethod
     def _run_task(cls, task_id: str, message: str, done_event: threading.Event,
-                  confirm_cb: Callable[[str], bool]) -> None:
-        """Execute the agent for a task and update task state when done."""
+                  confirm_cb: Callable[[str], bool],
+                  context_id: Optional[str] = None) -> None:
+        """Execute the agent for a task and update task state when done.
+
+        Injects prior session history (if contextId is set) into the message
+        before calling the agent, then stores the exchange in context history.
+        """
+        full_message = _build_message_with_history(message, context_id)
         _update_task_status(task_id, TaskStatus.WORKING)
         try:
-            result = cls.agent_runner(message, confirm_callback=confirm_cb)
-            _update_task_status(task_id, TaskStatus.COMPLETED, artifact_text=result)
+            result = cls.agent_runner(full_message, confirm_callback=confirm_cb)
+            # Guard: don't overwrite CANCELED with COMPLETED if the task was
+            # canceled while the agent was still running.
+            task = _get_task(task_id)
+            if task is not None and task.status != TaskStatus.CANCELED:
+                _update_task_status(task_id, TaskStatus.COMPLETED, artifact_text=result)
+                if context_id:
+                    _append_context_history(context_id, message, result)
         except Exception as e:
-            _update_task_status(task_id, TaskStatus.FAILED, error=str(e))
+            task = _get_task(task_id)
+            if task is not None and task.status != TaskStatus.CANCELED:
+                _update_task_status(task_id, TaskStatus.FAILED, error=str(e))
         finally:
             done_event.set()
 
-    def _write_sse(self, payload: dict) -> None:
-        line = f"data: {json.dumps(payload)}\n\n"
+    def _write_sse(self, payload: dict, event: str = "") -> None:
+        """Write one SSE event. Emits 'event:' line when event name is given."""
+        parts = []
+        if event:
+            parts.append(f"event: {event}\n")
+        parts.append(f"data: {json.dumps(payload)}\n\n")
+        line = "".join(parts)
         try:
             self.wfile.write(line.encode("utf-8"))
             self.wfile.flush()

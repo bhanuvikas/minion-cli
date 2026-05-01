@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import re
 import sys
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -162,12 +163,18 @@ def _stream_one_iteration(
             error=str(e),
             latency_ms=int((_time.monotonic() - _llm_start) * 1000),
         )
-        conversation.messages.pop()
+        # Only remove the last message if it's the plain-text user turn that opened
+        # this prompt (content is a str). In iteration 2+ the last message is a
+        # tool_result (content is a list); popping it would leave the preceding
+        # assistant tool_use block without a matching tool_result, causing a 400.
+        if conversation.messages and isinstance(conversation.messages[-1].content, str):
+            conversation.messages.pop()
         print_error(str(e))
         return None
 
     if first_event is None:
-        conversation.messages.pop()
+        if conversation.messages and isinstance(conversation.messages[-1].content, str):
+            conversation.messages.pop()
         print_error("Received an empty response from the model.")
         return None
 
@@ -298,14 +305,35 @@ def _execute_parallel_agents(
     # fixed height from the first render — Rich Live never resizes, eliminating flicker.
     display.pre_register(slots)
 
+    _parallel_confirm_lock = threading.Lock()
+
     def run_spawn_agent(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
         callback = display.make_callback(tb.id)
         set_agent_display_callback(callback)
+
+        # Confirmation callback: pauses the live display so questionary can own
+        # the terminal cleanly. _parallel_confirm_lock serializes concurrent
+        # approval requests so at most one prompt appears at a time.
+        def _confirm_cb(question: str, detail: str = "") -> bool:
+            import questionary
+            from .config import MINION_STYLE
+            from .theme import console as _console
+            with _parallel_confirm_lock:
+                display.pause()
+                try:
+                    if detail:
+                        _console.print(f"[muted]{detail}[/]")
+                    return bool(questionary.confirm(
+                        f"  [{role}] {question}", default=False, style=MINION_STYLE
+                    ).ask())
+                finally:
+                    display.resume()
+
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
-            result = executor._agent_runner(task, role)
+            result = executor._agent_runner(task, role, _confirm_cb)
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
             return result
         except Exception as exc:
@@ -580,12 +608,18 @@ async def _stream_one_iteration_async(
             error=str(e),
             latency_ms=int((_time.monotonic() - _llm_start) * 1000),
         )
-        conversation.messages.pop()
+        # Only remove the last message if it's the plain-text user turn that opened
+        # this prompt (content is a str). In iteration 2+ the last message is a
+        # tool_result (content is a list); popping it would leave the preceding
+        # assistant tool_use block without a matching tool_result, causing a 400.
+        if conversation.messages and isinstance(conversation.messages[-1].content, str):
+            conversation.messages.pop()
         print_error(str(e))
         return None
 
     if first_event is None:
-        conversation.messages.pop()
+        if conversation.messages and isinstance(conversation.messages[-1].content, str):
+            conversation.messages.pop()
         print_error("Received an empty response from the model.")
         return None
 
@@ -688,25 +722,63 @@ async def _execute_parallel_agents_async(
         slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
     display.pre_register(slots)
 
+    _parallel_confirm_lock_async = threading.Lock()
+
     async def _run_spawn_async(tb: ToolUseBlock) -> str:
+        task = tb.input.get("task", "")
+        role = tb.input.get("role") or "researcher"
         callback = display.make_callback(tb.id)
-        # ContextVar set here propagates into execute_async() and any threads it spawns.
         set_agent_display_callback(callback)
-        return await executor.execute_async(tb)
+
+        # Confirmation callback: pauses the live display so questionary can own
+        # the terminal cleanly. Called from the subagent's thread.
+        # _parallel_confirm_lock_async serializes concurrent approval requests.
+        def _confirm_cb(question: str, detail: str = "") -> bool:
+            import questionary
+            from .config import MINION_STYLE
+            from .theme import console as _console
+            with _parallel_confirm_lock_async:
+                display.pause()
+                try:
+                    if detail:
+                        _console.print(f"[muted]{detail}[/]")
+                    return bool(questionary.confirm(
+                        f"  [{role}] {question}", default=False, style=MINION_STYLE
+                    ).ask())
+                finally:
+                    display.resume()
+
+        try:
+            get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
+            result = await asyncio.to_thread(executor._agent_runner, task, role, _confirm_cb)
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            return result
+        except Exception as exc:
+            err = f"Error: {exc}"
+            get_tracer().emit("tool_result", tool_name="spawn_agent", output=err, success=False)
+            return err
+        finally:
+            set_agent_display_callback(None)
 
     async def _run_remote_async(tb: ToolUseBlock) -> str:
         callback = display.make_callback(tb.id)
         callback("running")
         start = _time.monotonic()
         set_agent_display_callback(callback)
-        result = await executor.execute_async(tb)
-        latency_ms = int((_time.monotonic() - start) * 1000)
-        preview = result.split("\n")[0][:100] if result else ""
-        if result.startswith("Error:"):
-            callback("error", error=result.removeprefix("Error: ")[:60])
-        else:
-            callback("complete", latency_ms=latency_ms, preview=preview)
-        return result
+        try:
+            result = await executor.execute_async(tb)
+            latency_ms = int((_time.monotonic() - start) * 1000)
+            preview = result.split("\n")[0][:100] if result else ""
+            if result.startswith("Error:"):
+                callback("error", error=result.removeprefix("Error: ")[:60])
+            else:
+                callback("complete", latency_ms=latency_ms, preview=preview)
+            return result
+        except Exception as exc:
+            callback("error", error=str(exc)[:60])
+            return f"Error: {exc}"
+        finally:
+            set_agent_display_callback(None)
 
     async def _run_one_async(tb: ToolUseBlock) -> str:
         if tb.name == "spawn_agent":
@@ -775,7 +847,7 @@ async def _execute_tools_async(
     """Async router for tool execution — mirrors _execute_tools()."""
     if len(tool_blocks) == 1:
         tb = tool_blocks[0]
-        result = await asyncio.to_thread(executor.execute, tb)
+        result = await executor.execute_async(tb)
         conversation.add_tool_result(tb.id, result)
         return
 
@@ -831,10 +903,11 @@ async def run_prompt_async(
     if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
         from .agents import SUBAGENT_GUIDANCE
         from .agents.runner import run_agent
-        _agent_runner = lambda task, role: run_agent(  # noqa: E731
+        _agent_runner = lambda task, role, confirm_callback=None: run_agent(  # noqa: E731
             task, role, agent_registry, client,
             parent_depth=agent_depth, mcp_manager=mcp_manager,
             _token_accumulator=_subagent_tokens,
+            confirm_callback=confirm_callback,
         )
         system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
     else:

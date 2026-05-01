@@ -1,7 +1,18 @@
 """Minimal standalone A2A echo agent for integration testing.
 
-Zero dependencies outside stdlib. Implements the same 4 A2A endpoints that
-minion's A2A server provides, returning an echo artifact for each task.
+Zero dependencies outside stdlib. Implements the A2A REST protocol:
+  GET  /.well-known/agent.json  — Agent Card
+  POST /tasks/send              — Submit task (polling); also handles continuation via "id"
+  GET  /tasks/{id}              — Poll task status
+  POST /tasks/sendSubscribe     — Submit task + SSE stream
+  POST /tasks/cancel            — Cancel a task by ID
+  DELETE /tasks/{id}            — Cancel a task (REST-style alternative)
+
+Wire format is spec-compliant:
+  - Message: {"role": "user", "parts": [{"type": "text", "text": "..."}]}
+  - Task status: {"state": "submitted"|..., "timestamp": "ISO-8601"}
+  - Artifact: {"artifactId": "...", "parts": [{"type": "text", "text": "..."}]}
+  - SSE events: TaskStatusUpdateEvent and TaskArtifactUpdateEvent
 
 Start with:
     python examples/a2a_echo_agent.py [--port 8181]
@@ -14,14 +25,56 @@ Then configure in .minion/a2a.json:
     }
 
 The agent waits 0.1s before completing to simulate real processing time.
-This makes it useful for testing parallel task dispatch and the SSE stream.
 """
+
+from __future__ import annotations
 
 import json
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _extract_text(msg) -> str:
+    """Extract plain text from a spec Message object or bare string."""
+    if isinstance(msg, str):
+        return msg
+    if isinstance(msg, dict):
+        parts = msg.get("parts", [])
+        if parts:
+            return "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        return msg.get("text", "")
+    return str(msg)
+
+
+def _make_status(state: str) -> dict:
+    return {"state": state, "timestamp": _iso_now()}
+
+
+def _make_artifact(text: str) -> dict:
+    return {
+        "artifactId": str(uuid.uuid4()),
+        "parts": [{"type": "text", "text": text}],
+    }
+
+
+def _status_event(task_id: str, state: str, final: bool = False, message: Optional[dict] = None) -> dict:
+    ev: dict = {"id": task_id, "status": _make_status(state), "final": final}
+    if message:
+        ev["status"]["message"] = message
+    return ev
+
+
+def _artifact_event(task_id: str, artifact: dict, final: bool = True) -> dict:
+    return {"id": task_id, "artifact": artifact, "final": final}
+
 
 _tasks: dict = {}
 _task_events: dict = {}
@@ -32,11 +85,26 @@ AGENT_CARD = {
     "description": "Minimal A2A echo agent for integration testing. Returns 'Echo: <input>' for any task.",
     "url": "",  # filled in at startup
     "version": "0.1.0",
-    "capabilities": {"streaming": True},
+    "capabilities": {
+        "streaming": True,
+        "pushNotifications": False,
+        "stateTransitionHistory": False,
+    },
+    "defaultInputModes": ["text"],
+    "defaultOutputModes": ["text"],
     "skills": [
-        {"id": "echo", "name": "Echo", "description": "Echoes the input task back as output."}
+        {
+            "id": "echo",
+            "name": "Echo",
+            "description": "Echoes the input task back as output.",
+            "tags": ["echo", "test"],
+            "inputModes": ["text"],
+            "outputModes": ["text"],
+        }
     ],
 }
+
+TERMINAL_STATES = {"completed", "failed", "canceled"}
 
 
 class EchoHandler(BaseHTTPRequestHandler):
@@ -44,7 +112,7 @@ class EchoHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/.well-known/agent.json":
             self._json(200, AGENT_CARD)
-        elif self.path.startswith("/tasks/"):
+        elif self.path.startswith("/tasks/") and len(self.path) > 7:
             task_id = self.path[7:].strip("/")
             with _lock:
                 task = _tasks.get(task_id)
@@ -52,6 +120,13 @@ class EchoHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "not found"})
             else:
                 self._json(200, task)
+        else:
+            self._json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        if self.path.startswith("/tasks/") and len(self.path) > 7:
+            task_id = self.path[7:].strip("/")
+            self._cancel_task(task_id)
         else:
             self._json(404, {"error": "not found"})
 
@@ -63,27 +138,72 @@ class EchoHandler(BaseHTTPRequestHandler):
             self._handle_send(body)
         elif self.path == "/tasks/sendSubscribe":
             self._handle_subscribe(body)
+        elif self.path == "/tasks/cancel":
+            task_id = body.get("id", "")
+            if task_id:
+                self._cancel_task(task_id)
+            else:
+                self._json(400, {"error": "request body must include 'id'"})
         else:
             self._json(404, {"error": "not found"})
 
     def _handle_send(self, body):
-        message = body.get("message", "")
+        # Continuation: existing task id present
+        existing_id = body.get("id", "")
+        if existing_id:
+            with _lock:
+                task = _tasks.get(existing_id)
+            if task and task.get("status", {}).get("state") not in TERMINAL_STATES:
+                # Echo agent doesn't need approval; just acknowledge continuation
+                self._json(200, task)
+                return
+            if task is None:
+                self._json(404, {"error": f"task '{existing_id}' not found"})
+                return
+
+        # New task
+        raw_message = body.get("message", "")
+        text = _extract_text(raw_message)
+        if not text:
+            self._json(400, {"error": "request body must include 'message'"})
+            return
+
         task_id = str(uuid.uuid4())
+        artifact = _make_artifact(f"Echo: {text}")
         done = threading.Event()
+
+        task = {
+            "id": task_id,
+            "status": _make_status("submitted"),
+            "input": body.get("message", {}),
+            "artifacts": [],
+        }
         with _lock:
-            _tasks[task_id] = {"id": task_id, "status": "submitted",
-                               "input": {"message": message}}
+            _tasks[task_id] = task
             _task_events[task_id] = done
-        threading.Thread(target=self._run, args=(task_id, message, done), daemon=True).start()
-        self._json(202, {"id": task_id, "status": "submitted"})
+
+        threading.Thread(target=self._run, args=(task_id, artifact, done), daemon=True).start()
+        self._json(202, task)
 
     def _handle_subscribe(self, body):
-        message = body.get("message", "")
+        raw_message = body.get("message", "")
+        text = _extract_text(raw_message)
+        if not text:
+            self._json(400, {"error": "request body must include 'message'"})
+            return
+
         task_id = str(uuid.uuid4())
+        artifact = _make_artifact(f"Echo: {text}")
         done = threading.Event()
+
+        task = {
+            "id": task_id,
+            "status": _make_status("submitted"),
+            "input": body.get("message", {}),
+            "artifacts": [],
+        }
         with _lock:
-            _tasks[task_id] = {"id": task_id, "status": "submitted",
-                               "input": {"message": message}}
+            _tasks[task_id] = task
             _task_events[task_id] = done
 
         self.send_response(200)
@@ -92,31 +212,50 @@ class EchoHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        self._sse({"id": task_id, "status": "submitted"})
-        self._sse({"id": task_id, "status": "working"})
+        self._sse(_status_event(task_id, "submitted", final=False), event="task-status-update")
+        self._sse(_status_event(task_id, "working", final=False), event="task-status-update")
 
-        threading.Thread(target=self._run, args=(task_id, message, done), daemon=True).start()
+        threading.Thread(target=self._run, args=(task_id, artifact, done), daemon=True).start()
         done.wait(timeout=30)
 
+        self._sse(_artifact_event(task_id, artifact, final=False), event="task-artifact-update")
+        self._sse(_status_event(task_id, "completed", final=True), event="task-status-update")
+
+    def _cancel_task(self, task_id: str):
         with _lock:
-            task = _tasks.get(task_id, {"status": "failed", "error": "timeout"})
-        self._sse(task)
+            task = _tasks.get(task_id)
+            if task is None:
+                self._json(404, {"error": f"task '{task_id}' not found"})
+                return
+            state = task.get("status", {}).get("state", "")
+            if state in TERMINAL_STATES:
+                self._json(409, {"error": f"task '{task_id}' is already in terminal state"})
+                return
+            task["status"] = _make_status("canceled")
+        done = _task_events.get(task_id)
+        if done:
+            done.set()
+        with _lock:
+            self._json(200, _tasks[task_id])
 
     @staticmethod
-    def _run(task_id: str, message: str, done: threading.Event):
-        time.sleep(0.1)  # simulate processing
+    def _run(task_id: str, artifact: dict, done: threading.Event):
+        time.sleep(0.1)
         with _lock:
-            _tasks[task_id] = {
-                "id": task_id,
-                "status": "completed",
-                "input": {"message": message},
-                "artifacts": [{"text": f"Echo: {message}"}],
-            }
+            task = _tasks.get(task_id)
+            if task and task.get("status", {}).get("state") not in TERMINAL_STATES:
+                task["status"] = _make_status("completed")
+                task["artifacts"] = [artifact]
         done.set()
 
-    def _sse(self, payload: dict):
+    def _sse(self, payload: dict, event: str = ""):
+        """Write one SSE event with optional event name."""
+        parts = []
+        if event:
+            parts.append(f"event: {event}\n")
+        parts.append(f"data: {json.dumps(payload)}\n\n")
         try:
-            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+            self.wfile.write("".join(parts).encode())
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -146,7 +285,9 @@ def main():
     print(f"  /.well-known/agent.json  →  Agent Card")
     print(f"  POST /tasks/send         →  Submit task (polling)")
     print(f"  POST /tasks/sendSubscribe →  Submit task (SSE)")
+    print(f"  POST /tasks/cancel        →  Cancel task")
     print(f"  GET  /tasks/{{id}}         →  Poll task status")
+    print(f"  DELETE /tasks/{{id}}       →  Cancel task (REST style)")
     print(f"  Ctrl+C to stop")
     try:
         server.serve_forever()

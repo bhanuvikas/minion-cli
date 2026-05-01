@@ -31,6 +31,12 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 
+# Subcommand names that typer registers — used by _entry() to distinguish
+# "minion doctor" (subcommand) from "minion 'fix the bug'" (one-shot prompt).
+_KNOWN_SUBCOMMANDS = frozenset({"doctor", "skills", "mcp", "agent", "a2a"})
+# Options that consume the next token as their value.
+_OPTS_WITH_VALUE = frozenset({"-p", "--provider", "-m", "--model", "--reflect"})
+
 
 @app.callback(invoke_without_command=True)
 def main(
@@ -75,7 +81,8 @@ def main(
 ) -> None:
     """🍌 [bold yellow]Minion[/bold yellow] — your agentic coding assistant.
 
-    Run to start interactive REPL mode.
+    Run without arguments to start interactive REPL mode.
+    Pass a prompt to run a single task and exit: [bold]minion "what is 2+2?"[/bold]
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -393,3 +400,99 @@ def doctor() -> None:
         console.print(f"  {warn_mark}  A2A: no remote agents configured (optional)")
 
     console.print()
+
+
+# ─── One-shot entry point ─────────────────────────────────────────────────────
+
+def _run_one_shot(prompt: str, raw_argv: list) -> None:
+    """Run a single prompt and exit. Called by _entry() before typer routing."""
+    import sys as _sys
+
+    cfg = _load_config()
+
+    # Parse the flags we care about from raw_argv (everything before the prompt)
+    provider = model = None
+    reflect = cfg.agent.reflect_depth
+    dry_run = False
+    verbose = cfg.agent.verbose
+
+    i = 0
+    while i < len(raw_argv):
+        tok = raw_argv[i]
+        if tok in ("-p", "--provider") and i + 1 < len(raw_argv):
+            provider = raw_argv[i + 1]; i += 2
+        elif tok in ("-m", "--model") and i + 1 < len(raw_argv):
+            model = raw_argv[i + 1]; i += 2
+        elif tok == "--reflect" and i + 1 < len(raw_argv):
+            try:
+                reflect = int(raw_argv[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        elif tok == "--dry-run":
+            dry_run = True; i += 1
+        elif tok in ("-v", "--verbose"):
+            verbose = True; i += 1
+        else:
+            i += 1
+
+    effective_provider = provider or cfg.llm.provider
+    effective_model = model or cfg.llm.model
+
+    try:
+        client = get_client(effective_provider, effective_model)
+    except ValueError as e:
+        print_error(str(e))
+        _sys.exit(1)
+
+    from .context import build_project_context
+    from .prompts import build_system_prompt
+    from .runner import run_prompt_async
+    from .reflection import ReflectionConfig
+    from .conversation import Conversation
+
+    project_cwd = Path.cwd()
+    system_prompt = build_system_prompt(build_project_context(project_cwd))
+    conversation = Conversation()
+    reflect_cfg = ReflectionConfig(depth=reflect) if reflect else None
+
+    asyncio.run(run_prompt_async(
+        prompt, client, conversation, system_prompt,
+        dry_run=dry_run, reflect_config=reflect_cfg,
+        verbose=verbose,
+    ))
+
+
+def _entry() -> None:
+    """Smart entry point: intercepts one-shot prompts before typer's subcommand routing.
+
+    typer/click groups always try to resolve the first positional arg as a subcommand,
+    so `minion "fix the bug"` would fail with "No such command 'fix the bug'".
+    This wrapper scans sys.argv first: if the first non-option positional arg is not
+    a known subcommand, it extracts it as a one-shot prompt and bypasses typer entirely.
+    """
+    import sys
+
+    raw = sys.argv[1:]
+    prefix: list = []   # option tokens before the prompt
+    i = 0
+
+    while i < len(raw):
+        tok = raw[i]
+        if tok in _OPTS_WITH_VALUE and i + 1 < len(raw):
+            prefix += [tok, raw[i + 1]]
+            i += 2
+        elif tok.startswith("-"):
+            prefix.append(tok)
+            i += 1
+        elif tok in _KNOWN_SUBCOMMANDS:
+            app()   # known subcommand → let typer handle
+            return
+        else:
+            # First positional arg that isn't a subcommand → one-shot prompt
+            prompt = " ".join(raw[i:])
+            _run_one_shot(prompt, prefix)
+            return
+
+    # No positional args at all → REPL / --help / --version via typer
+    app()

@@ -52,6 +52,47 @@ _TOOL_SPINNER_LABELS: dict[str, str] = {
     "get_file_outline": "[muted]analyzing...[/]",
 }
 
+def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
+    """Return (question, detail) for a dangerous tool confirmation.
+
+    question — short one-liner used as the questionary prompt text
+    detail   — multi-line context (all tool inputs, content previews) printed above it
+
+    Generic: every key in inputs is rendered; multiline values get an 8-line preview.
+    Keys already summarised in the question are skipped from detail to avoid repetition.
+    """
+    def _fmt_inputs(skip: frozenset = frozenset()) -> str:
+        lines: list[str] = []
+        for k, v in inputs.items():
+            if k in skip:
+                continue
+            if isinstance(v, str) and "\n" in v:
+                rows = v.splitlines()
+                n = len(rows)
+                lines.append(f"  {k} ({n} lines):")
+                for row in rows[:8]:
+                    lines.append(f"  │ {row}")
+                if n > 8:
+                    lines.append(f"  │ ... ({n - 8} more lines)")
+            elif isinstance(v, str) and len(v) > 80:
+                lines.append(f"  {k}: '{v[:80]}...'")
+            else:
+                lines.append(f"  {k}: {v!r}")
+        return "\n".join(lines)
+
+    if name == "run_shell":
+        cmd = (inputs.get("command") or "")[:80]
+        question = f"Allow run_shell?  `{cmd}`" if cmd else "Allow run_shell?"
+        return question, _fmt_inputs(skip=frozenset({"command"}))
+
+    if name == "write_file":
+        path = inputs.get("path") or ""
+        question = f"Allow write_file?  {path}" if path else "Allow write_file?"
+        return question, _fmt_inputs(skip=frozenset({"path"}))
+
+    return f"Allow {name}?", _fmt_inputs()
+
+
 _DISPATCH: dict = {
     "read_file":        read_file,
     "write_file":       write_file,
@@ -126,19 +167,33 @@ class ToolExecutor:
             agent = inputs.get("agent", "")
             task = inputs.get("task", "")
             get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=inputs)
-            result = self._remote_task_runner(agent, task)
+            if _agent_cb is not None:
+                result = self._remote_task_runner(agent, task)
+            else:
+                from ..theme import set_active_status
+                _status = console.status(f"[muted]waiting for {agent}...[/]", spinner="dots")
+                _status.start()
+                set_active_status(_status)
+                try:
+                    result = self._remote_task_runner(agent, task)
+                finally:
+                    _status.stop()
+                    set_active_status(None)
             if _agent_cb is None:
                 print_tool_result(result)
             get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
             return result
 
         if name in DANGEROUS_TOOLS:
+            question, detail = _confirm_prompt(name, inputs)
             if self._confirm_callback is not None:
-                confirmed = self._confirm_callback(f"Allow {name}?")
+                confirmed = self._confirm_callback(question, detail)
             else:
                 with _CONFIRM_LOCK:
+                    if detail:
+                        console.print(f"[muted]{detail}[/]")
                     confirmed = questionary.confirm(
-                        f"  Allow {name}?",
+                        f"  {question}",
                         default=False,
                         style=MINION_STYLE,
                     ).ask()
@@ -239,20 +294,34 @@ class ToolExecutor:
             agent = inputs.get("agent", "")
             task = inputs.get("task", "")
             get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=inputs)
-            result = await asyncio.to_thread(self._remote_task_runner, agent, task)
+            if _agent_cb is not None:
+                result = await asyncio.to_thread(self._remote_task_runner, agent, task)
+            else:
+                from ..theme import set_active_status
+                _status = console.status(f"[muted]waiting for {agent}...[/]", spinner="dots")
+                _status.start()
+                set_active_status(_status)
+                try:
+                    result = await asyncio.to_thread(self._remote_task_runner, agent, task)
+                finally:
+                    _status.stop()
+                    set_active_status(None)
             if _agent_cb is None:
                 print_tool_result(result)
             get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
             return result
 
         if name in DANGEROUS_TOOLS:
+            question, detail = _confirm_prompt(name, inputs)
             if self._confirm_callback is not None:
-                confirmed = await asyncio.to_thread(self._confirm_callback, f"Allow {name}?")
+                confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
             else:
                 async with _get_async_confirm_lock():
+                    if detail:
+                        console.print(f"[muted]{detail}[/]")
                     confirmed = await asyncio.to_thread(
                         lambda: questionary.confirm(
-                            f"  Allow {name}?", default=False, style=MINION_STYLE
+                            f"  {question}", default=False, style=MINION_STYLE
                         ).ask()
                     )
             if not confirmed:

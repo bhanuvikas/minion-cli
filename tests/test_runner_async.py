@@ -165,7 +165,7 @@ class TestRunPromptAsync:
 
         with patch("minion.runner.ToolExecutor") as MockExecutor:
             inst = MockExecutor.return_value
-            inst.execute.return_value = "contents of x.py"
+            inst.execute_async = AsyncMock(return_value="contents of x.py")
             result = await run_prompt_async(
                 "read x.py", client, conv, "sys",
                 capture_output=True,
@@ -189,7 +189,7 @@ class TestRunPromptAsync:
 
         with patch("minion.runner.ToolExecutor") as MockExecutor:
             inst = MockExecutor.return_value
-            inst.execute.return_value = "result"
+            inst.execute_async = AsyncMock(return_value="result")
             result = await run_prompt_async(
                 "loop", client, conv, "sys",
                 max_iterations=3, capture_output=True,

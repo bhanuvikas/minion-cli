@@ -146,17 +146,17 @@ class TestMCPManagerConnect:
             manager2.shutdown()
 
     @pytest.mark.asyncio
-    async def test_connect_http_uses_sse_client(self, http_config):
+    async def test_connect_http_uses_streamable_http_client(self, http_config):
         session = _make_session()
         transport_cm, session_cm = _patch_transport(session)
 
-        with patch("minion.mcp.manager.sse_client", return_value=transport_cm) as mock_sse, \
+        with patch("minion.mcp.manager._http_transport", return_value=transport_cm) as mock_http, \
              patch("minion.mcp.manager.ClientSession", return_value=session_cm):
             manager = MCPManager()
             await manager.connect_all({"http_server": http_config})
             manager.shutdown()
 
-        mock_sse.assert_called_once_with(url="http://localhost:9999")
+        mock_http.assert_called_once_with("http://localhost:9999")
 
     @pytest.mark.asyncio
     async def test_connect_failure_removes_server(self, stdio_config):
@@ -181,7 +181,7 @@ class TestMCPManagerConnect:
         tcm_b, scm_b = _patch_transport(session_b)
 
         with patch("minion.mcp.manager.stdio_client", return_value=tcm_a), \
-             patch("minion.mcp.manager.sse_client", return_value=tcm_b), \
+             patch("minion.mcp.manager._http_transport", return_value=tcm_b), \
              patch("minion.mcp.manager.ClientSession", side_effect=[scm_a, scm_b]):
             manager = MCPManager()
             await manager.connect_all({

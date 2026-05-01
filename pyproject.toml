@@ -30,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-minion  = "minion.cli:app"
+minion  = "minion.cli:_entry"
 nefario = "minion.tracing.cli:app"
 
 [tool.hatch.build.targets.wheel]

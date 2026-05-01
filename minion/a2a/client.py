@@ -26,7 +26,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Optional
 
-from .models import AgentCard, Artifact, Task, TaskStatus
+from .models import AgentCard, Artifact, Task, TaskStatus, _make_message
 
 
 # ── Minimal inline SSE parser ─────────────────────────────────────────────────
@@ -64,20 +64,45 @@ class A2AError(Exception):
 
 # ── User approval UI ──────────────────────────────────────────────────────────
 
-def _prompt_user_approval(agent_name: str, prompt_text: str) -> bool:
-    """Interactively ask the user to approve/deny an input-required request."""
+def _prompt_user_approval(agent_name: str, question: str, detail: str = "") -> bool:
+    """Interactively ask the user to approve/deny an input-required request.
+
+    Pauses any active spinner (e.g. the "waiting for agent..." status) so the
+    questionary prompt renders cleanly, then resumes the spinner after the user
+    answers so they know polling has continued.
+    """
+    from ..theme import console, pause_spinner, resume_spinner
+    pause_spinner()
     try:
+        if detail:
+            console.print(f"\n[muted]{detail}[/]\n")
         import questionary
         from ..config import MINION_STYLE
         return bool(
             questionary.confirm(
-                f"  [remote: {agent_name}] {prompt_text}",
+                f"  [remote: {agent_name}] {question}",
                 default=False,
                 style=MINION_STYLE,
             ).ask()
         )
     except Exception:
         return False
+    finally:
+        resume_spinner()
+
+
+def _extract_approval_parts(status_obj: dict) -> tuple[str, str]:
+    """Extract (question, detail) from an A2A status.message for input-required tasks.
+
+    Handles both the multi-part format (parts[0] = question, parts[1:] = context)
+    and external A2A servers that may embed everything in a single text part.
+    """
+    agent_msg = status_obj.get("message", {}) if isinstance(status_obj, dict) else {}
+    parts = agent_msg.get("parts", []) if isinstance(agent_msg, dict) else []
+    text_parts = [p.get("text", "") for p in parts if p.get("type") == "text" and p.get("text")]
+    question = text_parts[0] if text_parts else "Allow action?"
+    detail = "\n".join(text_parts[1:]) if len(text_parts) > 1 else ""
+    return question, detail
 
 
 class A2AClient:
@@ -95,6 +120,10 @@ class A2AClient:
         self._netloc = parsed.netloc          # "host:port" or "host"
         self._base_path = parsed.path.rstrip("/")  # "" or "/prefix"
         self._base_url = url.rstrip("/")
+        # One contextId per client instance (i.e., per named remote agent per REPL session).
+        # All tasks sent to this agent share the context so the server can inject history.
+        import uuid as _uuid
+        self._context_id: str = str(_uuid.uuid4())
 
     # ─── Connection factory ────────────────────────────────────────────────────
 
@@ -125,12 +154,32 @@ class A2AClient:
         except Exception:
             return None
 
+    # ─── Task cancellation ────────────────────────────────────────────────────
+
+    def cancel_task(self, task_id: str) -> None:
+        """DELETE /tasks/{task_id} — request cancellation of a running task.
+
+        Best-effort: raises A2AError only on connection failure. A 404 (task not
+        found) or 409 (already in terminal state) is silently accepted.
+        """
+        try:
+            conn = self._make_connection()
+            conn.request(
+                "DELETE",
+                self._path(f"/tasks/{task_id}"),
+                headers={"Accept": "application/json"},
+            )
+            resp = conn.getresponse()
+            resp.read()  # consume body
+        except Exception as e:
+            raise A2AError(f"Failed to cancel task '{task_id}' on '{self.name}': {e}") from e
+
     # ─── Task submission (sync polling) ───────────────────────────────────────
 
     def send_task(self, task_text: str) -> str:
         """Submit a task and poll GET /tasks/{id} until completed or failed.
 
-        Returns the artifact text on success.
+        Returns artifact text (all artifacts joined with \\n\\n) on success.
         Raises A2AError on HTTP failure, task failure, or timeout.
         Handles input-required by prompting the user interactively.
         """
@@ -141,12 +190,12 @@ class A2AClient:
             raise A2AError(task.error or "Remote task failed with no error message.")
 
         if task.artifacts:
-            return task.artifacts[0].text
+            return "\n\n".join(a.text for a in task.artifacts if a.text)
         return ""
 
     def _submit_task(self, task_text: str) -> str:
         """POST /tasks/send → task_id."""
-        body = json.dumps({"message": task_text}).encode("utf-8")
+        body = json.dumps({"contextId": self._context_id, "message": _make_message(task_text)}).encode("utf-8")
         try:
             conn = self._make_connection()
             conn.request(
@@ -175,8 +224,8 @@ class A2AClient:
         return task_id
 
     def _send_continuation(self, task_id: str, answer: str) -> None:
-        """POST /tasks/send with task_id to continue an input-required task."""
-        body = json.dumps({"task_id": task_id, "message": answer}).encode("utf-8")
+        """POST /tasks/send with task id to continue an input-required task (spec: uses 'id' field)."""
+        body = json.dumps({"id": task_id, "message": _make_message(answer)}).encode("utf-8")
         try:
             conn = self._make_connection()
             conn.request(
@@ -221,14 +270,15 @@ class A2AClient:
             task = Task.from_dict(data)
 
             if task.status == TaskStatus.INPUT_REQUIRED:
-                input_info = data.get("input", {})
-                prompt_text = input_info.get("prompt", "Allow action?")
-                approved = _prompt_user_approval(self.name, prompt_text)
+                # Spec: prompt is in status.message (multi-part A2A Message)
+                status_obj = data.get("status", {})
+                question, detail = _extract_approval_parts(status_obj)
+                approved = _prompt_user_approval(self.name, question, detail)
                 self._send_continuation(task_id, "yes" if approved else "no")
                 time.sleep(0.5)
                 continue
 
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED):
                 return task
             time.sleep(0.5)
 
@@ -247,7 +297,7 @@ class A2AClient:
         Returns the artifact text on success.
         Raises A2AError on failure or timeout.
         """
-        body = json.dumps({"message": task_text}).encode("utf-8")
+        body = json.dumps({"contextId": self._context_id, "message": _make_message(task_text)}).encode("utf-8")
         try:
             conn = self._make_connection()
             conn.request(
@@ -270,39 +320,65 @@ class A2AClient:
             )
 
         task_id: Optional[str] = None
-        for event in _iter_sse_events(resp):
+        artifact_texts: list[str] = []
+
+        for sse_event in _iter_sse_events(resp):
             try:
-                data = json.loads(event.data)
+                data = json.loads(sse_event.data)
             except json.JSONDecodeError:
                 continue
 
-            status = data.get("status", "")
             task_id = data.get("id", task_id)
-            if on_status is not None:
-                on_status(status)
 
-            if status == TaskStatus.INPUT_REQUIRED.value and task_id:
-                input_info = data.get("input", {})
-                prompt_text = input_info.get("prompt", "Allow action?")
-                approved = _prompt_user_approval(self.name, prompt_text)
+            # Use SSE event type if present; fall back to payload key inspection.
+            # Spec event names: "task-artifact-update", "task-status-update"
+            event_type = sse_event.event  # "" if server doesn't emit event names
+
+            is_artifact = event_type == "task-artifact-update" or (
+                not event_type and "artifact" in data
+            )
+            is_status = event_type == "task-status-update" or (
+                not event_type and "status" in data and "artifact" not in data
+            )
+
+            # TaskArtifactUpdateEvent: {"id", "artifact": {parts}, "final"}
+            if is_artifact and "artifact" in data:
+                artifact = Artifact.from_dict(data["artifact"])
+                if artifact.text:
+                    artifact_texts.append(artifact.text)
+                if data.get("final"):
+                    continue  # wait for final status event
+
+            if not is_status:
+                continue
+
+            # TaskStatusUpdateEvent: {"id", "status": {state, timestamp}, "final"}
+            status_obj = data.get("status", {})
+            state = status_obj.get("state", "") if isinstance(status_obj, dict) else ""
+
+            if on_status is not None and state:
+                on_status(state)
+
+            if state == TaskStatus.INPUT_REQUIRED.value and task_id:
+                # Spec: prompt is in status.message (multi-part A2A Message)
+                question, detail = _extract_approval_parts(status_obj)
+                approved = _prompt_user_approval(self.name, question, detail)
                 self._send_continuation(task_id, "yes" if approved else "no")
-                # The SSE stream may not send more events — fall back to polling
-                if task_id:
-                    task = self._poll_until_done(task_id)
-                    if task.status == TaskStatus.FAILED:
-                        raise A2AError(task.error or "Remote task failed.")
-                    if task.artifacts:
-                        return task.artifacts[0].text
-                    return ""
-
-            if status == TaskStatus.COMPLETED.value:
-                artifacts = data.get("artifacts", [])
-                if artifacts:
-                    return artifacts[0].get("text", "")
+                task = self._poll_until_done(task_id)
+                if task.status == TaskStatus.FAILED:
+                    raise A2AError(task.error or "Remote task failed.")
+                if task.artifacts:
+                    return "\n\n".join(a.text for a in task.artifacts if a.text)
                 return ""
 
-            if status == TaskStatus.FAILED.value:
+            if state == TaskStatus.COMPLETED.value and data.get("final"):
+                return "\n\n".join(artifact_texts) if artifact_texts else ""
+
+            if state == TaskStatus.FAILED.value:
                 raise A2AError(data.get("error") or "Remote task failed.")
+
+            if state == TaskStatus.CANCELED.value:
+                raise A2AError(f"Task was canceled by '{self.name}'.")
 
         raise A2AError(f"SSE stream from '{self.name}' ended without a final status event.")
 
@@ -320,9 +396,9 @@ class A2AClient:
             raise A2AError("httpx is required for async A2A. Install it: pip install httpx") from None
 
         async with httpx.AsyncClient(timeout=self._timeout, base_url=self._base_url) as client:
-            # Submit task
+            # Submit task with spec Message format
             try:
-                resp = await client.post("/tasks/send", json={"message": task_text})
+                resp = await client.post("/tasks/send", json={"contextId": self._context_id, "message": _make_message(task_text)})
                 resp.raise_for_status()
                 data = resp.json()
             except httpx.HTTPError as e:
@@ -349,23 +425,26 @@ class A2AClient:
                 task = Task.from_dict(task_data)
 
                 if task.status == TaskStatus.INPUT_REQUIRED:
-                    input_info = task_data.get("input", {})
-                    prompt_text = input_info.get("prompt", "Allow action?")
-                    approved = await asyncio.to_thread(_prompt_user_approval, self.name, prompt_text)
+                    # Spec: prompt is in status.message (multi-part A2A Message)
+                    status_obj = task_data.get("status", {})
+                    question, detail = _extract_approval_parts(status_obj)
+                    approved = await asyncio.to_thread(_prompt_user_approval, self.name, question, detail)
                     answer = "yes" if approved else "no"
                     try:
-                        await client.post("/tasks/send", json={"task_id": task_id, "message": answer})
+                        await client.post("/tasks/send", json={"id": task_id, "message": _make_message(answer)})
                     except httpx.HTTPError:
                         pass  # best-effort
                     await asyncio.sleep(0.5)
                     continue
 
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED):
                     break
                 await asyncio.sleep(0.5)
 
         if task.status == TaskStatus.FAILED:
             raise A2AError(task.error or "Remote task failed.")
+        if task.status == TaskStatus.CANCELED:
+            raise A2AError(f"Task was canceled by '{self.name}'.")
         if task.artifacts:
-            return task.artifacts[0].text
+            return "\n\n".join(a.text for a in task.artifacts if a.text)
         return ""

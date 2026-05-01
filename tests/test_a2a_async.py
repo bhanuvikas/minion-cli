@@ -14,20 +14,36 @@ from minion.a2a.models import TaskStatus
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_task_dict(task_id: str, status: str, artifact: str = "", error: str = "") -> dict:
-    d: dict = {"id": task_id, "status": status}
-    if artifact:
-        d["artifacts"] = [{"text": artifact}]
+def _make_task_dict(task_id: str, status: str, artifact: str = "", error: str = "",
+                    artifacts: list[str] | None = None) -> dict:
+    """Build a spec-compliant task dict for use in mock HTTP responses."""
+    d: dict = {
+        "id": task_id,
+        "status": {"state": status, "timestamp": "2025-01-01T00:00:00Z"},
+    }
+    all_artifacts = artifacts if artifacts is not None else ([artifact] if artifact else [])
+    if all_artifacts:
+        d["artifacts"] = [
+            {"artifactId": f"a{i}", "parts": [{"type": "text", "text": t}]}
+            for i, t in enumerate(all_artifacts)
+        ]
     if error:
         d["error"] = error
     return d
 
 
 def _make_input_required_dict(task_id: str, prompt: str) -> dict:
+    # Spec: prompt lives in status.message (agent Message), not in a top-level input field
     return {
         "id": task_id,
-        "status": "input-required",
-        "input": {"prompt": prompt, "type": "confirm"},
+        "status": {
+            "state": "input-required",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "message": {
+                "role": "agent",
+                "parts": [{"type": "text", "text": prompt}],
+            },
+        },
     }
 
 
@@ -127,9 +143,39 @@ class TestA2AClientAsync:
             result = await client.send_task_async("do something")
 
         assert result == "approved!"
-        # Verify continuation was sent with "yes"
+        # Verify continuation was sent with spec format: id (not task_id), Message object
         cont_call = mock_httpx_client.post.call_args_list[1]
-        assert cont_call.kwargs.get("json") == {"task_id": "t3", "message": "yes"}
+        cont_json = cont_call.kwargs.get("json", {})
+        assert cont_json.get("id") == "t3"
+        assert cont_json.get("message", {}).get("parts", [{}])[0].get("text") == "yes"
+
+    @pytest.mark.asyncio
+    async def test_send_task_async_concatenates_multiple_artifacts(self):
+        from minion.a2a.client import A2AClient
+
+        client = A2AClient("test_agent", "http://localhost:9000", timeout_seconds=5)
+
+        submitted = {"id": "t4", "status": {"state": "submitted", "timestamp": "2025-01-01T00:00:00Z"}}
+        completed = _make_task_dict("t4", "completed", artifacts=["first result", "second result"])
+
+        mock_httpx_client = AsyncMock()
+        mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+        mock_httpx_client.__aexit__ = AsyncMock(return_value=False)
+
+        post_resp = MagicMock()
+        post_resp.json.return_value = submitted
+        post_resp.raise_for_status = MagicMock()
+        mock_httpx_client.post = AsyncMock(return_value=post_resp)
+
+        get_resp = MagicMock()
+        get_resp.raise_for_status = MagicMock()
+        get_resp.json = MagicMock(return_value=completed)
+        mock_httpx_client.get = AsyncMock(return_value=get_resp)
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            result = await client.send_task_async("do something")
+
+        assert result == "first result\n\nsecond result"
 
 
 # ── Tests for confirm_callback in ToolExecutor ────────────────────────────────
@@ -140,8 +186,8 @@ class TestToolExecutorConfirmCallback:
         from minion.llm.base import ToolUseBlock
 
         callback_calls = []
-        def my_callback(prompt: str) -> bool:
-            callback_calls.append(prompt)
+        def my_callback(question: str, detail: str = "") -> bool:
+            callback_calls.append((question, detail))
             return True  # always approve
 
         executor = ToolExecutor(confirm_callback=my_callback)
@@ -151,18 +197,42 @@ class TestToolExecutorConfirmCallback:
             result = executor.execute(tb)
 
         assert len(callback_calls) == 1
-        assert "run_shell" in callback_calls[0]
+        question, detail = callback_calls[0]
+        assert "run_shell" in question
+        assert "`ls`" in question  # command embedded in question
         assert result == "ok"
 
     def test_confirm_callback_decline_returns_user_declined(self):
         from minion.tools.executor import ToolExecutor
         from minion.llm.base import ToolUseBlock
 
-        executor = ToolExecutor(confirm_callback=lambda prompt: False)
+        executor = ToolExecutor(confirm_callback=lambda q, d="": False)
         tb = ToolUseBlock(id="t2", name="run_shell", input={"command": "rm -rf /"})
 
         result = executor.execute(tb)
         assert result == "User declined tool execution."
+
+    def test_confirm_callback_write_file_includes_path_and_content(self):
+        from minion.tools.executor import ToolExecutor
+        from minion.llm.base import ToolUseBlock
+
+        callback_calls = []
+        def my_callback(question: str, detail: str = "") -> bool:
+            callback_calls.append((question, detail))
+            return True
+
+        executor = ToolExecutor(confirm_callback=my_callback)
+        tb = ToolUseBlock(id="t_wf", name="write_file",
+                          input={"path": "foo.py", "content": "line1\nline2\nline3"})
+
+        with patch.dict("minion.tools.executor._DISPATCH", {"write_file": lambda **kw: "wrote"}):
+            result = executor.execute(tb)
+
+        assert result == "wrote"
+        question, detail = callback_calls[0]
+        assert "foo.py" in question     # path in question
+        assert "content" in detail      # content preview in detail
+        assert "line1" in detail
 
     @pytest.mark.asyncio
     async def test_confirm_callback_used_in_execute_async(self):
@@ -170,8 +240,8 @@ class TestToolExecutorConfirmCallback:
         from minion.llm.base import ToolUseBlock
 
         approved = []
-        def my_callback(prompt: str) -> bool:
-            approved.append(prompt)
+        def my_callback(question: str, detail: str = "") -> bool:
+            approved.append((question, detail))
             return True
 
         executor = ToolExecutor(confirm_callback=my_callback)
@@ -188,7 +258,7 @@ class TestToolExecutorConfirmCallback:
         from minion.tools.executor import ToolExecutor
         from minion.llm.base import ToolUseBlock
 
-        executor = ToolExecutor(confirm_callback=lambda p: False)
+        executor = ToolExecutor(confirm_callback=lambda q, d="": False)
         # run_shell is a dangerous tool — confirm_callback will deny it
         tb = ToolUseBlock(id="t4", name="run_shell", input={"command": "echo hi"})
 
@@ -228,18 +298,16 @@ class TestA2AServerInputRequired:
         import http.client as hc
         import json
 
-        # Agent runner that calls the confirm_callback and records the answer
         recorded_answer = []
 
         def runner(task: str, *, confirm_callback=None):
             if confirm_callback is not None:
-                result = confirm_callback("Allow dangerous_tool?")
+                result = confirm_callback("Allow dangerous_tool?", "  detail: 'extra context'")
                 recorded_answer.append(result)
             return "done"
 
         server, port = self._start_server_with_runner(runner)
 
-        # Submit task
         conn = hc.HTTPConnection("127.0.0.1", port, timeout=5)
         body = json.dumps({"message": "run dangerous task"}).encode()
         conn.request("POST", "/tasks/send", body=body,
@@ -248,41 +316,51 @@ class TestA2AServerInputRequired:
         data = json.loads(resp.read())
         task_id = data["id"]
 
-        # Wait for task to reach input-required
+        # Wait for task to reach input-required; status is now {state, timestamp} object
+        def _state(d):
+            s = d.get("status", "")
+            return s.get("state", "") if isinstance(s, dict) else s
+
         deadline = time.monotonic() + 3.0
-        task_status = "submitted"
-        while task_status != "input-required" and time.monotonic() < deadline:
+        task_data = {}
+        while time.monotonic() < deadline:
             time.sleep(0.1)
             conn2 = hc.HTTPConnection("127.0.0.1", port, timeout=2)
             conn2.request("GET", f"/tasks/{task_id}")
-            r = conn2.getresponse()
-            task_data = json.loads(r.read())
-            task_status = task_data.get("status")
+            task_data = json.loads(conn2.getresponse().read())
+            if _state(task_data) == "input-required":
+                break
 
-        assert task_status == "input-required", f"Got status: {task_status}"
-        task_input = task_data.get("input", {})
-        assert "Allow dangerous_tool?" in task_input.get("prompt", "")
+        assert _state(task_data) == "input-required", f"Got: {task_data.get('status')}"
+        # Spec: prompt is in status.message (agent Message object)
+        agent_msg = task_data.get("status", {}).get("message", {})
+        prompt_text = next(
+            (p.get("text", "") for p in agent_msg.get("parts", []) if p.get("type") == "text"),
+            "",
+        )
+        assert "Allow dangerous_tool?" in prompt_text
 
-        # Send continuation: approve
+        # Send continuation using spec format: "id" (not "task_id"), Message object
         conn3 = hc.HTTPConnection("127.0.0.1", port, timeout=5)
-        cont_body = json.dumps({"task_id": task_id, "message": "yes"}).encode()
+        cont_body = json.dumps({
+            "id": task_id,
+            "message": {"role": "user", "parts": [{"type": "text", "text": "yes"}]},
+        }).encode()
         conn3.request("POST", "/tasks/send", body=cont_body,
                       headers={"Content-Type": "application/json", "Content-Length": str(len(cont_body))})
-        cont_resp = conn3.getresponse()
-        cont_resp.read()
+        conn3.getresponse().read()
 
-        # Wait for task to complete
         deadline = time.monotonic() + 3.0
-        while task_status != "completed" and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
             time.sleep(0.1)
             conn4 = hc.HTTPConnection("127.0.0.1", port, timeout=2)
             conn4.request("GET", f"/tasks/{task_id}")
-            r = conn4.getresponse()
-            task_status = json.loads(r.read()).get("status")
+            task_data = json.loads(conn4.getresponse().read())
+            if _state(task_data) == "completed":
+                break
 
-        assert task_status == "completed"
-        assert recorded_answer == [True]  # callback returned True (approved)
-
+        assert _state(task_data) == "completed"
+        assert recorded_answer == [True]
         server.stop()
 
     def test_denial_sends_false_to_callback(self):
@@ -303,35 +381,44 @@ class TestA2AServerInputRequired:
         body = json.dumps({"message": "task"}).encode()
         conn.request("POST", "/tasks/send", body=body,
                      headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
-        resp = conn.getresponse()
-        task_id = json.loads(resp.read())["id"]
+        task_id = json.loads(conn.getresponse().read())["id"]
+
+        def _state(d):
+            s = d.get("status", "")
+            return s.get("state", "") if isinstance(s, dict) else s
 
         # Wait for input-required
         deadline = time.monotonic() + 3.0
-        status = "submitted"
-        while status != "input-required" and time.monotonic() < deadline:
+        task_data = {}
+        while time.monotonic() < deadline:
             time.sleep(0.1)
             c = hc.HTTPConnection("127.0.0.1", port, timeout=2)
             c.request("GET", f"/tasks/{task_id}")
-            status = json.loads(c.getresponse().read()).get("status")
+            task_data = json.loads(c.getresponse().read())
+            if _state(task_data) == "input-required":
+                break
 
-        # Send denial
-        cont_body = json.dumps({"task_id": task_id, "message": "no"}).encode()
+        # Send denial with spec format: "id" (not "task_id"), Message object
+        cont_body = json.dumps({
+            "id": task_id,
+            "message": {"role": "user", "parts": [{"type": "text", "text": "no"}]},
+        }).encode()
         c2 = hc.HTTPConnection("127.0.0.1", port, timeout=5)
         c2.request("POST", "/tasks/send", body=cont_body,
                    headers={"Content-Type": "application/json", "Content-Length": str(len(cont_body))})
         c2.getresponse().read()
 
-        # Wait for completion
         deadline = time.monotonic() + 3.0
-        while status != "completed" and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
             time.sleep(0.1)
             c3 = hc.HTTPConnection("127.0.0.1", port, timeout=2)
             c3.request("GET", f"/tasks/{task_id}")
-            status = json.loads(c3.getresponse().read()).get("status")
+            task_data = json.loads(c3.getresponse().read())
+            if _state(task_data) == "completed":
+                break
 
-        assert status == "completed"
-        assert recorded_answer == [False]  # callback returned False (denied)
+        assert _state(task_data) == "completed"
+        assert recorded_answer == [False]
         server.stop()
 
 

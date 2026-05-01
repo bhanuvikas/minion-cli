@@ -186,11 +186,11 @@ class TestAgentLoop:
              patch("minion.runner.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
             mock_exec = MockExecutor.return_value
-            mock_exec.execute.return_value = "file contents here"
+            mock_exec.execute_async = AsyncMock(return_value="file contents here")
             await run_prompt_async("read test.txt", client, Conversation(), _SYSTEM_PROMPT)
 
         assert client.async_stream.call_count == 2
-        mock_exec.execute.assert_called_once_with(tool_block)
+        mock_exec.execute_async.assert_called_once_with(tool_block)
 
     @pytest.mark.asyncio
     async def test_dry_run_passed_to_executor(self):
