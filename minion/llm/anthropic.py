@@ -21,10 +21,18 @@ _RETRY_WAIT_SECONDS = 60
 
 def _rate_limit_wait() -> None:
     from ..theme import console as _console
-    _console.print(
-        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
-    )
-    time.sleep(_RETRY_WAIT_SECONDS)
+    with _console.status("", spinner="dots") as status:
+        for remaining in range(_RETRY_WAIT_SECONDS, 0, -1):
+            status.update(f"[yellow]⚠ Rate limited — retrying in {remaining}s...[/]")
+            time.sleep(1)
+
+
+async def _rate_limit_wait_async() -> None:
+    from ..theme import console as _console
+    with _console.status("", spinner="dots") as status:
+        for remaining in range(_RETRY_WAIT_SECONDS, 0, -1):
+            status.update(f"[yellow]⚠ Rate limited — retrying in {remaining}s...[/]")
+            await asyncio.sleep(1)
 
 # Per-model output token ceilings (Anthropic API limits).
 # Models not listed fall back to 8192 (conservative safe default).
@@ -212,11 +220,7 @@ class AnthropicClient(LLMClient):
                 if "input tokens" in str(e).lower():
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
-                    from ..theme import console as _console
-                    _console.print(
-                        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
-                    )
-                    await asyncio.sleep(_RETRY_WAIT_SECONDS)
+                    await _rate_limit_wait_async()
                 else:
                     raise
 
@@ -284,10 +288,6 @@ class AnthropicClient(LLMClient):
                 if "input tokens" in str(e).lower():
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
-                    from ..theme import console as _console
-                    _console.print(
-                        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
-                    )
-                    await asyncio.sleep(_RETRY_WAIT_SECONDS)
+                    await _rate_limit_wait_async()
                 else:
                     raise
