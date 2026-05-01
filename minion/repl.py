@@ -80,6 +80,7 @@ REPL_COMMANDS = {
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
+    "/compact": "Compact conversation: /compact | /compact summary | /compact truncate [N]",
     "/clear":   "Clear conversation history and start fresh",
     "/save":    "Save session: /save <name>",
     "/load":    "Load session: /load <name>",
@@ -596,6 +597,45 @@ def _handle_slash_command(
 
     if cmd == "/context":
         print_context(conversation.context_display())
+        return True
+
+    if cmd == "/compact":
+        from .compact import DEFAULT_STRATEGY, STRATEGIES, get_strategy
+        if not conversation.messages:
+            console.print(f"[muted]Nothing to compact — conversation is empty.[/]")
+            return True
+
+        # Parse strategy name and optional keep_turns for truncate
+        strategy_name = DEFAULT_STRATEGY
+        kwargs: dict = {}
+        if arg:
+            parts = arg.split()
+            strategy_name = parts[0].lower()
+            if strategy_name not in STRATEGIES:
+                available = ", ".join(STRATEGIES)
+                console.print(f"[muted]Unknown strategy '{strategy_name}'. Available: {available}[/]")
+                return True
+            if strategy_name == "truncate" and len(parts) > 1:
+                try:
+                    kwargs["keep_turns"] = int(parts[1])
+                except ValueError:
+                    console.print(f"[muted]Usage: /compact truncate [N turns to keep][/]")
+                    return True
+
+        strategy = get_strategy(strategy_name, **kwargs)
+        msg_count = len(conversation.messages)
+        console.print(
+            f"[{YELLOW}]Compacting[/] [muted]({msg_count} messages · strategy: {strategy_name})[/]"
+        )
+        with console.status(f"[muted]compacting...[/]", spinner="dots"):
+            result = strategy.compact(conversation, client, base_system_prompt)
+        saved = result.tokens_estimate_before - result.tokens_estimate_after
+        console.print(
+            f"[{YELLOW}]Compacted.[/] [muted]"
+            f"{result.messages_before} → {result.messages_after} messages · "
+            f"~{result.tokens_estimate_before:,} → ~{result.tokens_estimate_after:,} tokens "
+            f"(saved ~{saved:,})[/]"
+        )
         return True
 
     if cmd == "/clear":

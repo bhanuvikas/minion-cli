@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import time
 from typing import AsyncIterator, Iterator, Optional
 
 import anthropic
@@ -11,6 +13,17 @@ from .base import (
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
+
+_MAX_RETRY = 3
+_RETRY_WAIT_SECONDS = 60
+
+
+def _rate_limit_wait() -> None:
+    from ..theme import console as _console
+    _console.print(
+        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
+    )
+    time.sleep(_RETRY_WAIT_SECONDS)
 
 # Per-model output token ceilings (Anthropic API limits).
 # Models not listed fall back to 8192 (conservative safe default).
@@ -85,13 +98,20 @@ class AnthropicClient(LLMClient):
         if system:
             kwargs["system"] = system
 
-        response = self._client.messages.create(**kwargs)
-        return LLMResponse(
-            content=response.content[0].text,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            model=response.model,
-        )
+        for attempt in range(_MAX_RETRY):
+            try:
+                response = self._client.messages.create(**kwargs)
+                return LLMResponse(
+                    content=response.content[0].text,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    model=response.model,
+                )
+            except anthropic.RateLimitError:
+                if attempt < _MAX_RETRY - 1:
+                    _rate_limit_wait()
+                else:
+                    raise
 
     def stream(
         self,
@@ -109,51 +129,57 @@ class AnthropicClient(LLMClient):
         if tools:
             kwargs["tools"] = tools
 
-        # current_tool accumulates state for the tool_use content block being
-        # streamed — id and name come from ContentBlockStart; input JSON arrives
-        # as incremental deltas and is assembled here before yielding.
-        current_tool: Optional[dict] = None
+        for attempt in range(_MAX_RETRY):
+            # current_tool accumulates state for the tool_use content block being
+            # streamed — reset on each attempt so partial state doesn't carry over.
+            current_tool: Optional[dict] = None
+            try:
+                with self._client.messages.stream(**kwargs) as stream_ctx:
+                    for event in stream_ctx:
+                        event_type = event.type
 
-        with self._client.messages.stream(**kwargs) as stream_ctx:
-            for event in stream_ctx:
-                event_type = event.type
+                        if event_type == "content_block_start":
+                            block = event.content_block
+                            if block.type == "tool_use":
+                                current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                                yield ToolAccumulationStart(name=block.name)
 
-                if event_type == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
-                        yield ToolAccumulationStart(name=block.name)
+                        elif event_type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                yield TextChunk(text=delta.text)
+                            elif delta.type == "input_json_delta" and current_tool is not None:
+                                current_tool["json_buf"] += delta.partial_json
 
-                elif event_type == "content_block_delta":
-                    delta = event.delta
-                    if delta.type == "text_delta":
-                        yield TextChunk(text=delta.text)
-                    elif delta.type == "input_json_delta" and current_tool is not None:
-                        current_tool["json_buf"] += delta.partial_json
+                        elif event_type == "content_block_stop":
+                            if current_tool is not None:
+                                tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
+                                yield ToolUseBlock(
+                                    id=current_tool["id"],
+                                    name=current_tool["name"],
+                                    input=tool_input,
+                                )
+                                current_tool = None
 
-                elif event_type == "content_block_stop":
-                    if current_tool is not None:
-                        tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
-                        yield ToolUseBlock(
-                            id=current_tool["id"],
-                            name=current_tool["name"],
-                            input=tool_input,
-                        )
-                        current_tool = None
-
-            final = stream_ctx.get_final_message()
-            self._last_usage = LLMResponse(
-                content="",
-                input_tokens=final.usage.input_tokens,
-                output_tokens=final.usage.output_tokens,
-                model=final.model,
-            )
-            yield StreamComplete(
-                stop_reason=final.stop_reason,
-                input_tokens=final.usage.input_tokens,
-                output_tokens=final.usage.output_tokens,
-                model=final.model,
-            )
+                    final = stream_ctx.get_final_message()
+                    self._last_usage = LLMResponse(
+                        content="",
+                        input_tokens=final.usage.input_tokens,
+                        output_tokens=final.usage.output_tokens,
+                        model=final.model,
+                    )
+                    yield StreamComplete(
+                        stop_reason=final.stop_reason,
+                        input_tokens=final.usage.input_tokens,
+                        output_tokens=final.usage.output_tokens,
+                        model=final.model,
+                    )
+                return  # success
+            except anthropic.RateLimitError:
+                if attempt < _MAX_RETRY - 1:
+                    _rate_limit_wait()
+                else:
+                    raise
 
     async def async_complete(
         self,
@@ -168,13 +194,24 @@ class AnthropicClient(LLMClient):
         if system:
             kwargs["system"] = system
 
-        response = await self._async_client.messages.create(**kwargs)
-        return LLMResponse(
-            content=response.content[0].text,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            model=response.model,
-        )
+        for attempt in range(_MAX_RETRY):
+            try:
+                response = await self._async_client.messages.create(**kwargs)
+                return LLMResponse(
+                    content=response.content[0].text,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    model=response.model,
+                )
+            except anthropic.RateLimitError:
+                if attempt < _MAX_RETRY - 1:
+                    from ..theme import console as _console
+                    _console.print(
+                        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
+                    )
+                    await asyncio.sleep(_RETRY_WAIT_SECONDS)
+                else:
+                    raise
 
     async def async_stream(
         self,
@@ -192,45 +229,56 @@ class AnthropicClient(LLMClient):
         if tools:
             kwargs["tools"] = tools
 
-        current_tool: Optional[dict] = None
+        for attempt in range(_MAX_RETRY):
+            current_tool: Optional[dict] = None
+            try:
+                async with self._async_client.messages.stream(**kwargs) as stream_ctx:
+                    async for event in stream_ctx:
+                        event_type = event.type
 
-        async with self._async_client.messages.stream(**kwargs) as stream_ctx:
-            async for event in stream_ctx:
-                event_type = event.type
+                        if event_type == "content_block_start":
+                            block = event.content_block
+                            if block.type == "tool_use":
+                                current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                                yield ToolAccumulationStart(name=block.name)
 
-                if event_type == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
-                        yield ToolAccumulationStart(name=block.name)
+                        elif event_type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                yield TextChunk(text=delta.text)
+                            elif delta.type == "input_json_delta" and current_tool is not None:
+                                current_tool["json_buf"] += delta.partial_json
 
-                elif event_type == "content_block_delta":
-                    delta = event.delta
-                    if delta.type == "text_delta":
-                        yield TextChunk(text=delta.text)
-                    elif delta.type == "input_json_delta" and current_tool is not None:
-                        current_tool["json_buf"] += delta.partial_json
+                        elif event_type == "content_block_stop":
+                            if current_tool is not None:
+                                tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
+                                yield ToolUseBlock(
+                                    id=current_tool["id"],
+                                    name=current_tool["name"],
+                                    input=tool_input,
+                                )
+                                current_tool = None
 
-                elif event_type == "content_block_stop":
-                    if current_tool is not None:
-                        tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
-                        yield ToolUseBlock(
-                            id=current_tool["id"],
-                            name=current_tool["name"],
-                            input=tool_input,
-                        )
-                        current_tool = None
-
-            final = await stream_ctx.get_final_message()
-            self._last_usage = LLMResponse(
-                content="",
-                input_tokens=final.usage.input_tokens,
-                output_tokens=final.usage.output_tokens,
-                model=final.model,
-            )
-            yield StreamComplete(
-                stop_reason=final.stop_reason,
-                input_tokens=final.usage.input_tokens,
-                output_tokens=final.usage.output_tokens,
-                model=final.model,
-            )
+                    final = await stream_ctx.get_final_message()
+                    self._last_usage = LLMResponse(
+                        content="",
+                        input_tokens=final.usage.input_tokens,
+                        output_tokens=final.usage.output_tokens,
+                        model=final.model,
+                    )
+                    yield StreamComplete(
+                        stop_reason=final.stop_reason,
+                        input_tokens=final.usage.input_tokens,
+                        output_tokens=final.usage.output_tokens,
+                        model=final.model,
+                    )
+                return  # success
+            except anthropic.RateLimitError:
+                if attempt < _MAX_RETRY - 1:
+                    from ..theme import console as _console
+                    _console.print(
+                        f"[yellow]⚠ Rate limited — waiting {_RETRY_WAIT_SECONDS}s before retry...[/]"
+                    )
+                    await asyncio.sleep(_RETRY_WAIT_SECONDS)
+                else:
+                    raise

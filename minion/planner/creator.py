@@ -83,8 +83,10 @@ Match the goal to one of two document types:
     (2–4 specific commands only — e.g. run tests, import the module, smoke-test
     the feature. Do not pad with exhaustive test matrices or repeat passing checks.)
     ## Summary Document
-    (path where the executor should write a brief post-execution summary, e.g.
-    `IMPLEMENTATION_NOTES.md`. One file, written once after verification passes.)
+    (ONE file only — skip this section entirely if the implementation already
+    produces documentation files as deliverables, e.g. README.md, ARCHITECTURE.md,
+    DEVELOPMENT.md. Those files ARE the summary. Only add a separate summary file
+    if the task produces no user-facing documentation at all.)
 
 QUALITY RULES (apply to all documents):
 - Be self-contained. A reader should understand completely without additional context.
@@ -109,10 +111,16 @@ Execution discipline — follow these strictly:
 - Work through each section in order. Do not skip or reorder steps.
 - Run each verification command from the plan's Verification section ONCE.
   If a test passes, move on. Do not re-run tests that have already passed.
-- Once verification passes, write ONE brief execution summary (what was built,
-  how to run it, any known caveats) at the path the plan specifies — or at
-  IMPLEMENTATION_NOTES.md if the plan does not name one. Write it once, then stop.
-- Never write to /tmp/ or create duplicate summary files.
+- Once verification passes: if the implementation already produced documentation
+  files (README.md, ARCHITECTURE.md, DEVELOPMENT.md, etc.) as part of the work,
+  stop there — those ARE the summary. Do not create any additional completion,
+  mission, or report file on top of them.
+- If no documentation was produced as a deliverable, write exactly one summary at
+  the path the plan's ## Summary Document section names (or IMPLEMENTATION_NOTES.md).
+  Write it once, then stop.
+- Never create files like MISSION_COMPLETE.md, COMPLETION_REPORT.md, DELIVERABLES.txt,
+  PROJECT_METRICS.txt, or INDEX.md just to announce the task is done. Working code
+  and passing tests already say that.
 - Do not loop back for "one final check" after already confirming success.
 - If the user asks you to commit: run git add + git commit, show the commit
   hash and the list of changed files, then stop. The summary doc and the plan
