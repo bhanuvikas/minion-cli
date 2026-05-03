@@ -21,6 +21,7 @@ tools:
   - write_file
   - edit_file
   - search_file
+  - glob
   - get_file_outline
   - run_shell
 args:

@@ -13,6 +13,7 @@ tools:
   - run_shell
   - read_file
   - search_file
+  - glob
   - list_directory
 args:
   - name: target
