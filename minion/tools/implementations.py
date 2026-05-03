@@ -76,6 +76,86 @@ def read_file(
         return f"Error reading '{path}': {e}"
 
 
+# ─── edit_file helpers ────────────────────────────────────────────────────────
+
+def _whitespace_flexible_replace(content: str, old_string: str, new_string: str) -> Optional[str]:
+    """Fallback replace with flexible leading-whitespace matching.
+
+    Strips leading whitespace from each line during comparison. When a unique
+    match is found, computes the indentation delta from the first non-empty line
+    and applies it uniformly to all lines of new_string.
+    Returns None if no match or if the match is ambiguous (multiple locations).
+    """
+    old_lines = old_string.splitlines()
+    if not old_lines:
+        return None
+
+    content_lines = content.splitlines()
+    has_trailing_newline = content.endswith("\n")
+    old_stripped = [line.lstrip() for line in old_lines]
+    n = len(old_lines)
+
+    matches: list[int] = []
+    for i in range(len(content_lines) - n + 1):
+        if all(content_lines[i + j].lstrip() == old_stripped[j] for j in range(n)):
+            matches.append(i)
+
+    if len(matches) != 1:
+        return None
+
+    start = matches[0]
+
+    # Compute indentation delta from the first non-empty paired line
+    indent_delta = 0
+    for j in range(n):
+        if content_lines[start + j].strip() and old_lines[j].strip():
+            file_indent = len(content_lines[start + j]) - len(content_lines[start + j].lstrip())
+            orig_indent = len(old_lines[j]) - len(old_lines[j].lstrip())
+            indent_delta = file_indent - orig_indent
+            break
+
+    new_lines = new_string.splitlines()
+    adjusted: list[str] = []
+    for line in new_lines:
+        if line.strip() and indent_delta != 0:
+            current_indent = len(line) - len(line.lstrip())
+            new_indent = max(0, current_indent + indent_delta)
+            adjusted.append(" " * new_indent + line.lstrip())
+        else:
+            adjusted.append(line)
+
+    result_lines = content_lines[:start] + adjusted + content_lines[start + n:]
+    result = "\n".join(result_lines)
+    if has_trailing_newline:
+        result += "\n"
+    return result
+
+
+def _apply_edit(content: str, old_string: str, new_string: str) -> str:
+    """Return the new file content after replacing old_string with new_string.
+
+    Returns a string starting with 'Error:' if the replacement cannot be applied.
+    Used by both edit_file (to write) and executor.py (to preview the diff).
+    """
+    count = content.count(old_string)
+    if count == 1:
+        return content.replace(old_string, new_string, 1)
+    if count > 1:
+        return (
+            f"Error: old_string appears {count} times — "
+            f"add more surrounding context lines to make it unique."
+        )
+    # Whitespace-flexible fallback
+    result = _whitespace_flexible_replace(content, old_string, new_string)
+    if result is not None:
+        return result
+    return (
+        "Error: old_string not found in file. "
+        "Make sure it matches exactly (including whitespace and indentation). "
+        "Use read_file to verify the current content."
+    )
+
+
 # ─── write_file ───────────────────────────────────────────────────────────────
 
 def _check_python_syntax(path: str, content: str) -> Optional[str]:
@@ -134,6 +214,41 @@ def write_file(
         return f"Error: permission denied writing '{path}'."
     except Exception as e:
         return f"Error writing '{path}': {e}"
+
+
+# ─── edit_file ────────────────────────────────────────────────────────────────
+
+def edit_file(path: str, old_string: str, new_string: str) -> str:
+    """Replace old_string with new_string in an existing file.
+
+    Exact match is tried first. Falls back to whitespace-normalized matching
+    when leading indentation differs but content is otherwise identical.
+    Returns an error if old_string is not found or appears more than once.
+    """
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"Error: '{path}' does not exist. Use write_file to create a new file."
+        if not p.is_file():
+            return f"Error: '{path}' is not a file."
+
+        content = p.read_text(encoding="utf-8", errors="replace")
+        result = _apply_edit(content, old_string, new_string)
+        if result.startswith("Error:"):
+            return f"{result} (in '{path}')"
+
+        syntax_err = _check_python_syntax(path, result)
+        if syntax_err:
+            return f"Error: edit rejected — {syntax_err}. Fix the syntax and retry."
+
+        p.write_text(result, encoding="utf-8")
+        old_lines = old_string.count("\n") + 1
+        new_lines = new_string.count("\n") + 1
+        return f"Edited '{path}': replaced {old_lines}-line block with {new_lines} lines."
+    except PermissionError:
+        return f"Error: permission denied editing '{path}'."
+    except Exception as e:
+        return f"Error editing '{path}': {e}"
 
 
 # ─── list_directory ───────────────────────────────────────────────────────────

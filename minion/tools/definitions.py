@@ -93,15 +93,11 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "write_file",
         "description": (
-            "Write content to a file. "
-            "Two modes — choose based on whether the file already exists:\n"
-            "• NEW file or intentional full rewrite: omit start_line/end_line.\n"
-            "• Existing file (bug fix, adding a function, editing a section): ALWAYS supply "
-            "start_line and end_line to replace only the affected lines. Do NOT rewrite the "
-            "whole file — full rewrites waste tokens, risk regressing untouched code, and are "
-            "hard to review. Workflow: get_file_outline → read_file(start_line, end_line) to "
-            "see exact indentation → write_file with matching whitespace. Skipping the read "
-            "step causes indentation errors in Python files.\n"
+            "Write content to a file. Use ONLY for:\n"
+            "• Creating a new file (file does not exist yet).\n"
+            "• Intentional full rewrites (e.g. generated boilerplate, config files).\n"
+            "For editing an existing file, use edit_file instead — it is safer, "
+            "cheaper, and cannot corrupt untouched parts of the file.\n"
             "Requires user confirmation before executing."
         ),
         "input_schema": {
@@ -113,18 +109,46 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write. Full file when start_line/end_line are omitted; replacement lines when they are set.",
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "First line to replace (1-indexed, inclusive). Omit to overwrite the whole file.",
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": "Last line to replace (1-indexed, inclusive). Required when start_line is given.",
+                    "description": "Full file content to write.",
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": (
+            "Edit an existing file by replacing a specific block of text.\n"
+            "Provide old_string (the exact text to find) and new_string (the replacement).\n"
+            "Rules for old_string:\n"
+            "• Must match the file content exactly — same whitespace, indentation, line endings.\n"
+            "• Include 2–3 lines of surrounding context (before and after the change) so the "
+            "match is unique within the file.\n"
+            "• If old_string appears more than once, add more context until it is unique.\n"
+            "Do NOT use this tool to create new files — use write_file for that.\n"
+            "Requires user confirmation before executing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": (
+                        "The exact text to find and replace. Must match the file content "
+                        "exactly including whitespace. Include surrounding context lines "
+                        "to ensure uniqueness."
+                    ),
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The replacement text. Use an empty string to delete the matched block.",
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     },
     {
@@ -236,12 +260,12 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 # Tools that modify state or execute arbitrary code — require user confirmation.
-DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})
+DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "run_shell"})
 
 # Tools that produce side effects that cannot be undone (writes, shell execution).
 # Reflection is skipped when any of these ran — the refiner cannot re-run tools,
 # and the side effects have already occurred.
-SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({"write_file", "run_shell"})
+SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "run_shell"})
 
 # Delegation tools — both local subagents and remote A2A tasks are treated identically
 # by the parallel execution path in runner.py.

@@ -238,9 +238,11 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label:
     block_args = []  # (key, value) pairs that need a separate block
 
     for k, v in inputs.items():
-        # write_file: suppress 'content' from the inline/block display entirely —
+        # write_file/edit_file: suppress content fields from inline display —
         # the confirmation prompt already shows a diff, so this would be redundant.
         if name == "write_file" and k == "content":
+            continue
+        if name == "edit_file" and k in ("old_string", "new_string"):
             continue
         if isinstance(v, str) and "\n" in v:
             block_args.append((k, v))  # shown below, not inline

@@ -8,7 +8,7 @@ system_prompt: |
     package.json, Makefile, or similar config files.
   - Run the test suite with the appropriate command.
   - If tests fail, read the relevant source and test files to diagnose root causes.
-  - Fix failures via write_file when the fix is clear and scoped.
+  - Fix failures via edit_file when the fix is clear and scoped (use write_file only for new files).
   - Re-run tests to confirm the fix. Repeat until tests pass or you've exhausted
     reasonable attempts (at most 2-3 fix cycles).
 
@@ -27,5 +27,6 @@ tools:
   - search_code
   - get_file_outline
   - write_file
+  - edit_file
   - run_shell
 max_iterations: 25

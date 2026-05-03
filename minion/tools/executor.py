@@ -50,6 +50,8 @@ from ..theme import console, print_tool_call, print_tool_error, print_tool_resul
 from ..tracing import get_tracer
 from .definitions import DANGEROUS_TOOLS
 from .implementations import (
+    _apply_edit,
+    edit_file,
     get_file_outline,
     list_directory,
     read_file,
@@ -60,6 +62,7 @@ from .implementations import (
 
 TOOL_SPINNER_LABELS: dict[str, str] = {
     "write_file":       "[muted]writing...[/]",
+    "edit_file":        "[muted]editing...[/]",
     "run_shell":        "[muted]running...[/]",
     "read_file":        "[muted]reading...[/]",
     "list_directory":   "[muted]listing...[/]",
@@ -69,19 +72,9 @@ TOOL_SPINNER_LABELS: dict[str, str] = {
     "send_remote_task": "[muted]planning task...[/]",
 }
 
-def _diff_detail(
-    path: str,
-    new_content: str,
-    start_line: int | None = None,
-    end_line: int | None = None,
-) -> str:
+def _diff_detail(path: str, new_content: str) -> str:
     """Return a rich-markup diff string for the write_file confirmation.
 
-    Delegates to minion.diff.format_diff_rich for consistent styling (line numbers,
-    inline character-level highlights, background colors matching the reflection diff).
-
-    When start_line/end_line are given (partial write), the full resulting file is
-    reconstructed first so the diff accurately reflects what will change in context.
     New file: treated as diffing empty string → all lines shown as additions.
     """
     from pathlib import Path as _Path
@@ -92,20 +85,29 @@ def _diff_detail(
     except Exception:
         existing = ""
 
-    # For a partial write, reconstruct the full resulting file before diffing.
-    if existing and (start_line is not None or end_line is not None):
-        old_lines = existing.splitlines(keepends=True)
-        total = len(old_lines)
-        start = max(1, start_line or 1) - 1
-        end = min(total, end_line or total)
-        rep_lines = new_content.splitlines(keepends=True)
-        if rep_lines and not rep_lines[-1].endswith("\n"):
-            rep_lines[-1] += "\n"
-        resulting_content = "".join(old_lines[:start] + rep_lines + old_lines[end:])
-    else:
-        resulting_content = new_content
+    markup = format_diff_rich(existing, new_content)
+    return markup if markup else "[muted](no changes)[/]"
 
-    markup = format_diff_rich(existing, resulting_content)
+
+def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
+    """Return a rich-markup diff string for the edit_file confirmation.
+
+    Applies the edit in memory to produce the resulting file, then diffs
+    original vs resulting so the user sees the full change in context.
+    """
+    from pathlib import Path as _Path
+    from ..diff import format_diff_rich
+
+    try:
+        existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
+    except Exception:
+        existing = ""
+
+    result = _apply_edit(existing, old_string, new_string)
+    if result.startswith("Error:"):
+        return f"[muted]{result}[/]"
+
+    markup = format_diff_rich(existing, result)
     return markup if markup else "[muted](no changes)[/]"
 
 
@@ -146,10 +148,15 @@ def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
         path = inputs.get("path") or ""
         content = inputs.get("content") or ""
         question = f"Allow write_file?  {path}" if path else "Allow write_file?"
-        detail = _diff_detail(
-            path, content,
-            start_line=inputs.get("start_line"),
-            end_line=inputs.get("end_line"),
+        return question, _diff_detail(path, content)
+
+    if name == "edit_file":
+        path = inputs.get("path") or ""
+        question = f"Allow edit_file?  {path}" if path else "Allow edit_file?"
+        detail = _diff_detail_edit(
+            path,
+            inputs.get("old_string") or "",
+            inputs.get("new_string") or "",
         )
         return question, detail
 
@@ -159,6 +166,7 @@ def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
 _DISPATCH: dict = {
     "read_file":        read_file,
     "write_file":       write_file,
+    "edit_file":        edit_file,
     "list_directory":   list_directory,
     "run_shell":        run_shell,
     "get_file_outline": get_file_outline,
@@ -255,7 +263,7 @@ class ToolExecutor:
                 with _CONFIRM_LOCK:
                     if detail:
                         # write_file detail is a rich-formatted diff; others are plain muted text.
-                        if name == "write_file":
+                        if name in ("write_file", "edit_file"):
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")
@@ -387,7 +395,7 @@ class ToolExecutor:
             else:
                 async with _get_async_confirm_lock():
                     if detail:
-                        if name == "write_file":
+                        if name in ("write_file", "edit_file"):
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")

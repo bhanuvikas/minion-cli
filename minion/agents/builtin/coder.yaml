@@ -13,11 +13,11 @@ system_prompt: |
 
   When you receive a coding task:
   1. Read the relevant files to understand the current state.
-  2. Make the required changes via write_file.
-     - For changes to existing files: use start_line/end_line to replace only the
-       affected lines. Use get_file_outline first to find exact line numbers.
-       Never rewrite a whole file to change a few lines.
-     - For new files only: omit start_line/end_line.
+  2. Make the required changes:
+     - Existing file edits: use edit_file(old_string, new_string). Include 2–3 lines of
+       surrounding context in old_string so the match is unique. Never rewrite a whole
+       file to change a few lines.
+     - New files only: use write_file.
   3. Report the files changed and a brief explanation of each change.
 
   Do not ask clarifying questions — work with the task as given. If context
@@ -28,4 +28,5 @@ tools:
   - search_code
   - get_file_outline
   - write_file
+  - edit_file
 max_iterations: 20

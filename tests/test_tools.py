@@ -5,7 +5,7 @@ so the model can reason about failures and recover.
 """
 
 import pytest
-from minion.tools.implementations import list_directory, read_file, run_shell, write_file
+from minion.tools.implementations import edit_file, list_directory, read_file, run_shell, write_file
 
 
 # ─── read_file ────────────────────────────────────────────────────────────────
@@ -98,6 +98,67 @@ class TestWriteFile:
         result = write_file(path, "hello world")
         assert "f.txt" in result
         assert "11" in result  # 11 chars
+
+
+# ─── edit_file ────────────────────────────────────────────────────────────────
+
+class TestEditFile:
+    def test_exact_match_replaces_block(self, tmp_path):
+        f = tmp_path / "hello.py"
+        f.write_text('x = 1\nprint("hello")\ny = 2\n')
+        result = edit_file(str(f), 'print("hello")', 'print("world")')
+        assert f.read_text() == 'x = 1\nprint("world")\ny = 2\n'
+        assert "Edited" in result
+
+    def test_multiline_replacement(self, tmp_path):
+        f = tmp_path / "f.py"
+        f.write_text("a = 1\nb = 2\nc = 3\n")
+        result = edit_file(str(f), "a = 1\nb = 2", "a = 10\nb = 20")
+        assert "a = 10" in f.read_text()
+        assert "b = 20" in f.read_text()
+        assert "c = 3" in f.read_text()
+
+    def test_error_on_missing_file(self, tmp_path):
+        result = edit_file(str(tmp_path / "nope.py"), "x", "y")
+        assert result.startswith("Error:")
+        assert "does not exist" in result
+
+    def test_error_when_old_string_not_found(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("hello world\n")
+        result = edit_file(str(f), "not present", "replacement")
+        assert result.startswith("Error:")
+        assert "not found" in result
+
+    def test_error_when_old_string_ambiguous(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("foo\nfoo\n")
+        result = edit_file(str(f), "foo", "bar")
+        assert result.startswith("Error:")
+        assert "2 times" in result
+
+    def test_whitespace_flexible_fallback(self, tmp_path):
+        f = tmp_path / "f.py"
+        f.write_text("class Foo:\n    def method(self):\n        pass\n")
+        # old_string written without indentation — flexible match should handle it
+        result = edit_file(str(f), "def method(self):\n    pass", "def method(self):\n    return 42")
+        assert "return 42" in f.read_text()
+        assert "Edited" in result
+
+    def test_python_syntax_error_rejected(self, tmp_path):
+        f = tmp_path / "f.py"
+        f.write_text("x = 1\ny = 2\n")
+        result = edit_file(str(f), "y = 2", "y = (")
+        assert result.startswith("Error:")
+        assert "syntax" in result.lower()
+        # original file unchanged
+        assert f.read_text() == "x = 1\ny = 2\n"
+
+    def test_delete_block_with_empty_new_string(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("keep\ndelete me\nkeep\n")
+        edit_file(str(f), "\ndelete me", "")
+        assert "delete me" not in f.read_text()
 
 
 # ─── list_directory ───────────────────────────────────────────────────────────
