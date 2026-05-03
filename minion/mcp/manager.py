@@ -276,6 +276,7 @@ async def _elicitation_callback(
 ) -> mcp_types.ElicitResult | mcp_types.ErrorData:
     """Handle elicitation/create — surface interactive form or URL prompt to user."""
     import questionary
+    from ..config import MINION_STYLE
 
     message = getattr(params, "message", "Input required")
     console.print(f"\n[bold yellow][{state.name}] Input required:[/] {message}")
@@ -287,7 +288,7 @@ async def _elicitation_callback(
         console.print(f"[muted]Opening: {url}[/]")
         webbrowser.open(url)
         confirmed = await asyncio.to_thread(
-            lambda: questionary.confirm("Press Enter when done (n to cancel)").ask()
+            lambda: questionary.confirm(" Press Enter when done (n to cancel)", style=MINION_STYLE).ask()
         )
         if not confirmed:
             return mcp_types.ElicitResult(action="cancel", content=None)
@@ -310,19 +311,19 @@ async def _elicitation_callback(
             field_type = field_schema.get("type", "string")
             description = field_schema.get("description", field_name)
             is_required = field_name in required
-            label = f"  {description}{' *' if is_required else ''}"
+            label = f" {description}{' *' if is_required else ''}"
 
             if field_type == "boolean":
                 answer = await asyncio.to_thread(
-                    lambda lb=label: questionary.confirm(lb).ask()
+                    lambda lb=label: questionary.confirm(lb, style=MINION_STYLE).ask()
                 )
             elif "enum" in field_schema:
                 answer = await asyncio.to_thread(
-                    lambda lb=label, ch=field_schema["enum"]: questionary.select(lb, choices=ch).ask()
+                    lambda lb=label, ch=field_schema["enum"]: questionary.select(lb, choices=ch, pointer="  ❯ ", style=MINION_STYLE).ask()
                 )
             elif field_type in ("number", "integer"):
                 raw_answer = await asyncio.to_thread(
-                    lambda lb=label: questionary.text(lb).ask()
+                    lambda lb=label: questionary.text(lb, style=MINION_STYLE).ask()
                 )
                 if raw_answer is None:
                     return mcp_types.ElicitResult(action="cancel", content=None)
@@ -332,7 +333,7 @@ async def _elicitation_callback(
                     answer = raw_answer
             else:
                 answer = await asyncio.to_thread(
-                    lambda lb=label: questionary.text(lb).ask()
+                    lambda lb=label: questionary.text(lb, style=MINION_STYLE).ask()
                 )
 
             if answer is None:  # user hit Ctrl+C

@@ -335,7 +335,7 @@ def print_trust_saved(tool: str, patterns: list[str], scope: str) -> None:
     scope_label = scope_labels.get(scope, scope)
     for p in patterns:
         console.print(
-            f"  [green]~[/] [muted]saved:[/] [{YELLOW}]{tool}[/]"
+            f"   [green]~[/] [muted]saved:[/] [{YELLOW}]{tool}[/]"
             f" [muted]{p!r} ({scope_label})[/]"
         )
 

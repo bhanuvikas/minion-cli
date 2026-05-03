@@ -702,7 +702,7 @@ def _handle_slash_command(
             console.print(f"[muted]No saved sessions found.[/]")
             return True
         import questionary
-        name = questionary.select("Select a session:", choices=sessions, style=MINION_STYLE).ask()
+        name = questionary.select(" Select a session:", choices=sessions, pointer="  ❯ ", style=MINION_STYLE).ask()
         if name:
             _load_session(name, conversation)
         return True
@@ -785,8 +785,10 @@ def _handle_slash_command(
         while True:
             try:
                 choice = questionary.select(
-                    "What would you like to do?",
+                    " What would you like to do?",
                     choices=_PLAN_CHOICES,
+                    pointer="  ❯ ",
+                    style=MINION_STYLE,
                 ).ask()
             except (KeyboardInterrupt, EOFError):
                 choice = None

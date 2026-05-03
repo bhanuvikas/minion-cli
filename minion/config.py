@@ -107,9 +107,10 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
     try:
         # ── Provider selection ────────────────────────────────────────────────
         provider = questionary.select(
-            "Provider:",
+            " Provider:",
             choices=PROVIDERS,
             default=client.provider_name,
+            pointer="  ❯ ",
             style=MINION_STYLE,
         ).ask()
 
@@ -126,7 +127,7 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
             masked = f"...{current_key[-6:]}" if len(current_key) > 6 else "(not set)"
 
             update_key = questionary.confirm(
-                f"Update {key_var}? (current: {masked})",
+                f" Update {key_var}? (current: {masked})",
                 default=not bool(current_key),
                 style=MINION_STYLE,
             ).ask()
@@ -137,7 +138,7 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
 
             if update_key:
                 api_key = questionary.password(
-                    f"{key_var}:",
+                    f" {key_var}:",
                     style=MINION_STYLE,
                 ).ask()
                 if api_key is None:
@@ -150,7 +151,7 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
 
         # ── Model ID ─────────────────────────────────────────────────────────
         model = questionary.text(
-            "Model ID:",
+            " Model ID:",
             default=client.model_id,
             style=MINION_STYLE,
         ).ask()
@@ -175,7 +176,7 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
         console.print()
 
         confirmed = questionary.confirm(
-            "Save these changes to .env?",
+            " Save these changes to .env?",
             default=True,
             style=MINION_STYLE,
         ).ask()

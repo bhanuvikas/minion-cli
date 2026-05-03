@@ -80,7 +80,7 @@ def _prompt_user_approval(agent_name: str, question: str, detail: str = "") -> b
         from ..config import MINION_STYLE
         return bool(
             questionary.confirm(
-                f"  [remote: {agent_name}] {question}",
+                f" [remote: {agent_name}] {question}",
                 default=False,
                 style=MINION_STYLE,
             ).ask()

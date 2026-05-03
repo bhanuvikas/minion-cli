@@ -237,10 +237,10 @@ def _inline_edit_select(label: str, choices: list[str]) -> Optional[str]:
 
     def _render() -> FormattedText:
         rows: list[tuple[str, str]] = []
-        rows.append(("bold", f"  {label}\n"))
+        rows.append(("bold", f"   {label}\n"))
         for i, ch in enumerate(choices):
             sel = i == st["idx"]
-            pointer = ("fg:" + YELLOW + " bold", "❯ ") if sel else ("", "  ")
+            pointer = ("fg:" + YELLOW + " bold", "   ❯  ") if sel else ("", "      ")
             if i == edit_idx and sel:
                 text = f"{ch}: {st['buf']}▋"
             else:
@@ -381,21 +381,22 @@ def _interactive_confirm(
         _global_toml = str(_Path.home() / ".minion" / "permissions.toml")
 
         choices = [
-            "Yes, once",
-            "Yes — always (session)",
-            f"Yes — always (project  →  {_project_toml})",
-            f"Yes — always (global   →  {_global_toml})",
-            "No",
+            " Yes, once",
+            " Yes — always (session)",
+            f" Yes — always (project  →  {_project_toml})",
+            f" Yes — always (global   →  {_global_toml})",
+            " No",
         ]
         choice = questionary.select(
-            f"  {question}",
+            f" {question}",
             choices=choices,
+            pointer="  ❯ ",
             style=MINION_STYLE,
         ).ask()
 
-        if choice is None or choice == "No":
+        if choice is None or choice.strip() == "No":
             return False
-        if choice == "Yes, once":
+        if choice.strip() == "Yes, once":
             return True
 
         if "session" in choice:

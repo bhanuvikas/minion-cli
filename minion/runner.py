@@ -372,7 +372,7 @@ def _execute_parallel_agents(
                     if detail:
                         _console.print(f"[muted]{detail}[/]")
                     return bool(questionary.confirm(
-                        f"  [{role}] {question}", default=False, style=MINION_STYLE
+                        f" [{role}] {question}", default=False, style=MINION_STYLE
                     ).ask())
                 finally:
                     display.resume()
@@ -836,7 +836,7 @@ async def _execute_parallel_agents_async(
                     if detail:
                         _console.print(f"[muted]{detail}[/]")
                     return bool(questionary.confirm(
-                        f"  [{role}] {question}", default=False, style=MINION_STYLE
+                        f" [{role}] {question}", default=False, style=MINION_STYLE
                     ).ask())
                 finally:
                     display.resume()
