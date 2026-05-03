@@ -307,6 +307,41 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["task"],
         },
     },
+    {
+        "name": "todo_write",
+        "description": (
+            "Set or update the todo list for the current task. Replaces the entire list.\n"
+            "Use at the start of any multi-step task (3+ steps) to set your plan, then call "
+            "again to update statuses as you complete each step.\n"
+            "Call todo_write(items=[]) to clear the list when the task is fully complete.\n"
+            "statuses: 'pending' | 'in_progress' | 'done'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text":   {"type": "string", "description": "Task description"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+                        },
+                        "required": ["text", "status"],
+                    },
+                    "description": "Full list of tasks. Replaces any previous list.",
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "todo_read",
+        "description": (
+            "Return the current todo list. Use to check your plan before starting a new step."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 # Tools that modify state or execute arbitrary code — require user confirmation.

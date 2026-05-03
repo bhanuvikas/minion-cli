@@ -28,4 +28,6 @@ tools:
   - search_file
   - glob
   - get_file_outline
+  - todo_write
+  - todo_read
 max_iterations: 15

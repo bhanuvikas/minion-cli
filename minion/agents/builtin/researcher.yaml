@@ -29,4 +29,6 @@ tools:
   - glob
   - web_fetch
   - get_file_outline
+  - todo_write
+  - todo_read
 max_iterations: 15

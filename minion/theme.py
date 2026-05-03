@@ -125,6 +125,27 @@ def print_model_info(provider: str, model: str) -> None:
     console.print(f"[secondary]provider[/] {provider}  [secondary]model[/] {model}")
 
 
+def print_todo_list() -> None:
+    """Print compact task checklist before the token footer, when tasks are active."""
+    from .tools.implementations import get_todo_list
+    items = get_todo_list()
+    if not items:
+        return
+    if all(i["status"] == "done" for i in items):
+        return
+    console.print()
+    console.print(" [bold dim]Tasks[/]")
+    for item in items:
+        status = item["status"]
+        text   = item["text"]
+        if status == "done":
+            console.print(f"  [green]✓[/]  [dim]{text}[/]")
+        elif status == "in_progress":
+            console.print(f"  [yellow]→[/]  {text}")
+        else:
+            console.print(f"  [dim]○  {text}[/]")
+
+
 def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[name-defined]
     """Footer line shown after every response.
 

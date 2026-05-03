@@ -58,6 +58,8 @@ from .implementations import (
     read_file,
     run_shell,
     search_file,
+    todo_read,
+    todo_write,
     web_fetch,
     write_file,
 )
@@ -74,6 +76,8 @@ TOOL_SPINNER_LABELS: dict[str, str] = {
     "get_file_outline": "[muted]analyzing...[/]",
     "spawn_agent":      "[muted]planning task...[/]",
     "send_remote_task": "[muted]planning task...[/]",
+    "todo_write":       "[muted]updating tasks...[/]",
+    "todo_read":        "[muted]reading tasks...[/]",
 }
 
 def _diff_detail(path: str, new_content: str) -> str:
@@ -182,6 +186,8 @@ _DISPATCH: dict = {
     "web_fetch":        web_fetch,
     "run_shell":        run_shell,
     "get_file_outline": get_file_outline,
+    "todo_write":       todo_write,
+    "todo_read":        todo_read,
 }
 
 

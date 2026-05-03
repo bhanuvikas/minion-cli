@@ -30,4 +30,6 @@ tools:
   - write_file
   - edit_file
   - run_shell
+  - todo_write
+  - todo_read
 max_iterations: 25

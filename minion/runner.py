@@ -29,7 +29,7 @@ from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
     print_critique, print_diff, print_error, print_iteration_limit,
-    print_reflection_header, print_tool_call, print_usage,
+    print_reflection_header, print_todo_list, print_tool_call, print_usage,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
@@ -1163,6 +1163,7 @@ async def run_prompt_async(
                            + final_usage.cache_creation_tokens)
             conversation.truncate_if_needed(total_input, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
+        print_todo_list()
         print_usage(snapshot)
         if _subagent_tokens:
             total_sub = sum(_subagent_tokens)

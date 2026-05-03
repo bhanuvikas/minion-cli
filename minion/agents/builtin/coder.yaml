@@ -30,4 +30,6 @@ tools:
   - get_file_outline
   - write_file
   - edit_file
+  - todo_write
+  - todo_read
 max_iterations: 20

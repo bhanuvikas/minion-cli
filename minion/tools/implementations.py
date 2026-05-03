@@ -506,3 +506,44 @@ def web_fetch(url: str) -> str:
         except ImportError:
             pass
         return f"Error fetching '{url}': {e}"
+
+
+# ─── todo_write / todo_read ────────────────────────────────────────────────────
+
+_TODO_LIST: list[dict] = []
+
+
+def todo_write(items: list[dict]) -> str:
+    global _TODO_LIST
+    valid_statuses = {"pending", "in_progress", "done"}
+    for item in items:
+        if item.get("status", "pending") not in valid_statuses:
+            return f"Error: invalid status '{item.get('status')}' — must be pending, in_progress, or done"
+    _TODO_LIST = [
+        {"text": str(i.get("text", "")), "status": i.get("status", "pending")}
+        for i in items
+    ]
+    if not _TODO_LIST:
+        return "Todo list cleared."
+    pending = sum(1 for i in _TODO_LIST if i["status"] == "pending")
+    in_prog  = sum(1 for i in _TODO_LIST if i["status"] == "in_progress")
+    done     = sum(1 for i in _TODO_LIST if i["status"] == "done")
+    return (
+        f"Todo list updated: {len(_TODO_LIST)} item(s) — "
+        f"{done} done, {in_prog} in progress, {pending} pending."
+    )
+
+
+def todo_read() -> str:
+    if not _TODO_LIST:
+        return "No tasks."
+    symbol = {"done": "✓", "in_progress": "→", "pending": "○"}
+    lines = [
+        f"{symbol.get(i['status'], '○')} [{i['status']}] {i['text']}"
+        for i in _TODO_LIST
+    ]
+    return "\n".join(lines)
+
+
+def get_todo_list() -> list[dict]:
+    return [dict(i) for i in _TODO_LIST]

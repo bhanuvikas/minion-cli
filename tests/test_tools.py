@@ -5,7 +5,10 @@ so the model can reason about failures and recover.
 """
 
 import pytest
-from minion.tools.implementations import edit_file, list_directory, read_file, run_shell, write_file
+from minion.tools.implementations import (
+    edit_file, get_todo_list, list_directory, read_file, run_shell,
+    todo_read, todo_write, write_file,
+)
 
 
 # ─── read_file ────────────────────────────────────────────────────────────────
@@ -228,3 +231,64 @@ class TestRunShell:
         result = run_shell("echo out && echo err >&2")
         assert "out" in result
         assert "err" in result
+
+
+# ─── todo_write / todo_read ────────────────────────────────────────────────────
+
+class TestTodoTools:
+    def setup_method(self):
+        todo_write(items=[])  # reset before each test
+
+    def test_read_empty(self):
+        assert todo_read() == "No tasks."
+
+    def test_write_sets_list(self):
+        todo_write(items=[
+            {"text": "Step one", "status": "pending"},
+            {"text": "Step two", "status": "in_progress"},
+            {"text": "Step three", "status": "done"},
+        ])
+        result = todo_read()
+        assert "Step one" in result
+        assert "Step two" in result
+        assert "Step three" in result
+
+    def test_write_empty_clears(self):
+        todo_write(items=[{"text": "Task", "status": "pending"}])
+        result = todo_write(items=[])
+        assert "cleared" in result
+        assert todo_read() == "No tasks."
+
+    def test_statuses_preserved(self):
+        todo_write(items=[
+            {"text": "A", "status": "pending"},
+            {"text": "B", "status": "in_progress"},
+            {"text": "C", "status": "done"},
+        ])
+        result = todo_read()
+        assert "[pending]" in result
+        assert "[in_progress]" in result
+        assert "[done]" in result
+
+    def test_write_invalid_status_returns_error(self):
+        result = todo_write(items=[{"text": "Task", "status": "invalid"}])
+        assert result.startswith("Error:")
+        assert todo_read() == "No tasks."  # list unchanged on error
+
+    def test_write_returns_summary(self):
+        result = todo_write(items=[
+            {"text": "A", "status": "done"},
+            {"text": "B", "status": "in_progress"},
+            {"text": "C", "status": "pending"},
+            {"text": "D", "status": "pending"},
+        ])
+        assert "1 done" in result
+        assert "1 in progress" in result
+        assert "2 pending" in result
+        assert "4 item" in result
+
+    def test_get_todo_list_returns_copy(self):
+        todo_write(items=[{"text": "Task", "status": "pending"}])
+        copy = get_todo_list()
+        copy[0]["text"] = "mutated"
+        assert get_todo_list()[0]["text"] == "Task"  # original unaffected
