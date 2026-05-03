@@ -108,6 +108,9 @@ The following plan has been approved by the user. Execute it step by step.
 Read each section carefully before beginning. Do not skip steps.
 
 Execution discipline — follow these strictly:
+- Before doing any work, call todo_write with the Implementation Order steps as
+  pending items so the user can see live progress. Mark each step in_progress when
+  you begin it and done when it is complete.
 - Work through each section in order. Do not skip or reorder steps.
 - Run each verification command from the plan's Verification section ONCE.
   If a test passes, move on. Do not re-run tests that have already passed.
