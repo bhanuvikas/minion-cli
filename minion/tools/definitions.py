@@ -93,10 +93,13 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "write_file",
         "description": (
-            "Write content to a file, creating it if it doesn't exist or overwriting it completely "
-            "if it does. Use this to create new files or replace file contents. "
-            "For targeted edits, supply start_line and end_line to replace only that range of lines "
-            "(1-indexed, inclusive) rather than rewriting the whole file. "
+            "Write content to a file. "
+            "Two modes — choose based on whether the file already exists:\n"
+            "• NEW file or intentional full rewrite: omit start_line/end_line.\n"
+            "• Existing file (bug fix, adding a function, editing a section): ALWAYS supply "
+            "start_line and end_line to replace only the affected lines. Do NOT rewrite the "
+            "whole file — full rewrites waste tokens, risk regressing untouched code, and are "
+            "hard to review. Use get_file_outline first to find the exact line numbers.\n"
             "Requires user confirmation before executing."
         ),
         "input_schema": {
