@@ -592,6 +592,8 @@ def run_prompt(
     a2a_manager=None,
     confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
     auto_compact: bool = True,
+    auto_accept_edits: bool = False,
+    yolo: bool = False,
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -606,7 +608,7 @@ def run_prompt(
         spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
         enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
-        auto_compact=auto_compact,
+        auto_compact=auto_compact, auto_accept_edits=auto_accept_edits, yolo=yolo,
     ))
 
 
@@ -973,6 +975,8 @@ async def run_prompt_async(
     a2a_manager=None,
     confirm_callback=None,
     auto_compact: bool = True,
+    auto_accept_edits: bool = False,
+    yolo: bool = False,
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -1024,6 +1028,8 @@ async def run_prompt_async(
         agent_runner=_agent_runner, agent_label=agent_label,
         remote_task_runner=_remote_task_runner,
         confirm_callback=confirm_callback,
+        auto_accept_edits=auto_accept_edits,
+        yolo=yolo,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
@@ -1163,8 +1169,9 @@ async def run_prompt_async(
                            + final_usage.cache_creation_tokens)
             conversation.truncate_if_needed(total_input, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
+        _active_mode = "yolo" if yolo else ("edits" if auto_accept_edits else None)
         print_todo_list()
-        print_usage(snapshot)
+        print_usage(snapshot, active_mode=_active_mode)
         if _subagent_tokens:
             total_sub = sum(_subagent_tokens)
             n_sub = len(_subagent_tokens)

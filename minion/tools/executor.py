@@ -194,6 +194,9 @@ _DISPATCH: dict = {
 # (todo_write/todo_read show the Tasks panel instead of raw JSON payloads).
 _SILENT_TOOLS: frozenset[str] = frozenset({"todo_write", "todo_read"})
 
+# File-edit tools covered by /edits mode
+_EDIT_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
+
 
 class ToolExecutor:
     """Executes tool calls from the agent loop.
@@ -208,18 +211,29 @@ class ToolExecutor:
     """
 
     def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
-                 agent_label=None, remote_task_runner=None, confirm_callback=None) -> None:
+                 agent_label=None, remote_task_runner=None, confirm_callback=None,
+                 auto_accept_edits: bool = False, yolo: bool = False) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
         self._agent_label = agent_label          # type: str | None — shown as prefix on tool calls
         self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
         self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
+        self._auto_accept_edits = auto_accept_edits
+        self._yolo = yolo
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
         name = tool_block.name
         inputs = tool_block.input
+
+        # Determine auto-approval badge before display so the tool call line shows it.
+        _mode_badge: Optional[str] = None
+        if name in DANGEROUS_TOOLS:
+            if self._yolo:
+                _mode_badge = "yolo"
+            elif self._auto_accept_edits and name in _EDIT_TOOLS:
+                _mode_badge = "edits"
 
         # When running inside a parallel Live display, route tool-call display
         # through the slot callback instead of console.print (which would corrupt Live).
@@ -228,7 +242,7 @@ class ToolExecutor:
         if _agent_cb is not None:
             _agent_cb("tool_call", name=name, inputs=inputs)
         elif name not in _SILENT_TOOLS:
-            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
+            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label, mode_badge=_mode_badge)
 
         if self.dry_run:
             return "[dry-run: tool not executed]"
@@ -277,28 +291,38 @@ class ToolExecutor:
             return result
 
         if name in DANGEROUS_TOOLS:
-            question, detail = _confirm_prompt(name, inputs)
-            if self._confirm_callback is not None:
-                confirmed = self._confirm_callback(question, detail)
-            else:
-                with _CONFIRM_LOCK:
+            if _mode_badge is not None:
+                # Auto-approved: show the diff preview but skip the confirmation prompt.
+                if self._confirm_callback is None and _agent_cb is None:
+                    _, detail = _confirm_prompt(name, inputs)
                     if detail:
-                        # write_file detail is a rich-formatted diff; others are plain muted text.
                         if name in ("write_file", "edit_file"):
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")
-                    _flush_stdin()
-                    confirmed = questionary.confirm(
-                        f"  {question}",
-                        default=False,
-                        style=MINION_STYLE,
-                    ).ask()
-            if not confirmed:
-                result = "User declined tool execution."
-                if _agent_cb is None:
-                    print_tool_result(result)
-                return result
+            else:
+                question, detail = _confirm_prompt(name, inputs)
+                if self._confirm_callback is not None:
+                    confirmed = self._confirm_callback(question, detail)
+                else:
+                    with _CONFIRM_LOCK:
+                        if detail:
+                            # write_file detail is a rich-formatted diff; others are plain muted text.
+                            if name in ("write_file", "edit_file"):
+                                console.print(detail)
+                            else:
+                                console.print(f"[muted]{detail}[/]")
+                        _flush_stdin()
+                        confirmed = questionary.confirm(
+                            f"  {question}",
+                            default=False,
+                            style=MINION_STYLE,
+                        ).ask()
+                if not confirmed:
+                    result = "User declined tool execution."
+                    if _agent_cb is None:
+                        print_tool_result(result)
+                    return result
 
         fn = _DISPATCH.get(name)
         if fn is None:
@@ -360,12 +384,19 @@ class ToolExecutor:
         name = tool_block.name
         inputs = tool_block.input
 
+        _mode_badge: Optional[str] = None
+        if name in DANGEROUS_TOOLS:
+            if self._yolo:
+                _mode_badge = "yolo"
+            elif self._auto_accept_edits and name in _EDIT_TOOLS:
+                _mode_badge = "edits"
+
         from ..agents.display import get_agent_display_callback as _get_agent_cb
         _agent_cb = _get_agent_cb()
         if _agent_cb is not None:
             _agent_cb("tool_call", name=name, inputs=inputs)
         elif name not in _SILENT_TOOLS:
-            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
+            print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label, mode_badge=_mode_badge)
 
         if self.dry_run:
             return "[dry-run: tool not executed]"
@@ -412,27 +443,37 @@ class ToolExecutor:
             return result
 
         if name in DANGEROUS_TOOLS:
-            question, detail = _confirm_prompt(name, inputs)
-            if self._confirm_callback is not None:
-                confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
-            else:
-                async with _get_async_confirm_lock():
+            if _mode_badge is not None:
+                # Auto-approved: show the diff preview but skip the confirmation prompt.
+                if self._confirm_callback is None and _agent_cb is None:
+                    _, detail = _confirm_prompt(name, inputs)
                     if detail:
                         if name in ("write_file", "edit_file"):
                             console.print(detail)
                         else:
                             console.print(f"[muted]{detail}[/]")
-                    _flush_stdin()
-                    confirmed = await asyncio.to_thread(
-                        lambda: questionary.confirm(
-                            f"  {question}", default=False, style=MINION_STYLE
-                        ).ask()
-                    )
-            if not confirmed:
-                result = "User declined tool execution."
-                if _agent_cb is None:
-                    print_tool_result(result)
-                return result
+            else:
+                question, detail = _confirm_prompt(name, inputs)
+                if self._confirm_callback is not None:
+                    confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
+                else:
+                    async with _get_async_confirm_lock():
+                        if detail:
+                            if name in ("write_file", "edit_file"):
+                                console.print(detail)
+                            else:
+                                console.print(f"[muted]{detail}[/]")
+                        _flush_stdin()
+                        confirmed = await asyncio.to_thread(
+                            lambda: questionary.confirm(
+                                f"  {question}", default=False, style=MINION_STYLE
+                            ).ask()
+                        )
+                if not confirmed:
+                    result = "User declined tool execution."
+                    if _agent_cb is None:
+                        print_tool_result(result)
+                    return result
 
         fn = _DISPATCH.get(name)
         if fn is None:

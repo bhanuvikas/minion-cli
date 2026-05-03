@@ -152,11 +152,12 @@ def print_todo_list(show_if_all_done: bool = False) -> None:
             console.print(f"  [dim]○  {text}[/]")
 
 
-def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[name-defined]
+def print_usage(snapshot: "Optional[ContextSnapshot]", active_mode: "Optional[str]" = None) -> None:  # type: ignore[name-defined]
     """Footer line shown after every response.
 
     Format: model · N in / N out · context: X/Y (Z%) · session total: T
     Cache hits are shown as a suffix on 'in' when present.
+    active_mode: None | "edits" | "yolo" — appends a badge when a mode is active.
     """
     if snapshot is None:
         return
@@ -164,12 +165,17 @@ def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[
     cache_suffix = ""
     if snapshot.cache_read_tokens > 0:
         cache_suffix = f" [dim]({snapshot.cache_read_tokens:,} cached)[/dim]"
+    mode_badge = ""
+    if active_mode == "edits":
+        mode_badge = f"  [{YELLOW}]» edits[/]"
+    elif active_mode == "yolo":
+        mode_badge = f"  [red]⚡ yolo[/]"
     console.print(
         f"[muted]  ↳ {snapshot.model}  ·  "
         f"{snapshot.input_tokens:,} in{cache_suffix} / {snapshot.output_tokens:,} out  ·  "
         f"context: {snapshot.current_context_tokens:,}/{snapshot.context_limit:,} "
         f"({snapshot.context_pct:.1f}%)  ·  "
-        f"billed: {snapshot.session_total:,}[/]"
+        f"billed: {snapshot.session_total:,}[/]{mode_badge}"
     )
 
 
@@ -251,15 +257,45 @@ def stream_response_to_stdout(chunks) -> None:
 
 # ─── Tool Use Display (Phase 3) ───────────────────────────────────────────────
 
-def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label: str | None = None) -> None:
+_TOOL_NAME_COLORS: dict[str, str] = {
+    "write_file": YELLOW,
+    "edit_file":  YELLOW,
+    "run_shell":  "red",
+    "web_fetch":  "red",
+}
+
+
+def print_mode_toggle(mode: str, enabled: bool) -> None:
+    """Print a one-line status message when /edits or /yolo is toggled."""
+    if mode == "edits":
+        if enabled:
+            console.print(f"  [{YELLOW}]»  edits mode on[/] [muted]— write_file and edit_file auto-approved[/]")
+        else:
+            console.print(f"  [muted]»  edits mode off[/]")
+    elif mode == "yolo":
+        if enabled:
+            console.print(f"  [red]⚡  yolo mode on[/] [muted]— all tools auto-approved, stay sharp[/]")
+        else:
+            console.print(f"  [muted]⚡  yolo mode off[/]")
+
+
+def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label: str | None = None, mode_badge: str | None = None) -> None:
     """Display a tool call the agent is about to make.
 
     Scalar and short string values appear inline. Multiline strings (e.g. the
     content argument of write_file) are printed as an indented block below the
     header line so the user can review the full content before confirming.
+
+    mode_badge: None = normal, "edits" = yellow » suffix, "yolo" = color ⚡ suffix
     """
     label = f"[muted][dry-run][/] " if dry_run else ""
     agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
+    name_color = _TOOL_NAME_COLORS.get(name, "bold")
+    badge_str = ""
+    if mode_badge == "edits":
+        badge_str = f" [{YELLOW}]»[/]"
+    elif mode_badge == "yolo":
+        badge_str = f" [{name_color}]⚡[/]"
 
     inline_args = []
     block_args = []  # (key, value) pairs that need a separate block
@@ -278,7 +314,7 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label:
         else:
             inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
 
-    console.print(f"{agent_prefix}[bold {YELLOW}]⚙[/]  {label}[bold]{name}[/]  {'  '.join(inline_args)}")
+    console.print(f"{agent_prefix}[bold {YELLOW}]⚙[/]  {label}[{name_color}]{name}[/]{badge_str}  {'  '.join(inline_args)}")
 
     for k, v in block_args:
         lines = v.count("\n") + 1

@@ -43,7 +43,7 @@ from .memory.store import MemoryStore
 from .prompts import build_system_prompt
 from .runner import run_prompt, run_prompt_async
 from .session import list_sessions, load, save
-from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting
+from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting, print_mode_toggle
 from .tracing import get_tracer
 
 # ─── REPL session state ───────────────────────────────────────────────────────
@@ -62,6 +62,8 @@ class ReplState:
     active_plan: Optional[Path] = None         # path to the current plan file
     active_plan_goal: Optional[str] = None     # goal text stored alongside path
     agents_enabled: bool = True   # False = exclude spawn_agent from tool list
+    auto_accept_edits: bool = False  # auto-approve write_file + edit_file without prompt
+    yolo: bool = False            # auto-approve all dangerous tools without prompt
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -75,6 +77,8 @@ REPL_COMMANDS = {
     "/context": "Show context window usage and token breakdown",
     "/reflect": "Self-refine: /reflect --on | /reflect 2 | /reflect --off | /reflect",
     "/verbose": "Verbose output: /verbose --on | /verbose --off | /verbose",
+    "/edits":   "Auto-approve file edits: /edits | /edits --on | /edits --off",
+    "/yolo":    "Auto-approve all tools: /yolo | /yolo --on | /yolo --off",
     "/debug":   "Debug mode: /debug --on | /debug --off | /debug",
     "/memory":  "Memory status/toggle: /memory | /memory --on | /memory --off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
@@ -441,6 +445,36 @@ def _handle_slash_command(
                 console.print(f"[{YELLOW}]Verbose off.[/]")
             else:
                 print_error("Usage: /verbose [--on | --off]")
+        return True
+
+    if cmd == "/edits":
+        if state is not None:
+            if not arg:
+                status = "on" if state.auto_accept_edits else "off"
+                console.print(f"[{YELLOW}]Edits mode:[/] {status}")
+            elif arg == "--on":
+                state.auto_accept_edits = True
+                print_mode_toggle("edits", True)
+            elif arg == "--off":
+                state.auto_accept_edits = False
+                print_mode_toggle("edits", False)
+            else:
+                print_error("Usage: /edits [--on | --off]")
+        return True
+
+    if cmd == "/yolo":
+        if state is not None:
+            if not arg:
+                status = "on" if state.yolo else "off"
+                console.print(f"[{YELLOW}]Yolo mode:[/] {status}")
+            elif arg == "--on":
+                state.yolo = True
+                print_mode_toggle("yolo", True)
+            elif arg == "--off":
+                state.yolo = False
+                print_mode_toggle("yolo", False)
+            else:
+                print_error("Usage: /yolo [--on | --off]")
         return True
 
     if cmd == "/debug":
@@ -1198,6 +1232,8 @@ async def run_repl_async(
         memory_enabled=memory_enabled,
         debug=debug,
         agents_enabled=agents_enabled,
+        auto_accept_edits=_file_cfg.agent.auto_accept_edits,
+        yolo=_file_cfg.agent.yolo,
     )
 
     from .skills import load_skill_registry
@@ -1358,6 +1394,8 @@ async def run_repl_async(
             agent_depth=0,
             a2a_manager=a2a_manager,
             auto_compact=_file_cfg.context.auto_compact,
+            auto_accept_edits=state.auto_accept_edits,
+            yolo=state.yolo,
         )
         console.print()
 
