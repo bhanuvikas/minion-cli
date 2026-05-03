@@ -46,7 +46,7 @@ def _get_async_confirm_lock() -> asyncio.Lock:
         _ASYNC_CONFIRM_LOCK = asyncio.Lock()
     return _ASYNC_CONFIRM_LOCK
 from ..llm.base import ToolUseBlock
-from ..theme import console, print_tool_call, print_tool_error, print_tool_result
+from ..theme import console, print_todo_list, print_tool_call, print_tool_error, print_tool_result
 from ..tracing import get_tracer
 from .definitions import DANGEROUS_TOOLS
 from .implementations import (
@@ -335,6 +335,8 @@ class ToolExecutor:
                 result = fn(**inputs)
             if _agent_cb is None:
                 print_tool_result(result)
+                if name == "todo_write":
+                    print_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:
@@ -464,6 +466,8 @@ class ToolExecutor:
                 result = await asyncio.to_thread(fn, **inputs)
             if _agent_cb is None:
                 print_tool_result(result)
+                if name == "todo_write":
+                    print_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:

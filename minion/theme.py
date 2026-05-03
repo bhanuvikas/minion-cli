@@ -125,13 +125,19 @@ def print_model_info(provider: str, model: str) -> None:
     console.print(f"[secondary]provider[/] {provider}  [secondary]model[/] {model}")
 
 
-def print_todo_list() -> None:
-    """Print compact task checklist before the token footer, when tasks are active."""
+def print_todo_list(show_if_all_done: bool = False) -> None:
+    """Print compact task checklist. Called inline after todo_write and at end of turn.
+
+    show_if_all_done=True: show even when all items are done (used for inline display
+    so the user sees the final ✓ state before the model clears the list).
+    show_if_all_done=False (default): auto-hide when all done (end-of-turn display
+    avoids showing a completed list on subsequent turns).
+    """
     from .tools.implementations import get_todo_list
     items = get_todo_list()
     if not items:
         return
-    if all(i["status"] == "done" for i in items):
+    if not show_if_all_done and all(i["status"] == "done" for i in items):
         return
     console.print()
     console.print(" [bold dim]Tasks[/]")
