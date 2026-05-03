@@ -64,12 +64,12 @@ class TestConfirmation:
     def test_dangerous_tool_declined_does_not_execute(self):
         executor = ToolExecutor(dry_run=False)
         block = _block("run_shell", command="echo banana")
-        mock_confirm = MagicMock()
-        mock_confirm.ask.return_value = False
+        mock_select = MagicMock()
+        mock_select.ask.return_value = "No"
         with patch("minion.tools.executor.print_tool_call"), \
              patch("minion.tools.executor.print_tool_result"), \
              patch("minion.tools.executor.questionary") as mock_q:
-            mock_q.confirm.return_value = mock_confirm
+            mock_q.select.return_value = mock_select
             result = executor.execute(block)
         assert result == "User declined tool execution."
 

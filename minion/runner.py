@@ -593,6 +593,7 @@ def run_prompt(
     confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
     auto_compact: bool = True,
     approval_mode: str = "off",
+    permission_store=None,  # PermissionStore | None
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -607,7 +608,7 @@ def run_prompt(
         spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
         enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
-        auto_compact=auto_compact, approval_mode=approval_mode,
+        auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
     ))
 
 
@@ -975,6 +976,7 @@ async def run_prompt_async(
     confirm_callback=None,
     auto_compact: bool = True,
     approval_mode: str = "off",
+    permission_store=None,  # PermissionStore | None
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -1027,6 +1029,7 @@ async def run_prompt_async(
         remote_task_runner=_remote_task_runner,
         confirm_callback=confirm_callback,
         approval_mode=approval_mode,
+        permission_store=permission_store,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)

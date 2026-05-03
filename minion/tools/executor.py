@@ -18,8 +18,9 @@ from typing import Optional
 import questionary
 
 from ..config import MINION_STYLE
+from ..permissions import PermissionStore, split_compound, suggest_patterns_for_tool
 
-# Serializes questionary.confirm() calls across threads (sync path only).
+# Serializes questionary prompts across threads (sync path only).
 _CONFIRM_LOCK = threading.Lock()
 
 # Async confirmation lock — lazy-initialised on first use inside an event loop.
@@ -46,7 +47,7 @@ def _get_async_confirm_lock() -> asyncio.Lock:
         _ASYNC_CONFIRM_LOCK = asyncio.Lock()
     return _ASYNC_CONFIRM_LOCK
 from ..llm.base import ToolUseBlock
-from ..theme import console, print_todo_list, print_tool_call, print_tool_error, print_tool_result
+from ..theme import console, print_todo_list, print_tool_call, print_tool_error, print_tool_result, print_trust_saved
 from ..tracing import get_tracer
 from .definitions import DANGEROUS_TOOLS
 from .implementations import (
@@ -176,6 +177,151 @@ def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
     return f"Allow {name}?", _fmt_inputs()
 
 
+def _determine_mode_badge(
+    name: str,
+    inputs: dict,
+    approval_mode: str,
+    permission_store: Optional[PermissionStore],
+) -> Optional[str]:
+    """Return the auto-approval badge or None when confirmation is required.
+
+    Returns: "yolo" | "edits" | "trusted" | None
+    """
+    if name not in DANGEROUS_TOOLS:
+        return None
+    if approval_mode == "yolo":
+        return "yolo"
+    if approval_mode == "edits" and name in _EDIT_TOOLS:
+        return "edits"
+    if permission_store is not None:
+        if name == "run_shell":
+            cmd = inputs.get("command", "")
+        elif name == "web_fetch":
+            cmd = inputs.get("url", "")
+        else:  # write_file / edit_file
+            cmd = inputs.get("path", "")
+        if cmd and permission_store.is_trusted(name, cmd):
+            return "trusted"
+    return None
+
+
+def _run_pattern_dialog(
+    name: str,
+    inputs: dict,
+    scope: str,
+    permission_store: PermissionStore,
+) -> None:
+    """Show per-part pattern selection and save rules to the permission store."""
+    if name == "run_shell":
+        raw = inputs.get("command", "")
+        parts = split_compound(raw) if raw else []
+    elif name == "web_fetch":
+        raw = inputs.get("url", "")
+        parts = [raw] if raw else []
+    elif name in ("write_file", "edit_file"):
+        raw = inputs.get("path", "")
+        parts = [raw] if raw else []
+    else:
+        parts = []
+
+    if not parts:
+        return
+
+    total = len(parts)
+    for idx, part in enumerate(parts):
+        if not part.strip():
+            continue
+
+        patterns = suggest_patterns_for_tool(name, part)
+        if total > 1:
+            first_token = part.strip().split()[0]
+            label = f"Part {idx + 1}/{total} — {first_token}:"
+        else:
+            label = f"{name}:"
+
+        option_choices = patterns + ["[enter custom]", "skip this part", "skip saving — just run it"]
+        choice = questionary.select(
+            f"  {label}",
+            choices=option_choices,
+            style=MINION_STYLE,
+        ).ask()
+
+        if choice is None or choice == "skip saving — just run it":
+            return
+
+        if choice == "skip this part":
+            continue
+
+        if choice == "[enter custom]":
+            custom = questionary.text(
+                f"  Custom pattern for {name}:",
+                style=MINION_STYLE,
+            ).ask()
+            if not custom or not custom.strip():
+                continue
+            pattern = custom.strip()
+        else:
+            pattern = choice
+
+        permission_store.add_rule(name, pattern, scope)
+        print_trust_saved(name, [pattern], scope)
+
+
+def _interactive_confirm(
+    name: str,
+    inputs: dict,
+    permission_store: Optional[PermissionStore],
+) -> bool:
+    """Replace questionary.confirm() with a two-step scope-then-pattern flow.
+
+    Step 1: scope select (once / session / project / global / no).
+    Step 2: per-part pattern dialog when a persistent scope is chosen.
+    Returns True (approved) or False (declined). Thread-safe via _CONFIRM_LOCK.
+    """
+    with _CONFIRM_LOCK:
+        question, detail = _confirm_prompt(name, inputs)
+        if detail:
+            if name in ("write_file", "edit_file"):
+                console.print(detail)
+            else:
+                console.print(f"[muted]{detail}[/]")
+        _flush_stdin()
+
+        _project_toml = ".minion/permissions.toml"
+        from pathlib import Path as _Path
+        _global_toml = str(_Path.home() / ".minion" / "permissions.toml")
+
+        choices = [
+            "Yes, once",
+            "Yes — always (session)",
+            f"Yes — always (project  →  {_project_toml})",
+            f"Yes — always (global   →  {_global_toml})",
+            "No",
+        ]
+        choice = questionary.select(
+            f"  {question}",
+            choices=choices,
+            style=MINION_STYLE,
+        ).ask()
+
+        if choice is None or choice == "No":
+            return False
+        if choice == "Yes, once":
+            return True
+
+        if "session" in choice:
+            scope = "session"
+        elif "project" in choice:
+            scope = "project"
+        else:
+            scope = "global"
+
+        if permission_store is not None:
+            _run_pattern_dialog(name, inputs, scope, permission_store)
+
+        return True
+
+
 _DISPATCH: dict = {
     "read_file":        read_file,
     "write_file":       write_file,
@@ -212,7 +358,8 @@ class ToolExecutor:
 
     def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
                  agent_label=None, remote_task_runner=None, confirm_callback=None,
-                 approval_mode: str = "off") -> None:
+                 approval_mode: str = "off",
+                 permission_store: Optional[PermissionStore] = None) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
@@ -220,19 +367,14 @@ class ToolExecutor:
         self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
         self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
         self._approval_mode = approval_mode  # "off" | "edits" | "yolo"
+        self._permission_store = permission_store
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
         name = tool_block.name
         inputs = tool_block.input
 
-        # Determine auto-approval badge before display so the tool call line shows it.
-        _mode_badge: Optional[str] = None
-        if name in DANGEROUS_TOOLS:
-            if self._approval_mode == "yolo":
-                _mode_badge = "yolo"
-            elif self._approval_mode == "edits" and name in _EDIT_TOOLS:
-                _mode_badge = "edits"
+        _mode_badge = _determine_mode_badge(name, inputs, self._approval_mode, self._permission_store)
 
         # When running inside a parallel Live display, route tool-call display
         # through the slot callback instead of console.print (which would corrupt Live).
@@ -300,23 +442,11 @@ class ToolExecutor:
                         else:
                             console.print(f"[muted]{detail}[/]")
             else:
-                question, detail = _confirm_prompt(name, inputs)
                 if self._confirm_callback is not None:
+                    question, detail = _confirm_prompt(name, inputs)
                     confirmed = self._confirm_callback(question, detail)
                 else:
-                    with _CONFIRM_LOCK:
-                        if detail:
-                            # write_file detail is a rich-formatted diff; others are plain muted text.
-                            if name in ("write_file", "edit_file"):
-                                console.print(detail)
-                            else:
-                                console.print(f"[muted]{detail}[/]")
-                        _flush_stdin()
-                        confirmed = questionary.confirm(
-                            f"  {question}",
-                            default=False,
-                            style=MINION_STYLE,
-                        ).ask()
+                    confirmed = _interactive_confirm(name, inputs, self._permission_store)
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:
@@ -383,12 +513,7 @@ class ToolExecutor:
         name = tool_block.name
         inputs = tool_block.input
 
-        _mode_badge: Optional[str] = None
-        if name in DANGEROUS_TOOLS:
-            if self._approval_mode == "yolo":
-                _mode_badge = "yolo"
-            elif self._approval_mode == "edits" and name in _EDIT_TOOLS:
-                _mode_badge = "edits"
+        _mode_badge = _determine_mode_badge(name, inputs, self._approval_mode, self._permission_store)
 
         from ..agents.display import get_agent_display_callback as _get_agent_cb
         _agent_cb = _get_agent_cb()
@@ -452,22 +577,13 @@ class ToolExecutor:
                         else:
                             console.print(f"[muted]{detail}[/]")
             else:
-                question, detail = _confirm_prompt(name, inputs)
                 if self._confirm_callback is not None:
+                    question, detail = _confirm_prompt(name, inputs)
                     confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
                 else:
-                    async with _get_async_confirm_lock():
-                        if detail:
-                            if name in ("write_file", "edit_file"):
-                                console.print(detail)
-                            else:
-                                console.print(f"[muted]{detail}[/]")
-                        _flush_stdin()
-                        confirmed = await asyncio.to_thread(
-                            lambda: questionary.confirm(
-                                f"  {question}", default=False, style=MINION_STYLE
-                            ).ask()
-                        )
+                    confirmed = await asyncio.to_thread(
+                        _interactive_confirm, name, inputs, self._permission_store
+                    )
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:

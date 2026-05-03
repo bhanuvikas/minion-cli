@@ -202,7 +202,7 @@ class TestAgentLoop:
         MockExecutor.assert_called_once_with(
             dry_run=True, mcp_manager=None, agent_runner=None, agent_label=None,
             remote_task_runner=None, confirm_callback=None,
-            approval_mode="off",
+            approval_mode="off", permission_store=None,
         )
 
     @pytest.mark.asyncio

@@ -358,6 +358,7 @@ def _handle_slash_command(
     skill_registry: "SkillRegistry | None" = None,
     agent_registry=None,
     cwd: "Path | None" = None,
+    permission_store=None,  # PermissionStore | None
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -757,7 +758,7 @@ def _handle_slash_command(
                 print_error("No active plan. Use /plan <goal> to create one first.")
                 return True
             console.print()
-            execute_plan(plan_path, client, conversation, base_system_prompt, state or ReplState())
+            execute_plan(plan_path, client, conversation, base_system_prompt, state or ReplState(), permission_store=permission_store)
             return True
 
         # /plan <goal> — create a new plan
@@ -799,7 +800,7 @@ def _handle_slash_command(
 
             if choice == "Execute plan":
                 console.print()
-                execute_plan(result.path, client, conversation, base_system_prompt, state or ReplState())
+                execute_plan(result.path, client, conversation, base_system_prompt, state or ReplState(), permission_store=permission_store)
                 break
 
             # "Refine plan" — ask for feedback text
@@ -1222,6 +1223,9 @@ async def run_repl_async(
         embedder=embedder,
     )
 
+    from .permissions import PermissionStore
+    permission_store = PermissionStore(project_cwd=project_cwd)
+
     conversation = Conversation(model=client.model_id)
     state = ReplState(
         reflect_depth=reflect_depth,
@@ -1332,6 +1336,7 @@ async def run_repl_async(
             skill_registry=skill_registry,
             agent_registry=agent_registry,
             cwd=project_cwd,
+            permission_store=permission_store,
         ):
             console.print()
             continue
@@ -1391,6 +1396,7 @@ async def run_repl_async(
             a2a_manager=a2a_manager,
             auto_compact=_file_cfg.context.auto_compact,
             approval_mode=state.approval_mode,
+            permission_store=permission_store,
         )
         console.print()
 

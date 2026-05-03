@@ -296,6 +296,8 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label:
         badge_str = f" [{YELLOW}]»[/]"
     elif mode_badge == "yolo":
         badge_str = f" [{name_color}]⚡[/]"
+    elif mode_badge == "trusted":
+        badge_str = " [green]~[/]"
 
     inline_args = []
     block_args = []  # (key, value) pairs that need a separate block
@@ -321,6 +323,21 @@ def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label:
         console.print(f"  [muted]{k} ({lines} lines):[/]")
         for line in v.splitlines():
             console.print(f"  [muted]│[/] {line}")
+
+
+def print_trust_saved(tool: str, patterns: list[str], scope: str) -> None:
+    """Print a confirmation line after saving a trust rule."""
+    scope_labels = {
+        "session": "session",
+        "project": "project (.minion/permissions.toml)",
+        "global": f"global (~/.minion/permissions.toml)",
+    }
+    scope_label = scope_labels.get(scope, scope)
+    for p in patterns:
+        console.print(
+            f"  [green]~[/] [muted]saved:[/] [{YELLOW}]{tool}[/]"
+            f" [muted]{p!r} ({scope_label})[/]"
+        )
 
 
 def print_tool_result(result: str) -> None:

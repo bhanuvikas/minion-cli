@@ -333,6 +333,7 @@ def execute_plan(
     conversation: Conversation,
     system_prompt: str,
     state: "ReplState",
+    permission_store=None,  # PermissionStore | None
 ) -> None:
     """Execute a plan by injecting it into the system prompt and running run_prompt.
 
@@ -364,6 +365,8 @@ def execute_plan(
         reflect_config=reflect_config,
         verbose=state.verbose,
         max_iterations=40,
+        approval_mode=state.approval_mode,
+        permission_store=permission_store,
     )
 
     get_tracer().emit("plan_complete", plan_path=str(plan_path))

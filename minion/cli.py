@@ -450,16 +450,18 @@ def _run_one_shot(prompt: str, raw_argv: list) -> None:
     from .runner import run_prompt_async
     from .reflection import ReflectionConfig
     from .conversation import Conversation
+    from .permissions import PermissionStore
 
     project_cwd = Path.cwd()
     system_prompt = build_system_prompt(build_project_context(project_cwd))
     conversation = Conversation()
     reflect_cfg = ReflectionConfig(depth=reflect) if reflect else None
+    permission_store = PermissionStore(project_cwd=project_cwd)
 
     asyncio.run(run_prompt_async(
         prompt, client, conversation, system_prompt,
         dry_run=dry_run, reflect_config=reflect_cfg,
-        verbose=verbose,
+        verbose=verbose, permission_store=permission_store,
     ))
 
 
