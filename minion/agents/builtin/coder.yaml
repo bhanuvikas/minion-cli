@@ -15,6 +15,9 @@ system_prompt: |
   1. Read the relevant files to understand the current state.
   2. Make the required changes via write_file.
   3. Report the files changed and a brief explanation of each change.
+
+  Do not ask clarifying questions — work with the task as given. If context
+  is missing, state your assumptions and proceed.
 tools:
   - read_file
   - list_directory

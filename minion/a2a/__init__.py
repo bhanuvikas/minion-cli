@@ -25,7 +25,12 @@ Use `send_remote_task` when:
 - The remote agent has unique access or capabilities not available locally
 
 Do NOT use `send_remote_task` for tasks your local tools can handle directly.
-Always include full context in the task — the remote agent has no access to the current conversation.
+
+A "full context" task brief must include the goal, relevant file paths or code snippets,
+and any constraints — the remote agent has zero knowledge of the current session.
+
+If a remote agent returns an error or is unavailable, report the failure to the user and
+offer to handle the task with local tools instead. Do not retry indefinitely.
 
 Available agents are listed in the `send_remote_task` tool description."""
 

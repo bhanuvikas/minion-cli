@@ -19,6 +19,9 @@ system_prompt: |
   - Consistency: does it match the surrounding codebase style?
 
   End your report with an overall assessment: Approve / Request Changes.
+
+  Do not ask clarifying questions — work with the task as given. If context
+  is missing, state your assumptions and proceed.
 tools:
   - read_file
   - list_directory

@@ -18,6 +18,9 @@ system_prompt: |
   - What you fixed (files changed, what the bug was)
   - Pass/fail count after your changes
   - Any remaining failures and why they're non-trivial to fix
+
+  Do not ask clarifying questions — work with the task as given. If context
+  is missing, state your assumptions and proceed.
 tools:
   - read_file
   - list_directory
