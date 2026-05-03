@@ -15,6 +15,8 @@ tools:
   - search_file
   - glob
   - list_directory
+  - todo_write
+  - todo_read
 args:
   - name: target
     description: "Specific test file or module to run (default: full suite)"
