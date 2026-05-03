@@ -205,6 +205,106 @@ def _determine_mode_badge(
     return None
 
 
+def _inline_edit_select(label: str, choices: list[str]) -> Optional[str]:
+    """Select prompt with an inline-editable '[enter custom]' choice.
+
+    Renders like questionary.select(). When the cursor lands on '[enter custom]',
+    the user can type directly — the text appears inline with a block cursor.
+    Pressing Up/Down while text has been entered clears it and moves normally.
+    Enter on a non-empty custom buffer returns that text; Enter on a normal
+    choice returns that choice. Ctrl-C / Ctrl-D returns None.
+    Pressing a printable key while on any other choice jumps to '[enter custom]'.
+    """
+    from prompt_toolkit import Application
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.styles import Style as PTStyle
+
+    EDIT = "[enter custom]"
+    edit_idx = choices.index(EDIT) if EDIT in choices else -1
+    # Colours matching MINION_STYLE
+    YELLOW = "#FFD700"
+    BLUE   = "#1E90FF"
+
+    st = {"idx": 0, "buf": "", "result": None}
+
+    def _leave() -> None:
+        if st["idx"] == edit_idx:
+            st["buf"] = ""
+
+    def _render() -> FormattedText:
+        rows: list[tuple[str, str]] = []
+        rows.append(("bold", f"  {label}\n"))
+        for i, ch in enumerate(choices):
+            sel = i == st["idx"]
+            pointer = ("fg:" + YELLOW + " bold", "❯ ") if sel else ("", "  ")
+            if i == edit_idx and sel:
+                text = f"{ch}: {st['buf']}▋"
+            else:
+                text = ch
+            rows.append(pointer)
+            rows.append(("fg:" + BLUE + " bold" if sel else "", text + "\n"))
+        return FormattedText(rows)
+
+    kb = KeyBindings()
+
+    @kb.add("up", eager=True)
+    def _up(event):
+        _leave()
+        st["idx"] = max(0, st["idx"] - 1)
+        event.app.invalidate()
+
+    @kb.add("down", eager=True)
+    def _down(event):
+        _leave()
+        st["idx"] = min(len(choices) - 1, st["idx"] + 1)
+        event.app.invalidate()
+
+    @kb.add("enter", eager=True)
+    def _enter(event):
+        if st["idx"] == edit_idx:
+            if st["buf"].strip():
+                st["result"] = st["buf"].strip()
+                event.app.exit()
+            # empty buffer — do nothing, user must type or navigate away
+        else:
+            st["result"] = choices[st["idx"]]
+            event.app.exit()
+
+    @kb.add("backspace", eager=True)
+    def _bs(event):
+        if st["idx"] == edit_idx and st["buf"]:
+            st["buf"] = st["buf"][:-1]
+            event.app.invalidate()
+
+    @kb.add("c-c", eager=True)
+    @kb.add("c-d", eager=True)
+    def _cancel(event):
+        event.app.exit()
+
+    @kb.add("<any>")
+    def _type(event):
+        if len(event.data) == 1 and event.data.isprintable():
+            if st["idx"] != edit_idx:
+                _leave()
+                st["idx"] = edit_idx
+            st["buf"] += event.data
+            event.app.invalidate()
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(_render, focusable=True))),
+        key_bindings=kb,
+        style=PTStyle.from_dict({}),
+        full_screen=False,
+        mouse_support=False,
+    )
+    app.run()
+    return st["result"]
+
+
 def _run_pattern_dialog(
     name: str,
     inputs: dict,
@@ -240,11 +340,7 @@ def _run_pattern_dialog(
             label = f"{name}:"
 
         option_choices = patterns + ["[enter custom]", "skip this part", "skip saving — just run it"]
-        choice = questionary.select(
-            f"  {label}",
-            choices=option_choices,
-            style=MINION_STYLE,
-        ).ask()
+        choice = _inline_edit_select(label, option_choices)
 
         if choice is None or choice == "skip saving — just run it":
             return
@@ -252,16 +348,9 @@ def _run_pattern_dialog(
         if choice == "skip this part":
             continue
 
-        if choice == "[enter custom]":
-            custom = questionary.text(
-                f"  Custom pattern for {name}:",
-                style=MINION_STYLE,
-            ).ask()
-            if not custom or not custom.strip():
-                continue
-            pattern = custom.strip()
-        else:
-            pattern = choice
+        pattern = choice.strip()
+        if not pattern:
+            continue
 
         permission_store.add_rule(name, pattern, scope)
         print_trust_saved(name, [pattern], scope)
