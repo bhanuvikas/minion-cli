@@ -18,8 +18,7 @@ Schema (all sections optional — missing keys fall back to defaults):
     debug               = false
     agents_enabled      = true
     max_subagent_depth  = 2
-    auto_accept_edits   = false
-    yolo                = false
+    approval_mode       = "off"   # "off" | "edits" | "yolo"
 
     [memory]
     enabled                  = true
@@ -65,8 +64,7 @@ class AgentConfig:
     debug: bool = False
     agents_enabled: bool = True
     max_subagent_depth: int = 2
-    auto_accept_edits: bool = False
-    yolo: bool = False
+    approval_mode: str = "off"   # "off" | "edits" | "yolo"
 
 
 @dataclass
@@ -185,8 +183,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
             debug=_bool(agent_raw.get("debug"), False),
             agents_enabled=_bool(agent_raw.get("agents_enabled"), True),
             max_subagent_depth=_int(agent_raw.get("max_subagent_depth"), 2),
-            auto_accept_edits=_bool(agent_raw.get("auto_accept_edits"), False),
-            yolo=_bool(agent_raw.get("yolo"), False),
+            approval_mode=_str(agent_raw.get("approval_mode"), "off") if agent_raw.get("approval_mode") in ("off", "edits", "yolo") else "off",
         ),
         memory=MemoryFileConfig(
             enabled=_bool(memory_raw.get("enabled"), True),
@@ -221,8 +218,7 @@ def format_config(cfg: MinionConfig) -> str:
         f"  debug              = {cfg.agent.debug}",
         f"  agents_enabled     = {cfg.agent.agents_enabled}",
         f"  max_subagent_depth = {cfg.agent.max_subagent_depth}",
-        f"  auto_accept_edits  = {cfg.agent.auto_accept_edits}",
-        f"  yolo               = {cfg.agent.yolo}",
+        f"  approval_mode      = {cfg.agent.approval_mode}",
         "",
         "[memory]",
         f"  enabled                 = {cfg.memory.enabled}",

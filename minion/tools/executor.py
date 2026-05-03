@@ -212,15 +212,14 @@ class ToolExecutor:
 
     def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
                  agent_label=None, remote_task_runner=None, confirm_callback=None,
-                 auto_accept_edits: bool = False, yolo: bool = False) -> None:
+                 approval_mode: str = "off") -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
         self._agent_label = agent_label          # type: str | None — shown as prefix on tool calls
         self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
         self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
-        self._auto_accept_edits = auto_accept_edits
-        self._yolo = yolo
+        self._approval_mode = approval_mode  # "off" | "edits" | "yolo"
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -230,9 +229,9 @@ class ToolExecutor:
         # Determine auto-approval badge before display so the tool call line shows it.
         _mode_badge: Optional[str] = None
         if name in DANGEROUS_TOOLS:
-            if self._yolo:
+            if self._approval_mode == "yolo":
                 _mode_badge = "yolo"
-            elif self._auto_accept_edits and name in _EDIT_TOOLS:
+            elif self._approval_mode == "edits" and name in _EDIT_TOOLS:
                 _mode_badge = "edits"
 
         # When running inside a parallel Live display, route tool-call display
@@ -386,9 +385,9 @@ class ToolExecutor:
 
         _mode_badge: Optional[str] = None
         if name in DANGEROUS_TOOLS:
-            if self._yolo:
+            if self._approval_mode == "yolo":
                 _mode_badge = "yolo"
-            elif self._auto_accept_edits and name in _EDIT_TOOLS:
+            elif self._approval_mode == "edits" and name in _EDIT_TOOLS:
                 _mode_badge = "edits"
 
         from ..agents.display import get_agent_display_callback as _get_agent_cb
