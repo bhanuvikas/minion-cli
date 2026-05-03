@@ -190,6 +190,10 @@ _DISPATCH: dict = {
     "todo_read":        todo_read,
 }
 
+# Tools whose terminal display is suppressed — they communicate through dedicated UI
+# (todo_write/todo_read show the Tasks panel instead of raw JSON payloads).
+_SILENT_TOOLS: frozenset[str] = frozenset({"todo_write", "todo_read"})
+
 
 class ToolExecutor:
     """Executes tool calls from the agent loop.
@@ -223,7 +227,7 @@ class ToolExecutor:
         _agent_cb = _get_agent_cb()
         if _agent_cb is not None:
             _agent_cb("tool_call", name=name, inputs=inputs)
-        else:
+        elif name not in _SILENT_TOOLS:
             print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
 
         if self.dry_run:
@@ -333,10 +337,10 @@ class ToolExecutor:
             _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
             with _spin_cm:
                 result = fn(**inputs)
-            if _agent_cb is None:
+            if _agent_cb is None and name not in _SILENT_TOOLS:
                 print_tool_result(result)
-                if name == "todo_write":
-                    print_todo_list(show_if_all_done=True)
+            if _agent_cb is None and name == "todo_write":
+                print_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:
@@ -360,7 +364,7 @@ class ToolExecutor:
         _agent_cb = _get_agent_cb()
         if _agent_cb is not None:
             _agent_cb("tool_call", name=name, inputs=inputs)
-        else:
+        elif name not in _SILENT_TOOLS:
             print_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label)
 
         if self.dry_run:
@@ -464,10 +468,10 @@ class ToolExecutor:
             _spin_cm = contextlib.nullcontext() if _agent_cb is not None else console.status(spinner_label, spinner="dots")
             with _spin_cm:
                 result = await asyncio.to_thread(fn, **inputs)
-            if _agent_cb is None:
+            if _agent_cb is None and name not in _SILENT_TOOLS:
                 print_tool_result(result)
-                if name == "todo_write":
-                    print_todo_list(show_if_all_done=True)
+            if _agent_cb is None and name == "todo_write":
+                print_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             return result
         except Exception as e:
