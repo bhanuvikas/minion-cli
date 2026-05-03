@@ -9,6 +9,7 @@ Each function:
 No UX or confirmation logic lives here. That's executor.py's responsibility.
 """
 
+import ast
 import re
 import subprocess
 from pathlib import Path
@@ -77,6 +78,17 @@ def read_file(
 
 # ─── write_file ───────────────────────────────────────────────────────────────
 
+def _check_python_syntax(path: str, content: str) -> Optional[str]:
+    """Return a human-readable error if content is invalid Python, else None."""
+    if not path.endswith(".py"):
+        return None
+    try:
+        ast.parse(content)
+        return None
+    except SyntaxError as e:
+        return f"Python syntax error at line {e.lineno}: {e.msg}"
+
+
 def write_file(
     path: str,
     content: str,
@@ -102,12 +114,19 @@ def write_file(
             if new_lines and not new_lines[-1].endswith("\n"):
                 new_lines[-1] += "\n"
             merged = old_lines[:start] + new_lines + old_lines[end:]
-            p.write_text("".join(merged), encoding="utf-8")
+            final_content = "".join(merged)
+            syntax_err = _check_python_syntax(path, final_content)
+            if syntax_err:
+                return f"Error: write rejected — {syntax_err}. Fix the indentation/syntax and retry."
+            p.write_text(final_content, encoding="utf-8")
             return (
                 f"Replaced lines {start + 1}–{end} of '{path}' "
                 f"({len(new_lines)} new lines, was {end - start})."
             )
 
+        syntax_err = _check_python_syntax(path, content)
+        if syntax_err:
+            return f"Error: write rejected — {syntax_err}. Fix the indentation/syntax and retry."
         p.write_text(content, encoding="utf-8")
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"Wrote {len(content):,} chars ({lines} lines) to '{path}'."

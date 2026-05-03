@@ -133,7 +133,7 @@ def format_diff_rich(
     def flush_pending() -> None:
         """Render buffered removals that had no matching addition."""
         for lineno, content in pending:
-            parts.append(f"[{_REMOVED_LINE_STYLE}]{lineno:>4}  -{_escape_rich(content)}[/]")
+            parts.append(f"[{_REMOVED_LINE_STYLE}]{lineno:>4}   {_escape_rich(content)}[/]")
         pending.clear()
 
     for line in diff_lines:
@@ -155,11 +155,11 @@ def format_diff_rich(
                 # Pair with the oldest buffered removal → inline character diff
                 old_lineno, old_content = pending.pop(0)
                 old_hl, new_hl = _inline_diff_markup(old_content, content)
-                parts.append(f"[{_REMOVED_LINE_STYLE}]{old_lineno:>4}  -{old_hl}[/]")
-                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}  +{new_hl}[/]")
+                parts.append(f"[{_REMOVED_LINE_STYLE}]{old_lineno:>4}   {old_hl}[/]")
+                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}   {new_hl}[/]")
             else:
                 # Pure addition — no removal to pair with
-                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}  +{_escape_rich(content)}[/]")
+                parts.append(f"[{_ADDED_LINE_STYLE}]{new_lineno:>4}   {_escape_rich(content)}[/]")
             new_lineno += 1
         else:
             flush_pending()

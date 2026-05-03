@@ -67,13 +67,15 @@ class ContextSnapshot:
       - message_tokens: derived (input_tokens - system_prompt_tokens)
     """
     model: str
-    input_tokens: int           # sent this turn (system prompt + all messages)
+    input_tokens: int           # total input this turn (uncached + cache_read + cache_creation)
     output_tokens: int          # generated this turn
     context_limit: int          # model's context window size
     session_total: int          # cumulative (input + output) across all turns
     turn_count: int             # completed turns this session
     system_prompt_tokens: int = 0   # estimated from char count; 0 if unavailable
     memory_tokens: int = 0          # estimated from injected memory block size
+    cache_read_tokens: int = 0      # tokens served from prompt cache this turn
+    cache_creation_tokens: int = 0  # tokens written to prompt cache this turn
 
     @property
     def current_context_tokens(self) -> int:
@@ -117,7 +119,8 @@ class Conversation:
         """Append a plain-text assistant reply and update running token totals."""
         self.messages.append(Message(role="assistant", content=text))
         if usage:
-            self.total_tokens += usage.input_tokens + usage.output_tokens
+            self.total_tokens += (usage.input_tokens + usage.cache_read_tokens
+                                  + usage.cache_creation_tokens + usage.output_tokens)
             self._turn_count += 1
             if usage.model:
                 self._model = usage.model
@@ -131,7 +134,8 @@ class Conversation:
         """
         self.messages.append(Message(role="assistant", content=content_blocks))
         if usage:
-            self.total_tokens += usage.input_tokens + usage.output_tokens
+            self.total_tokens += (usage.input_tokens + usage.cache_read_tokens
+                                  + usage.cache_creation_tokens + usage.output_tokens)
             self._turn_count += 1
             if usage.model:
                 self._model = usage.model
@@ -162,15 +166,19 @@ class Conversation:
         """
         if usage is None:
             return None
+        total_input = (usage.input_tokens + usage.cache_read_tokens
+                       + usage.cache_creation_tokens)
         self._snapshot = ContextSnapshot(
             model=usage.model,
-            input_tokens=usage.input_tokens,
+            input_tokens=total_input,
             output_tokens=usage.output_tokens,
             context_limit=_context_limit(usage.model),
             session_total=self.total_tokens,
             turn_count=self._turn_count,
             system_prompt_tokens=system_prompt_tokens,
             memory_tokens=memory_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
         )
         return self._snapshot
 

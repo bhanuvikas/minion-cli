@@ -252,6 +252,8 @@ def _stream_one_iteration(
                 input_tokens=event.input_tokens,
                 output_tokens=event.output_tokens,
                 model=event.model,
+                cache_read_tokens=event.cache_read_tokens,
+                cache_creation_tokens=event.cache_creation_tokens,
             )
             get_tracer().emit(
                 "llm_response",
@@ -723,6 +725,8 @@ async def _stream_one_iteration_async(
                 input_tokens=event.input_tokens,
                 output_tokens=event.output_tokens,
                 model=event.model,
+                cache_read_tokens=event.cache_read_tokens,
+                cache_creation_tokens=event.cache_creation_tokens,
             )
             get_tracer().emit(
                 "llm_response",
@@ -1155,7 +1159,9 @@ async def run_prompt_async(
     if not capture_output:
         system_prompt_tokens = len(system_prompt) // 4
         if final_usage:
-            conversation.truncate_if_needed(final_usage.input_tokens, final_usage.output_tokens)
+            total_input = (final_usage.input_tokens + final_usage.cache_read_tokens
+                           + final_usage.cache_creation_tokens)
+            conversation.truncate_if_needed(total_input, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
         print_usage(snapshot)
         if _subagent_tokens:

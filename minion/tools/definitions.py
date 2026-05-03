@@ -99,7 +99,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "• Existing file (bug fix, adding a function, editing a section): ALWAYS supply "
             "start_line and end_line to replace only the affected lines. Do NOT rewrite the "
             "whole file — full rewrites waste tokens, risk regressing untouched code, and are "
-            "hard to review. Use get_file_outline first to find the exact line numbers.\n"
+            "hard to review. Workflow: get_file_outline → read_file(start_line, end_line) to "
+            "see exact indentation → write_file with matching whitespace. Skipping the read "
+            "step causes indentation errors in Python files.\n"
             "Requires user confirmation before executing."
         ),
         "input_schema": {

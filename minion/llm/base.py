@@ -55,6 +55,8 @@ class LLMResponse:
     input_tokens: int
     output_tokens: int
     model: str
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 # ─── Typed stream events (Phase 3) ───────────────────────────────────────────
@@ -102,6 +104,8 @@ class StreamComplete:
     input_tokens: int
     output_tokens: int
     model: str
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 StreamEvent = Union[TextChunk, ToolAccumulationStart, ToolUseBlock, StreamComplete]

@@ -37,8 +37,9 @@ Tool use:
 - @filename.py in a user message means: the user has already injected that file's contents
   into the conversation — you do not need to call read_file for it.
 - When changing an existing file, use write_file with start_line/end_line to replace only
-  the affected lines. Never rewrite a whole file just to change a few lines — use
-  get_file_outline to find the line numbers, then write only that range.
+  the affected lines. Never rewrite a whole file just to change a few lines.
+  Workflow: get_file_outline → read_file(start_line, end_line) to see exact indentation
+  → write_file with matching whitespace. Skipping the read causes Python indentation errors.
 - If a tool call fails or returns unexpected output, try once with an adjusted approach
   (different search term, different path). If it fails again, tell the user what you tried
   and why — do not silently loop or invent an answer.

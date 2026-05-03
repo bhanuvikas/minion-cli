@@ -183,17 +183,23 @@ class AnthropicClient(LLMClient):
                                 current_tool = None
 
                     final = stream_ctx.get_final_message()
+                    _cache_read = getattr(final.usage, "cache_read_input_tokens", 0) or 0
+                    _cache_creation = getattr(final.usage, "cache_creation_input_tokens", 0) or 0
                     self._last_usage = LLMResponse(
                         content="",
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,
+                        cache_read_tokens=_cache_read,
+                        cache_creation_tokens=_cache_creation,
                     )
                     yield StreamComplete(
                         stop_reason=final.stop_reason,
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,
+                        cache_read_tokens=_cache_read,
+                        cache_creation_tokens=_cache_creation,
                     )
                 return  # success
             except anthropic.RateLimitError as e:
@@ -291,17 +297,23 @@ class AnthropicClient(LLMClient):
                                 current_tool = None
 
                     final = await stream_ctx.get_final_message()
+                    _cache_read = getattr(final.usage, "cache_read_input_tokens", 0) or 0
+                    _cache_creation = getattr(final.usage, "cache_creation_input_tokens", 0) or 0
                     self._last_usage = LLMResponse(
                         content="",
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,
+                        cache_read_tokens=_cache_read,
+                        cache_creation_tokens=_cache_creation,
                     )
                     yield StreamComplete(
                         stop_reason=final.stop_reason,
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,
+                        cache_read_tokens=_cache_read,
+                        cache_creation_tokens=_cache_creation,
                     )
                 return  # success
             except anthropic.RateLimitError as e:

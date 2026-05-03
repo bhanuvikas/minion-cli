@@ -129,13 +129,17 @@ def print_usage(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignore[
     """Footer line shown after every response.
 
     Format: model · N in / N out · context: X/Y (Z%) · session total: T
+    Cache hits are shown as a suffix on 'in' when present.
     """
     if snapshot is None:
         return
     console.print()
+    cache_suffix = ""
+    if snapshot.cache_read_tokens > 0:
+        cache_suffix = f" [dim]({snapshot.cache_read_tokens:,} cached)[/dim]"
     console.print(
         f"[muted]  ↳ {snapshot.model}  ·  "
-        f"{snapshot.input_tokens:,} in / {snapshot.output_tokens:,} out  ·  "
+        f"{snapshot.input_tokens:,} in{cache_suffix} / {snapshot.output_tokens:,} out  ·  "
         f"context: {snapshot.current_context_tokens:,}/{snapshot.context_limit:,} "
         f"({snapshot.context_pct:.1f}%)  ·  "
         f"billed: {snapshot.session_total:,}[/]"
@@ -172,6 +176,13 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
             f"  This turn:     [{YELLOW}]{snapshot.input_tokens:,}[/] in  /  "
             f"[{YELLOW}]{snapshot.output_tokens:,}[/] out"
         )
+        if snapshot.cache_read_tokens > 0 or snapshot.cache_creation_tokens > 0:
+            uncached = snapshot.input_tokens - snapshot.cache_read_tokens - snapshot.cache_creation_tokens
+            console.print(
+                f"  [muted]  └─ {uncached:,} uncached · "
+                f"{snapshot.cache_read_tokens:,} cache read · "
+                f"{snapshot.cache_creation_tokens:,} cache write[/]"
+            )
 
     # ── Session ────────────────────────────────────────────────────────────────
     turn_word = "turn" if snapshot.turn_count == 1 else "turns"
