@@ -30,12 +30,12 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
-        "name": "search_code",
+        "name": "search_file",
         "description": (
-            "Search for a text pattern or regex across source files. Use this to locate "
-            "a function definition, a class, a variable, an import, or any text without "
-            "knowing which file it lives in. Returns filename:line_number:matched_line for "
-            "each match. Prefer this over listing directories and reading files one by one."
+            "Search for a text pattern or regex across files. Use this to locate "
+            "a function definition, a class, a variable, a config value, or any text "
+            "without knowing which file it lives in. Returns filename:line_number:matched_line "
+            "for each match. Prefer this over listing directories and reading files one by one."
         ),
         "input_schema": {
             "type": "object",
@@ -44,7 +44,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": (
                         "Text or regex pattern to search for. "
-                        "Examples: 'def authenticate', 'class UserModel', 'import requests'."
+                        "Examples: 'def authenticate', 'class UserModel', 'API_KEY'."
                     ),
                 },
                 "path": {
@@ -55,7 +55,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": (
                         "Glob pattern to restrict which files are searched. "
-                        "Examples: '*.py', '*.ts', '*.go'. Defaults to all files."
+                        "Examples: '*.py', '*.ts', '*.yaml'. Defaults to all text files."
                     ),
                 },
             },
@@ -154,9 +154,10 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "list_directory",
         "description": (
-            "List the files and subdirectories at a given path. Use this to explore project "
-            "structure, find relevant files, or verify that a file was created. "
-            "For finding where a function or class is defined, prefer search_code instead."
+            "List the files and subdirectories at a single directory path. Use this to "
+            "inspect a specific directory's immediate contents. "
+            "To find files by name pattern across the whole project, use glob instead. "
+            "To find where a function or value is defined, use search_file instead."
         ),
         "input_schema": {
             "type": "object",
@@ -167,6 +168,55 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "glob",
+        "description": (
+            "Find files whose paths match a glob pattern. Use this to locate files by name "
+            "or extension without knowing exactly where they are. "
+            "Supports ** for recursive matching across subdirectories. "
+            "Examples: '**/*.py' (all Python files), 'src/**/*.ts' (TypeScript in src/), "
+            "'**/test_*.py' (all test files), 'config.*' (any config file in root). "
+            "Returns file paths relative to the search root. "
+            "For searching file contents (not names), use search_file instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "Glob pattern to match file paths. Use ** to match across directories. "
+                        "Examples: '**/*.py', 'src/**/*.ts', '**/test_*.py'."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Root directory to search from. Defaults to current working directory.",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "web_fetch",
+        "description": (
+            "Fetch the content of a URL and return it as plain text. "
+            "Use this to read documentation, README files, API references, changelogs, or "
+            "any web resource needed to complete a task. HTML is stripped to readable text. "
+            "Responses are truncated at 50,000 characters. "
+            "Requires user confirmation before executing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch. Must start with http:// or https://.",
+                },
+            },
+            "required": ["url"],
         },
     },
     {
@@ -260,7 +310,7 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 # Tools that modify state or execute arbitrary code — require user confirmation.
-DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "run_shell"})
+DANGEROUS_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "run_shell", "web_fetch"})
 
 # Tools that produce side effects that cannot be undone (writes, shell execution).
 # Reflection is skipped when any of these ran — the refiner cannot re-run tools,

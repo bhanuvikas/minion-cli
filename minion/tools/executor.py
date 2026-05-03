@@ -53,10 +53,12 @@ from .implementations import (
     _apply_edit,
     edit_file,
     get_file_outline,
+    glob,
     list_directory,
     read_file,
     run_shell,
-    search_code,
+    search_file,
+    web_fetch,
     write_file,
 )
 
@@ -66,7 +68,9 @@ TOOL_SPINNER_LABELS: dict[str, str] = {
     "run_shell":        "[muted]running...[/]",
     "read_file":        "[muted]reading...[/]",
     "list_directory":   "[muted]listing...[/]",
-    "search_code":      "[muted]searching...[/]",
+    "search_file":      "[muted]searching...[/]",
+    "glob":             "[muted]searching...[/]",
+    "web_fetch":        "[muted]fetching...[/]",
     "get_file_outline": "[muted]analyzing...[/]",
     "spawn_agent":      "[muted]planning task...[/]",
     "send_remote_task": "[muted]planning task...[/]",
@@ -160,6 +164,11 @@ def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
         )
         return question, detail
 
+    if name == "web_fetch":
+        url = (inputs.get("url") or "")[:100]
+        question = f"Allow web_fetch?  {url}" if url else "Allow web_fetch?"
+        return question, ""
+
     return f"Allow {name}?", _fmt_inputs()
 
 
@@ -168,9 +177,11 @@ _DISPATCH: dict = {
     "write_file":       write_file,
     "edit_file":        edit_file,
     "list_directory":   list_directory,
+    "glob":             glob,
+    "search_file":      search_file,
+    "web_fetch":        web_fetch,
     "run_shell":        run_shell,
     "get_file_outline": get_file_outline,
-    "search_code":      search_code,
 }
 
 

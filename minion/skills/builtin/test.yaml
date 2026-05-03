@@ -12,7 +12,7 @@ prompt: |
 tools:
   - run_shell
   - read_file
-  - search_code
+  - search_file
   - list_directory
 args:
   - name: target

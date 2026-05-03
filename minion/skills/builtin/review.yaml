@@ -15,7 +15,7 @@ prompt: |
   Target: {arg}
 tools:
   - read_file
-  - search_code
+  - search_file
   - get_file_outline
   - list_directory
 args:

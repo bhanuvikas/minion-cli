@@ -20,7 +20,7 @@ tools:
   - read_file
   - write_file
   - edit_file
-  - search_code
+  - search_file
   - get_file_outline
   - run_shell
 args:

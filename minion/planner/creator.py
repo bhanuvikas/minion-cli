@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 # ─── Read-only tool subset for the planner ────────────────────────────────────
 
-_PLANNER_TOOL_NAMES = {"get_file_outline", "search_code", "read_file", "list_directory"}
+_PLANNER_TOOL_NAMES = {"get_file_outline", "search_file", "glob", "read_file", "list_directory"}
 PLANNER_TOOL_DEFINITIONS = [t for t in TOOL_DEFINITIONS if t["name"] in _PLANNER_TOOL_NAMES]
 
 MAX_PLAN_ITERS = 12

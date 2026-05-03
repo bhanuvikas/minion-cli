@@ -25,6 +25,7 @@ system_prompt: |
 tools:
   - read_file
   - list_directory
-  - search_code
+  - search_file
+  - glob
   - get_file_outline
 max_iterations: 15

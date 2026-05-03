@@ -21,6 +21,9 @@ from ..context.filetree import IgnoreRules
 DEFAULT_TIMEOUT = 30
 _READ_LINE_LIMIT = 300   # lines shown before suggesting a range
 _MAX_SEARCH_RESULTS = 50
+_MAX_GLOB_RESULTS = 200
+_WEB_FETCH_TIMEOUT = 15
+_WEB_FETCH_MAX_CHARS = 50_000
 
 
 # ─── read_file ────────────────────────────────────────────────────────────────
@@ -309,10 +312,10 @@ def get_file_outline(path: str) -> str:
     return get_outline(path)
 
 
-# ─── search_code ─────────────────────────────────────────────────────────────
+# ─── search_file ─────────────────────────────────────────────────────────────
 
-def search_code(pattern: str, path: str = ".", file_glob: str = "*") -> str:
-    """Search for a regex/text pattern across source files.
+def search_file(pattern: str, path: str = ".", file_glob: str = "*") -> str:
+    """Search for a regex/text pattern across files.
 
     Uses ripgrep (rg) when available on PATH for speed; falls back to a pure
     Python implementation so the tool always works without rg installed.
@@ -321,6 +324,10 @@ def search_code(pattern: str, path: str = ".", file_glob: str = "*") -> str:
     if rg_result is not None:
         return rg_result
     return _search_python(pattern, path, file_glob)
+
+
+# Keep the old name as an alias so existing callers and tests still work.
+search_code = search_file
 
 
 def _search_rg(pattern: str, path: str, file_glob: str) -> Optional[str]:
@@ -403,3 +410,99 @@ def _search_python(pattern: str, path: str, file_glob: str) -> str:
             f"refine your pattern or use file_glob to narrow the search]"
         )
     return result
+
+
+# ─── glob ─────────────────────────────────────────────────────────────────────
+
+def glob(pattern: str, path: str = ".") -> str:
+    """Find files matching a glob pattern.
+
+    Uses Python's pathlib.Path.glob() — supports ** for recursive matching.
+    Respects .gitignore rules. Returns file paths relative to the search root.
+    """
+    try:
+        base = Path(path)
+        if not base.exists():
+            return f"Error: path '{path}' does not exist."
+        if not base.is_dir():
+            return f"Error: '{path}' is not a directory."
+
+        ignore_rules = IgnoreRules.load(base)
+        matches: list[str] = []
+
+        for p in sorted(base.glob(pattern)):
+            if not p.is_file():
+                continue
+            if ignore_rules.is_ignored(p, base):
+                continue
+            try:
+                rel = p.relative_to(base)
+            except ValueError:
+                rel = p
+            matches.append(str(rel))
+            if len(matches) >= _MAX_GLOB_RESULTS:
+                break
+
+        if not matches:
+            return f"[no files matching '{pattern}']"
+
+        result = "\n".join(matches)
+        if len(matches) == _MAX_GLOB_RESULTS:
+            result += f"\n[showing first {_MAX_GLOB_RESULTS} matches — refine your pattern]"
+        return result
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ─── web_fetch ────────────────────────────────────────────────────────────────
+
+def _strip_html(html: str) -> str:
+    """Remove HTML tags, scripts, and styles; normalise whitespace."""
+    html = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", "", html,
+                  flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r"<[^>]+>", "", html)
+    lines = [line.strip() for line in html.splitlines()]
+    out: list[str] = []
+    prev_blank = False
+    for line in lines:
+        if not line:
+            if not prev_blank:
+                out.append("")
+            prev_blank = True
+        else:
+            out.append(line)
+            prev_blank = False
+    return "\n".join(out).strip()
+
+
+def web_fetch(url: str) -> str:
+    """Fetch the content of a URL and return it as plain text.
+
+    HTML pages are stripped of tags and scripts. Responses are truncated at
+    50,000 characters so large pages don't flood the context window.
+    """
+    try:
+        import httpx
+        headers = {"User-Agent": "minion-cli/1.0 (coding assistant)"}
+        with httpx.Client(timeout=_WEB_FETCH_TIMEOUT, follow_redirects=True) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        text = _strip_html(response.text) if "html" in content_type else response.text
+
+        if len(text) > _WEB_FETCH_MAX_CHARS:
+            text = (text[:_WEB_FETCH_MAX_CHARS]
+                    + f"\n\n[Truncated — showing {_WEB_FETCH_MAX_CHARS:,} of {len(text):,} chars]")
+        return text
+    except Exception as e:
+        # Import httpx errors lazily so the name is available in the except clause
+        try:
+            import httpx as _httpx
+            if isinstance(e, _httpx.TimeoutException):
+                return f"Error: request to '{url}' timed out after {_WEB_FETCH_TIMEOUT}s."
+            if isinstance(e, _httpx.HTTPStatusError):
+                return f"Error: HTTP {e.response.status_code} from '{url}'."
+        except ImportError:
+            pass
+        return f"Error fetching '{url}': {e}"
