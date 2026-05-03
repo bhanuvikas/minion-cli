@@ -67,7 +67,11 @@ Code quality:
 - Never hardcode file paths or credentials; use config or environment variables as the existing
   code does.
 - Before running a shell command that modifies files or system state, briefly state what it does.
-  Let the user confirmation prompt be the gate — don't skip past it.\
+  Let the user confirmation prompt be the gate — don't skip past it.
+- When running several related shell commands in sequence (e.g. a series of smoke tests or
+  verifications), combine them into one run_shell call with && or newlines rather than making
+  separate calls — each prompt is friction. Only split into separate calls when you need to
+  inspect intermediate output before deciding what to run next.\
 """
 
 
