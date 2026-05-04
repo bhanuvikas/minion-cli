@@ -183,7 +183,7 @@ def run_model_config(client: LLMClient) -> Optional[dict]:
 
         if confirmed:
             update_env_values(updates)
-            console.print(f"[success]Bananaaaa! ✓[/] .env updated. Restart minion to apply changes.")
+            console.print(f"[success]✓[/]  .env updated. Restart minion to apply changes.")
             return updates
 
         console.print("[muted]Discarded.[/]")

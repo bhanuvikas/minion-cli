@@ -37,7 +37,7 @@ from .tools.executor import ToolExecutor, TOOL_SPINNER_LABELS
 from .tracing import get_tracer
 
 MAX_ITERATIONS = 20
-_SPINNER_LABEL = f"[{YELLOW}]🍌  Bee-do bee-do...[/]"
+_SPINNER_LABEL = f"[{YELLOW}]🍌  thinking...[/]"
 
 
 def _serialize_messages(messages) -> list:
