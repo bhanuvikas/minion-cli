@@ -104,9 +104,9 @@ def print_greeting(
     term_w = console.size.width
     SEP_W  = 3  # │ column fixed width
 
-    # Column widths that match the outer grid (ratio=60 / ratio=40).
+    # Column widths that match the outer grid (ratio=50 / ratio=50).
     # Use integer division so dots/truncation never exceed the cell width.
-    left_w  = max(30, (term_w - SEP_W) * 60 // 100)
+    left_w  = max(30, (term_w - SEP_W) // 2)
     right_w = max(20, term_w - SEP_W - left_w)
 
     # ── Logo (Align centers the block as a unit) ───────────────────────────────
@@ -126,7 +126,6 @@ def print_greeting(
 
     # ── Top rule ──────────────────────────────────────────────────────────────
     console.print(Rule(style=GREY))
-    console.print()
 
     # ── Dot-line helpers (stay 1 char short of column width for safety) ───────
     dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
@@ -150,6 +149,7 @@ def print_greeting(
     cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
     cmd_text.append("description\n", style=GREY)
     cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
+    cmd_text.append("\n")  # gap after dots
     for i, (cmd, desc) in enumerate(_BANNER_COMMANDS):
         cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
         desc_out = desc if len(desc) <= _max_desc else desc[:_max_desc - 1] + "…"
@@ -192,21 +192,22 @@ def print_greeting(
     sess_text = Text()
     sess_text.append("  session\n", style=f"bold {YELLOW}")
     sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
+    sess_text.append("\n")  # gap after dots
     for i, (key, val, val_style) in enumerate(sess_rows):
         sess_text.append(f"  {key:<9}", style=GREY)
         suffix = "\n" if i < len(sess_rows) - 1 else ""
         sess_text.append(val + suffix, style=val_style)
 
     # ── Separator ─────────────────────────────────────────────────────────────
-    # cmd_text: header + dots + N commands (no blank line)
-    n_sep = max(2 + len(_BANNER_COMMANDS), 2 + len(sess_rows))
+    # cmd_text: header + dots + blank + N commands
+    n_sep = max(3 + len(_BANNER_COMMANDS), 3 + len(sess_rows))
     sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {GREY}", justify="center")
 
     # ── Outer layout ──────────────────────────────────────────────────────────
     outer = Table.grid(expand=True)
-    outer.add_column(ratio=60)
+    outer.add_column(ratio=50)
     outer.add_column(width=SEP_W, justify="center")
-    outer.add_column(ratio=40)
+    outer.add_column(ratio=50)
     outer.add_row(cmd_text, sep_text, sess_text)
 
     console.print(outer)
