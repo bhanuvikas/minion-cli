@@ -102,8 +102,14 @@ def print_greeting(
     from rich.table import Table
 
     term_w = console.size.width
+    SEP_W  = 3  # │ column fixed width
 
-    # ── Logo (Align centers the block as a unit, not per-line) ────────────────
+    # Column widths that match the outer grid (ratio=60 / ratio=40).
+    # Use integer division so dots/truncation never exceed the cell width.
+    left_w  = max(30, (term_w - SEP_W) * 60 // 100)
+    right_w = max(20, term_w - SEP_W - left_w)
+
+    # ── Logo (Align centers the block as a unit) ───────────────────────────────
     art = _build_title()
     art.justify = None
     console.print()
@@ -118,15 +124,13 @@ def print_greeting(
     console.print(Align(greeting, align="center"))
     console.print()
 
-    # ── Rule ──────────────────────────────────────────────────────────────────
+    # ── Top rule ──────────────────────────────────────────────────────────────
     console.print(Rule(style=GREY))
     console.print()
 
-    # ── Dot-line helpers (conservative widths to avoid wrapping in ratio cells)
-    left_dots_w  = max(20, term_w * 57 // 100)
-    right_dots_w = max(12, term_w * 37 // 100 - 2)  # -2 for "  " indent
-    dots_cmd  = (". " * ((left_dots_w  + 1) // 2))[:left_dots_w]
-    dots_sess = (". " * ((right_dots_w + 1) // 2))[:right_dots_w]
+    # ── Dot-line helpers (stay 1 char short of column width for safety) ───────
+    dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
+    dots_sess = (". " * (right_w // 2))[:right_w - 3]  # -2 indent, -1 safety
 
     # ── Commands column ───────────────────────────────────────────────────────
     _BANNER_COMMANDS = [
@@ -135,49 +139,55 @@ def print_greeting(
         ("/compact", "summarise conversation"),
         ("/yolo",    "auto-approve all tools"),
         ("/model",   "switch provider or model"),
+        ("/context", "show context window usage"),
+        ("/clear",   "wipe conversation history"),
         ("/quit",    "exit Minion"),
     ]
-    _CMD_KEY_W = 10  # /compact (8 chars) + 2 trailing spaces
+    _CMD_KEY_W = 10  # /compact (8) + 2 trailing spaces
+    _max_desc  = max(10, left_w - _CMD_KEY_W - 1)
 
     cmd_text = Text()
     cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
     cmd_text.append("description\n", style=GREY)
     cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
-    cmd_text.append("\n")
     for i, (cmd, desc) in enumerate(_BANNER_COMMANDS):
         cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
+        desc_out = desc if len(desc) <= _max_desc else desc[:_max_desc - 1] + "…"
         suffix = "\n" if i < len(_BANNER_COMMANDS) - 1 else ""
-        cmd_text.append(desc + suffix, style="white")
+        cmd_text.append(desc_out + suffix, style="white")
 
     # ── Session column ────────────────────────────────────────────────────────
+    _max_val = max(8, right_w - 11 - 1)  # 11 = "  " + 9-char key; -1 safety
+
+    def _sv(s: str) -> str:
+        return s if len(s) <= _max_val else s[:_max_val - 1] + "…"
+
     sess_rows: list[tuple[str, str, str]] = []  # (key, value, value_style)
     ver = version or __version__
-    sess_rows.append(("version", f"v{ver}", "white"))
+    sess_rows.append(("version", _sv(f"v{ver}"), "white"))
     if model:
-        sess_rows.append(("model", model, BLUE))
+        sess_rows.append(("model", _sv(model), BLUE))
     if provider:
-        sess_rows.append(("provider", provider, "white"))
+        sess_rows.append(("provider", _sv(provider), "white"))
     if project_name:
-        sess_rows.append(("project", project_name, "white"))
+        sess_rows.append(("project", _sv(project_name), "white"))
     if cwd:
         cwd_display = cwd
         home = str(Path.home())
         if cwd_display.startswith(home):
             cwd_display = "~" + cwd_display[len(home):]
-        right_col_w = max(20, term_w * 4 // 10 - 3)
-        max_cwd = right_col_w - 11  # 11 = "  " + 9-char key field
-        if len(cwd_display) > max(8, max_cwd):
-            cwd_display = "…" + cwd_display[-(max(7, max_cwd - 1)):]
+        if len(cwd_display) > _max_val:
+            cwd_display = "…" + cwd_display[-(_max_val - 1):]
         sess_rows.append(("cwd", cwd_display, "white"))
     if agent_count > 0:
         lbl = "1 role loaded" if agent_count == 1 else f"{agent_count} roles loaded"
-        sess_rows.append(("agents", lbl, "white"))
+        sess_rows.append(("agents", _sv(lbl), "white"))
     mem_val   = "enabled"  if memory_enabled else "disabled"
     mem_style = "green"    if memory_enabled else f"dim {GREY}"
     sess_rows.append(("memory", mem_val, mem_style))
     if mcp_count > 0:
         lbl = "1 server active" if mcp_count == 1 else f"{mcp_count} servers active"
-        sess_rows.append(("mcp", lbl, "white"))
+        sess_rows.append(("mcp", _sv(lbl), "white"))
 
     sess_text = Text()
     sess_text.append("  session\n", style=f"bold {YELLOW}")
@@ -188,18 +198,20 @@ def print_greeting(
         sess_text.append(val + suffix, style=val_style)
 
     # ── Separator ─────────────────────────────────────────────────────────────
-    # cmd_text lines: header + dots + blank + N commands
-    n_sep = max(3 + len(_BANNER_COMMANDS), 2 + len(sess_rows))
+    # cmd_text: header + dots + N commands (no blank line)
+    n_sep = max(2 + len(_BANNER_COMMANDS), 2 + len(sess_rows))
     sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {GREY}", justify="center")
 
     # ── Outer layout ──────────────────────────────────────────────────────────
     outer = Table.grid(expand=True)
     outer.add_column(ratio=60)
-    outer.add_column(width=3, justify="center")
+    outer.add_column(width=SEP_W, justify="center")
     outer.add_column(ratio=40)
     outer.add_row(cmd_text, sep_text, sess_text)
 
     console.print(outer)
+    console.print()
+    console.print(Rule(style=GREY))
     console.print()
 
 
