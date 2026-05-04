@@ -85,36 +85,102 @@ def _build_title() -> Text:
 
 # ─── Branded Print Helpers ────────────────────────────────────────────────────
 
-def print_greeting(version: str = "") -> None:
+def print_greeting(
+    version: str = "",
+    model: str = "",
+    provider: str = "",
+    project_name: str = "",
+    cwd: str = "",
+    agent_count: int = 0,
+    memory_enabled: bool = True,
+    mcp_count: int = 0,
+) -> None:
     from . import __version__
+    from pathlib import Path
+    from rich.rule import Rule
+    from rich.table import Table
 
+    # ── Logo ──────────────────────────────────────────────────────────────────
     art = _build_title()
+    console.print()
+    console.print(art)
 
+    # ── Greeting ──────────────────────────────────────────────────────────────
     greeting = Text(justify="center")
     greeting.append("Bello! ", style=f"bold {YELLOW}")
     greeting.append("I'm ", style="white")
     greeting.append("Minion", style=f"bold {BLUE}")
     greeting.append(". What do you want me to do?", style="white")
+    console.print(greeting)
+    console.print()
 
-    content = Text()
-    content.append_text(art)
-    content.append("\n")
-    content.append_text(greeting)
+    # ── Rule ──────────────────────────────────────────────────────────────────
+    console.print(Rule(style=GREY))
+    console.print()
 
-    panel_title = (
-        f"[bold {YELLOW}]minion-cli[/] "
-        f"[{GREY}]v{version or __version__}[/]"
-    )
-    console.print(
-        Panel(
-            content,
-            title=panel_title,
-            title_align="left",
-            border_style=YELLOW,
-            padding=(0, 2),
-            expand=False,   # size to content, don't stretch to terminal width
-        )
-    )
+    # ── Commands column ───────────────────────────────────────────────────────
+    _BANNER_COMMANDS = [
+        ("/help",    "show all commands"),
+        ("/plan",    "create a step-by-step plan"),
+        ("/compact", "summarise conversation"),
+        ("/yolo",    "auto-approve all tools"),
+        ("/model",   "switch provider or model"),
+        ("/quit",    "exit Minion"),
+    ]
+    cmd_table = Table.grid(padding=(0, 2))
+    cmd_table.add_column(style=f"bold {YELLOW}", no_wrap=True)
+    cmd_table.add_column(style=GREY, no_wrap=True)
+    cmd_table.add_row(f"[{GREY}]commands[/]", "")
+    for cmd, desc in _BANNER_COMMANDS:
+        cmd_table.add_row(cmd, desc)
+
+    # ── Session column ────────────────────────────────────────────────────────
+    sess_rows: list[tuple[str, str]] = []
+    ver = version or __version__
+    sess_rows.append(("version", f"v{ver}"))
+    if model:
+        sess_rows.append(("model", model))
+    if provider:
+        sess_rows.append(("provider", provider))
+    if project_name:
+        sess_rows.append(("project", project_name))
+    if cwd:
+        cwd_display = cwd
+        home = str(Path.home())
+        if cwd_display.startswith(home):
+            cwd_display = "~" + cwd_display[len(home):]
+        # Right column is ~40% of (terminal_width - separator_width=3)
+        right_col_w = max(20, int((console.size.width - 3) * 0.4))
+        max_cwd = right_col_w - 11  # 11 = 2-char indent + 9-char key field
+        if len(cwd_display) > max(8, max_cwd):
+            cwd_display = "…" + cwd_display[-(max(7, max_cwd - 1)):]
+        sess_rows.append(("cwd", cwd_display))
+    if agent_count > 0:
+        sess_rows.append(("agents", str(agent_count)))
+    sess_rows.append(("memory", "on" if memory_enabled else "off"))
+    if mcp_count > 0:
+        sess_rows.append(("mcp", f"{mcp_count} server(s)"))
+
+    sess_text = Text()
+    sess_text.append("  session\n", style=f"dim {GREY}")
+    for i, (key, val) in enumerate(sess_rows):
+        sess_text.append(f"  {key:<9}", style=GREY)
+        suffix = "\n" if i < len(sess_rows) - 1 else ""
+        sess_text.append(val + suffix, style="white")
+
+    # ── Separator ─────────────────────────────────────────────────────────────
+    n_sep = max(1 + len(_BANNER_COMMANDS), 1 + len(sess_rows))
+    sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {GREY}", justify="center")
+
+    # ── Outer two-column grid ─────────────────────────────────────────────────
+    outer = Table.grid(expand=True)
+    outer.add_column(ratio=60)
+    outer.add_column(width=3, justify="center")
+    outer.add_column(ratio=40)
+    outer.add_row(cmd_table, sep_text, sess_text)
+
+    console.print(outer)
+    console.print()
 
 
 def print_error(message: str) -> None:

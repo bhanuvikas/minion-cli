@@ -1186,12 +1186,6 @@ async def run_repl_async(
     agents_enabled: bool = True,
 ) -> None:
     """Async REPL loop. Call via asyncio.run(run_repl_async(...))."""
-    print_greeting()
-    console.print(
-        f"[muted]Type [bold]/help[/bold] for commands · "
-        f"[bold]/quit[/bold] to exit[/]\n"
-    )
-
     history_path = Path.home() / ".minion" / "history"
     history_path.parent.mkdir(exist_ok=True)
 
@@ -1206,8 +1200,6 @@ async def run_repl_async(
         cwd=str(project_cwd),
     )
 
-    if project_context.manifest:
-        console.print(f"[muted]Project: {project_context.label}[/]\n")
     if project_context.minion_md:
         console.print(f"[muted]MINION.md loaded.[/]\n")
 
@@ -1261,12 +1253,6 @@ async def run_repl_async(
 
     from .agents import load_agent_registry
     agent_registry = load_agent_registry(project_cwd)
-    if agent_registry:
-        console.print(
-            f"[muted]Agents: {len(agent_registry)} role(s) available. "
-            f"Type /agents to list.[/]\n"
-        )
-
     from .a2a import load_a2a_manager
     a2a_manager = load_a2a_manager(project_cwd)
     if a2a_manager.has_agents():
@@ -1278,13 +1264,16 @@ async def run_repl_async(
     from .mcp import load_mcp_manager_async
     mcp_manager = await load_mcp_manager_async(project_cwd)
     mcp_manager.set_llm_client(client)  # enables sampling/createMessage from MCP servers
-    if mcp_manager.has_tools():
-        tool_count = len(mcp_manager.get_tool_definitions())
-        server_count = len(mcp_manager.server_summary())
-        console.print(
-            f"[muted]MCP: {tool_count} tool(s) from {server_count} server(s). "
-            f"Type /mcp to list.[/]\n"
-        )
+    mcp_count = len(mcp_manager.server_summary()) if mcp_manager.has_tools() else 0
+    print_greeting(
+        model=client.model_id,
+        provider=client.provider_name,
+        project_name=project_context.label if project_context.manifest else "",
+        cwd=str(project_cwd),
+        agent_count=len(agent_registry),
+        memory_enabled=state.memory_enabled,
+        mcp_count=mcp_count,
+    )
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
