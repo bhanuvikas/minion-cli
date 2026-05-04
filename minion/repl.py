@@ -1264,7 +1264,7 @@ async def run_repl_async(
     from .mcp import load_mcp_manager_async
     mcp_manager = await load_mcp_manager_async(project_cwd)
     mcp_manager.set_llm_client(client)  # enables sampling/createMessage from MCP servers
-    mcp_count = len(mcp_manager.server_summary()) if mcp_manager.has_tools() else 0
+    mcp_count = len(mcp_manager.server_summary())
     print_greeting(
         model=client.model_id,
         provider=client.provider_name,
