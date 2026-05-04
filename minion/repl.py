@@ -1265,7 +1265,6 @@ async def run_repl_async(
         agent_count=len(agent_registry),
         memory_enabled=state.memory_enabled,
         mcp_count=mcp_count,
-        minion_md=bool(project_context.minion_md),
         a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
     )
 

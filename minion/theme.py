@@ -94,7 +94,6 @@ def print_greeting(
     agent_count: int = 0,
     memory_enabled: bool = True,
     mcp_count: int = 0,
-    minion_md: bool = False,
     a2a_count: int = 0,
 ) -> None:
     from . import __version__
@@ -174,8 +173,6 @@ def print_greeting(
         sess_rows.append(("provider", _sv(provider), "white"))
     if project_name:
         sess_rows.append(("project", _sv(project_name), "white"))
-    if minion_md:
-        sess_rows.append(("config", "MINION.md", f"dim {GREY}"))
     if a2a_count > 0:
         lbl = "1 remote agent" if a2a_count == 1 else f"{a2a_count} remote agents"
         sess_rows.append(("a2a", _sv(lbl), "white"))
