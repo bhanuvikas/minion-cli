@@ -9,6 +9,7 @@ stays focused on input/UX concerns.
 """
 
 import asyncio
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -63,6 +64,7 @@ class ReplState:
     active_plan_goal: Optional[str] = None     # goal text stored alongside path
     agents_enabled: bool = True   # False = exclude spawn_agent from tool list
     approval_mode: str = "off"   # "off" | "edits" | "yolo"
+    markdown_enabled: bool = True  # render LLM responses as live markdown
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -90,6 +92,7 @@ REPL_COMMANDS = {
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
     "/mcp":     "MCP servers: /mcp | /mcp resource <uri> | /mcp prompt <name> | /mcp reload",
+    "/markdown": "Markdown rendering: /markdown | /markdown on | /markdown off",
     "/agents":  "Subagents: /agents | /agents on | /agents off",
     "/agent":   "Run a role directly: /agent <role> <task>",
     "/a2a":     "Remote agents: /a2a | /a2a list | /a2a run <agent> <task>",
@@ -175,11 +178,12 @@ class _InputLexer(Lexer):
             tokens = []
             pos = 0
 
-            # /command highlighting only on the first line
+            # /command highlighting only on the first line, only for known commands
             if lineno == 0 and line.startswith('/'):
                 m = re.match(r'/\S*', line)
                 if m:
-                    tokens.append(('class:slash-command', m.group()))
+                    style = 'class:slash-command' if m.group().lower() in REPL_COMMANDS else ''
+                    tokens.append((style, m.group()))
                     pos = m.end()
 
             remaining = line[pos:]
@@ -538,6 +542,21 @@ def _handle_slash_command(
                 console.print(f"[{YELLOW}]Subagents off.[/] [muted](spawn_agent removed from tool list)[/]")
             else:
                 print_error("Usage: /agents [on | off]")
+        return True
+
+    if cmd == "/markdown":
+        if state is not None:
+            if not arg:
+                status = "on" if state.markdown_enabled else "off"
+                console.print(f"[{YELLOW}]Markdown rendering:[/] {status}")
+            elif arg in ("on", "--on"):
+                state.markdown_enabled = True
+                console.print(f"[{YELLOW}]Markdown rendering on.[/]")
+            elif arg in ("off", "--off"):
+                state.markdown_enabled = False
+                console.print(f"[{YELLOW}]Markdown rendering off.[/] [muted](plain text streaming)[/]")
+            else:
+                print_error("Usage: /markdown [on | off]")
         return True
 
     if cmd == "/remember":
@@ -1236,6 +1255,7 @@ async def run_repl_async(
         debug=debug,
         agents_enabled=agents_enabled,
         approval_mode=_file_cfg.agent.approval_mode,
+        markdown_enabled=os.getenv("MINION_MARKDOWN", "true").lower() != "false",
     )
 
     from .skills import load_skill_registry
@@ -1399,6 +1419,7 @@ async def run_repl_async(
             auto_compact=_file_cfg.context.auto_compact,
             approval_mode=state.approval_mode,
             permission_store=permission_store,
+            stream_markdown=state.markdown_enabled,
         )
         console.print()
 

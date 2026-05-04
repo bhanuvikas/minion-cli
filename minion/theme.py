@@ -255,6 +255,56 @@ def stream_response_to_stdout(chunks) -> None:
         sys.stdout.flush()
 
 
+class MarkdownStreamer:
+    """Context manager that renders LLM streaming text as live markdown.
+
+    Usage: call write() for each incoming text chunk. The Live display updates
+    on newline boundaries to keep re-parsing overhead low. Call close() (or use
+    as a context manager via with-statement) to finalise and exit the Live area.
+    """
+
+    def __init__(self, display_name: str = "minion") -> None:
+        self._buffer: list[str] = []
+        self._display_name = display_name
+        self._live: Optional["Live"] = None  # type: ignore[name-defined]
+        self._entered = False
+
+    def __enter__(self) -> "MarkdownStreamer":
+        from rich.live import Live
+        from rich.markdown import Markdown
+        console.print(f"\n[bold {BLUE}]{self._display_name}[/] ›")
+        self._live = Live(
+            Markdown(""),
+            console=console,
+            refresh_per_second=12,
+            vertical_overflow="visible",
+            transient=False,
+        )
+        self._live.__enter__()
+        self._entered = True
+        return self
+
+    def write(self, text: str) -> None:
+        if not self._entered:
+            return
+        self._buffer.append(text)
+        from rich.markdown import Markdown
+        self._live.update(Markdown("".join(self._buffer)))  # type: ignore[union-attr]
+
+    def close(self) -> None:
+        """Finalise and exit the Live context. Safe to call if never entered."""
+        if not self._entered:
+            return
+        if self._buffer:
+            from rich.markdown import Markdown
+            self._live.update(Markdown("".join(self._buffer)), refresh=True)  # type: ignore[union-attr]
+        self._live.__exit__(None, None, None)  # type: ignore[union-attr]
+        self._entered = False
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+
 # ─── Tool Use Display (Phase 3) ───────────────────────────────────────────────
 
 _TOOL_NAME_COLORS: dict[str, str] = {

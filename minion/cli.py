@@ -452,16 +452,19 @@ def _run_one_shot(prompt: str, raw_argv: list) -> None:
     from .conversation import Conversation
     from .permissions import PermissionStore
 
+    import os as _os
     project_cwd = Path.cwd()
     system_prompt = build_system_prompt(build_project_context(project_cwd))
     conversation = Conversation()
     reflect_cfg = ReflectionConfig(depth=reflect) if reflect else None
     permission_store = PermissionStore(project_cwd=project_cwd)
+    stream_markdown = _os.getenv("MINION_MARKDOWN", "true").lower() != "false"
 
     asyncio.run(run_prompt_async(
         prompt, client, conversation, system_prompt,
         dry_run=dry_run, reflect_config=reflect_cfg,
         verbose=verbose, permission_store=permission_store,
+        stream_markdown=stream_markdown,
     ))
 
 

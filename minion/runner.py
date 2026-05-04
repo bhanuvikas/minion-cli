@@ -27,7 +27,7 @@ from .conversation import Conversation
 from .llm.base import ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
-    BLUE, YELLOW, console,
+    BLUE, YELLOW, console, MarkdownStreamer,
     print_critique, print_diff, print_error, print_iteration_limit,
     print_reflection_header, print_todo_list, print_tool_call, print_usage,
 )
@@ -149,6 +149,7 @@ def _stream_one_iteration(
     flush_narration: bool = True,
     spinner_label: Optional[str] = None,
     agent_label: Optional[str] = None,
+    stream_markdown: bool = False,
 ) -> Optional[_IterationResult]:
     """Run one LLM streaming call and collect all events into a structured result.
 
@@ -209,6 +210,7 @@ def _stream_one_iteration(
     printed_prefix = False
     _tool_spinner = None          # spinner shown while model generates tool JSON
     _tool_newline_printed = False  # True once we've ended the text line for the spinner
+    _md_streamer = MarkdownStreamer(display_name=agent_label or "minion")
 
     def _process(event) -> None:
         nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
@@ -223,17 +225,26 @@ def _stream_one_iteration(
             if not silent:
                 if not printed_prefix:
                     display_name = agent_label or "minion"
-                    console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
+                    if stream_markdown:
+                        _md_streamer.__enter__()
+                    else:
+                        console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
                     printed_prefix = True
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
+                if stream_markdown:
+                    _md_streamer.write(event.text)
+                else:
+                    sys.stdout.write(event.text)
+                    sys.stdout.flush()
         elif isinstance(event, ToolAccumulationStart):
             # Model is about to stream a (potentially large) tool call JSON.
             # If text was already shown, end the line and start a spinner so
             # the user isn't staring at a static cursor waiting for the tool
             # confirmation prompt to appear.
             if not silent and printed_prefix and _get_slot_cb() is None:
-                print()  # close the streamed text line
+                if stream_markdown:
+                    _md_streamer.close()
+                else:
+                    print()  # close the streamed text line
                 _tool_newline_printed = True
                 _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
                 _tool_spinner.start()
@@ -295,9 +306,11 @@ def _stream_one_iteration(
         except KeyboardInterrupt:
             pass  # Ctrl+C mid-stream — stop cleanly, no traceback
 
-    # Print trailing newline after streamed text, unless ToolAccumulationStart
-    # already printed it (to make room for the spinner).
-    if text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
+    # Finalise markdown streamer (closes Live context, handles any unfinished last line).
+    # Skipped for plain streaming — trailing newline is handled below.
+    if stream_markdown:
+        _md_streamer.close()
+    elif text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
         print()
 
     return _IterationResult(
@@ -594,6 +607,7 @@ def run_prompt(
     auto_compact: bool = True,
     approval_mode: str = "off",
     permission_store=None,  # PermissionStore | None
+    stream_markdown: bool = False,
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -609,6 +623,7 @@ def run_prompt(
         enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
         auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
+        stream_markdown=stream_markdown,
     ))
 
 
@@ -628,6 +643,7 @@ async def _stream_one_iteration_async(
     flush_narration: bool = True,
     spinner_label: Optional[str] = None,
     agent_label: Optional[str] = None,
+    stream_markdown: bool = False,
 ) -> Optional[_IterationResult]:
     """Async equivalent of _stream_one_iteration(). Uses client.async_stream()."""
     _llm_start = _time.monotonic()
@@ -690,6 +706,7 @@ async def _stream_one_iteration_async(
     printed_prefix = False
     _tool_spinner = None
     _tool_newline_printed = False
+    _md_streamer = MarkdownStreamer(display_name=agent_label or "minion")
 
     def _process(event) -> None:
         nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
@@ -702,13 +719,22 @@ async def _stream_one_iteration_async(
             if not silent:
                 if not printed_prefix:
                     display_name = agent_label or "minion"
-                    console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
+                    if stream_markdown:
+                        _md_streamer.__enter__()
+                    else:
+                        console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
                     printed_prefix = True
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
+                if stream_markdown:
+                    _md_streamer.write(event.text)
+                else:
+                    sys.stdout.write(event.text)
+                    sys.stdout.flush()
         elif isinstance(event, ToolAccumulationStart):
             if not silent and printed_prefix and _get_slot_cb() is None:
-                print()
+                if stream_markdown:
+                    _md_streamer.close()
+                else:
+                    print()
                 _tool_newline_printed = True
                 _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
                 _tool_spinner.start()
@@ -772,7 +798,9 @@ async def _stream_one_iteration_async(
                 _tool_spinner.stop()
                 _tool_spinner = None
 
-    if text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
+    if stream_markdown:
+        _md_streamer.close()
+    elif text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
         print()
 
     if _cancelled:
@@ -977,6 +1005,7 @@ async def run_prompt_async(
     auto_compact: bool = True,
     approval_mode: str = "off",
     permission_store=None,  # PermissionStore | None
+    stream_markdown: bool = False,
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -1046,6 +1075,7 @@ async def run_prompt_async(
                 flush_narration=render_markdown,
                 spinner_label=spinner_label,
                 agent_label=agent_label,
+                stream_markdown=stream_markdown,
             )
         except (KeyboardInterrupt, asyncio.CancelledError):
             # Ctrl+C before the first token arrived — nothing was committed to the
