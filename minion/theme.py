@@ -17,6 +17,7 @@ YELLOW = "#FFD700"
 BLUE = "#1E90FF"
 DENIM = "#2F4F8F"
 GREY = "#888888"
+SILVER = "#C0C0C0"
 
 MINION_THEME = Theme(
     {
@@ -32,29 +33,51 @@ MINION_THEME = Theme(
 
 console = Console(theme=MINION_THEME, highlight=False)
 
+# Startup warnings collected by loaders (skills, agents, etc.) before the banner
+# is printed. repl.py flushes this list into the third section after print_greeting().
+startup_warnings: list[str] = []
+
 
 # ─── Figlet Title ─────────────────────────────────────────────────────────────
-# "MINION" rendered in figlet ASCII art with alternating yellow/blue per letter.
-# Colors mirror the character: yellow body, blue overalls — M I N I O N.
-# We render each letter separately so each gets its own Rich color style.
+# "MINION" rendered in figlet ASCII art with per-letter (and per-row) colors.
+# Each entry in _LETTER_COLORS is either a uniform str or a list[str] of
+# per-row colors (last entry repeats for any overflow rows).
+#
+# "big" font: 'i' has 6 rows — rows 0-1 are the dot, rows 2-5 are the stem.
+# _I_DOT_ROWS is tied to _FIGLET_FONT; update both together if the font changes.
 
-# m=yellow  i=yellow  n=blue  i=yellow  o=yellow  n=blue
-_LETTER_COLORS = [YELLOW, YELLOW, BLUE, YELLOW, YELLOW, BLUE]
-_FIGLET_FONT = "big"  # upright block letters, no diagonal slant
+_FIGLET_FONT  = "big"  # upright block letters, no diagonal slant
+_I_DOT_ROWS   = 2      # rows 0..1 of 'i' in "big" font are the tittle (dot)
+
+_LETTER_COLORS: list[str | list[str]] = [
+    YELLOW,                                              # m — uniform yellow
+    [SILVER, SILVER, YELLOW, YELLOW, YELLOW, YELLOW],     # i — dot silver, stem yellow
+    BLUE,                                                # n — uniform blue
+    [SILVER, SILVER, YELLOW, YELLOW, YELLOW, YELLOW],    # i — dot silver, stem yellow
+    YELLOW,                                              # o — uniform yellow
+    BLUE,                                                # n — uniform blue
+]
+
+
+def _resolve_color(spec: str | list[str], row: int) -> str:
+    """Return the color for a given row, given a uniform or per-row color spec."""
+    if isinstance(spec, str):
+        return spec
+    return spec[row] if row < len(spec) else spec[-1]
 
 
 def _build_title() -> Text:
     try:
         import pyfiglet
     except ImportError:
-        # Graceful fallback if pyfiglet isn't installed
+        # Graceful fallback: render plain text using each letter's body color
         t = Text(justify="center")
         for i, ch in enumerate("minion"):
-            t.append(ch, style=_LETTER_COLORS[i])
+            t.append(ch, style=_resolve_color(_LETTER_COLORS[i], _I_DOT_ROWS))
         t.append("\n")
         return t
 
-    # Render each letter individually so we can apply a per-letter color.
+    # Render each letter individually so we can apply per-letter/per-row colors.
     # pyfiglet renders monospace rows; combining row-by-row places letters
     # side-by-side naturally — no manual width calculation needed.
     letter_lines: list[list[str]] = []
@@ -76,11 +99,142 @@ def _build_title() -> Text:
 
     title = Text(justify="center")
     for row in range(max_height):
-        for ls, color in zip(letter_lines, _LETTER_COLORS):
-            title.append(ls[row], style=color)
+        for ls, color_spec in zip(letter_lines, _LETTER_COLORS):
+            title.append(ls[row], style=_resolve_color(color_spec, row))
         title.append("\n")
 
     return title
+
+
+# ─── Banner ───────────────────────────────────────────────────────────────────
+
+# Extend this list to add/reorder commands shown in the banner's left column.
+BANNER_COMMANDS: list[tuple[str, str]] = [
+    ("/help",    "show all commands"),
+    ("/plan",    "create a step-by-step plan"),
+    ("/compact", "summarise conversation"),
+    ("/yolo",    "auto-approve all tools"),
+    ("/model",   "switch provider or model"),
+    ("/context", "show context window usage"),
+    ("/clear",   "wipe conversation history"),
+    ("/reflect", "enable self-critique mode"),
+    ("/save",    "save current session"),
+    ("/quit",    "exit Minion"),
+]
+
+_CMD_KEY_W = 10  # "/compact" (8) + 2 trailing spaces
+_SEP_W     = 3   # fixed width of the │ separator column
+
+
+def _print_logo() -> None:
+    """Section 1: figlet logo + greeting line."""
+    from rich.align import Align
+
+    art = _build_title()
+    art.justify = None
+    console.print()
+    console.print(Align(art, align="center"))
+
+    greeting = Text()
+    greeting.append("Bello! ", style=f"bold {YELLOW}")
+    greeting.append("I'm ", style="white")
+    greeting.append("Minion", style=f"bold {BLUE}")
+    greeting.append(". What do you want me to do?", style="white")
+    console.print(Align(greeting, align="center"))
+    console.print()
+
+
+def _build_session_rows(
+    version: str,
+    model: str,
+    provider: str,
+    project_name: str,
+    a2a_count: int,
+    cwd: str,
+    agent_count: int,
+    memory_enabled: bool,
+    mcp_count: int,
+    max_val: int,
+) -> list[tuple[str, str, str]]:
+    """Return (key, value, style) rows for the session column.
+
+    Add new session facts here — each tuple renders as one row in the right column.
+    """
+    from pathlib import Path as _Path
+
+    def _sv(s: str) -> str:
+        return s if len(s) <= max_val else s[:max_val - 1] + "…"
+
+    rows: list[tuple[str, str, str]] = []
+    rows.append(("version", _sv(f"v{version}"), "white"))
+    if model:
+        rows.append(("model", _sv(model), BLUE))
+    if provider:
+        rows.append(("provider", _sv(provider), "white"))
+    if project_name:
+        rows.append(("project", _sv(project_name), "white"))
+    if a2a_count > 0:
+        lbl = "1 remote agent" if a2a_count == 1 else f"{a2a_count} remote agents"
+        rows.append(("a2a", _sv(lbl), "white"))
+    if cwd:
+        cwd_display = cwd
+        home = str(_Path.home())
+        if cwd_display.startswith(home):
+            cwd_display = "~" + cwd_display[len(home):]
+        if len(cwd_display) > max_val:
+            cwd_display = "…" + cwd_display[-(max_val - 1):]
+        rows.append(("cwd", cwd_display, "white"))
+    if agent_count > 0:
+        lbl = "1 role loaded" if agent_count == 1 else f"{agent_count} roles loaded"
+        rows.append(("agents", _sv(lbl), "white"))
+    mem_val   = "enabled" if memory_enabled else "disabled"
+    mem_style = "green"   if memory_enabled else f"dim {GREY}"
+    rows.append(("memory", mem_val, mem_style))
+    if mcp_count > 0:
+        lbl = "1 server active" if mcp_count == 1 else f"{mcp_count} servers active"
+        rows.append(("mcp", _sv(lbl), "white"))
+    return rows
+
+
+def _print_info_panel(
+    left_w: int,
+    right_w: int,
+    session_rows: list[tuple[str, str, str]],
+) -> None:
+    """Section 2: two-column commands / session grid."""
+    from rich.table import Table
+
+    dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
+    dots_sess = (". " * (right_w // 2))[:right_w - 3]  # -2 indent, -1 safety
+
+    max_desc = max(10, left_w - _CMD_KEY_W - 1)
+    cmd_text = Text()
+    cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
+    cmd_text.append("description\n", style=GREY)
+    cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
+    for i, (cmd, desc) in enumerate(BANNER_COMMANDS):
+        cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
+        desc_out = desc if len(desc) <= max_desc else desc[:max_desc - 1] + "…"
+        suffix = "\n" if i < len(BANNER_COMMANDS) - 1 else ""
+        cmd_text.append(desc_out + suffix, style="white")
+
+    sess_text = Text()
+    sess_text.append("  session\n", style=f"bold {YELLOW}")
+    sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
+    for i, (key, val, val_style) in enumerate(session_rows):
+        sess_text.append(f"  {key:<9}", style=GREY)
+        suffix = "\n" if i < len(session_rows) - 1 else ""
+        sess_text.append(val + suffix, style=val_style)
+
+    n_sep = max(2 + len(BANNER_COMMANDS), 2 + len(session_rows))
+    sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {SILVER}", justify="center")
+
+    outer = Table.grid(expand=True)
+    outer.add_column(ratio=50)
+    outer.add_column(width=_SEP_W, justify="center")
+    outer.add_column(ratio=50)
+    outer.add_row(cmd_text, sep_text, sess_text)
+    console.print(outer)
 
 
 # ─── Branded Print Helpers ────────────────────────────────────────────────────
@@ -97,127 +251,48 @@ def print_greeting(
     a2a_count: int = 0,
 ) -> None:
     from . import __version__
-    from pathlib import Path
-    from rich.align import Align
     from rich.rule import Rule
-    from rich.table import Table
 
-    term_w = console.size.width
-    SEP_W  = 3  # │ column fixed width
+    term_w  = console.size.width
+    left_w  = max(30, (term_w - _SEP_W) // 2)
+    right_w = max(20, term_w - _SEP_W - left_w)
 
-    # Column widths that match the outer grid (ratio=50 / ratio=50).
-    # Use integer division so dots/truncation never exceed the cell width.
-    left_w  = max(30, (term_w - SEP_W) // 2)
-    right_w = max(20, term_w - SEP_W - left_w)
+    _print_logo()
+    console.print(Rule(style=SILVER))
 
-    # ── Logo (Align centers the block as a unit) ───────────────────────────────
-    art = _build_title()
-    art.justify = None
+    session_rows = _build_session_rows(
+        version=version or __version__,
+        model=model,
+        provider=provider,
+        project_name=project_name,
+        a2a_count=a2a_count,
+        cwd=cwd,
+        agent_count=agent_count,
+        memory_enabled=memory_enabled,
+        mcp_count=mcp_count,
+        max_val=max(8, right_w - 11 - 1),
+    )
+    _print_info_panel(left_w=left_w, right_w=right_w, session_rows=session_rows)
+
     console.print()
-    console.print(Align(art, align="center"))
-
-    # ── Greeting ──────────────────────────────────────────────────────────────
-    greeting = Text()
-    greeting.append("Bello! ", style=f"bold {YELLOW}")
-    greeting.append("I'm ", style="white")
-    greeting.append("Minion", style=f"bold {BLUE}")
-    greeting.append(". What do you want me to do?", style="white")
-    console.print(Align(greeting, align="center"))
+    console.print(Rule(style=SILVER))
     console.print()
 
-    # ── Top rule ──────────────────────────────────────────────────────────────
-    console.print(Rule(style=GREY))
 
-    # ── Dot-line helpers (stay 1 char short of column width for safety) ───────
-    dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
-    dots_sess = (". " * (right_w // 2))[:right_w - 3]  # -2 indent, -1 safety
+def print_startup_warnings(warnings: list[str]) -> None:
+    """Section 3: startup warnings collected by loaders, followed by a closing rule.
 
-    # ── Commands column ───────────────────────────────────────────────────────
-    _BANNER_COMMANDS = [
-        ("/help",    "show all commands"),
-        ("/plan",    "create a step-by-step plan"),
-        ("/compact", "summarise conversation"),
-        ("/yolo",    "auto-approve all tools"),
-        ("/model",   "switch provider or model"),
-        ("/context", "show context window usage"),
-        ("/clear",   "wipe conversation history"),
-        ("/reflect", "enable self-critique mode"),
-        ("/save",    "save current session"),
-        ("/quit",    "exit Minion"),
-    ]
-    _CMD_KEY_W = 10  # /compact (8) + 2 trailing spaces
-    _max_desc  = max(10, left_w - _CMD_KEY_W - 1)
-
-    cmd_text = Text()
-    cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
-    cmd_text.append("description\n", style=GREY)
-    cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
-    for i, (cmd, desc) in enumerate(_BANNER_COMMANDS):
-        cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
-        desc_out = desc if len(desc) <= _max_desc else desc[:_max_desc - 1] + "…"
-        suffix = "\n" if i < len(_BANNER_COMMANDS) - 1 else ""
-        cmd_text.append(desc_out + suffix, style="white")
-
-    # ── Session column ────────────────────────────────────────────────────────
-    _max_val = max(8, right_w - 11 - 1)  # 11 = "  " + 9-char key; -1 safety
-
-    def _sv(s: str) -> str:
-        return s if len(s) <= _max_val else s[:_max_val - 1] + "…"
-
-    sess_rows: list[tuple[str, str, str]] = []  # (key, value, value_style)
-    ver = version or __version__
-    sess_rows.append(("version", _sv(f"v{ver}"), "white"))
-    if model:
-        sess_rows.append(("model", _sv(model), BLUE))
-    if provider:
-        sess_rows.append(("provider", _sv(provider), "white"))
-    if project_name:
-        sess_rows.append(("project", _sv(project_name), "white"))
-    if a2a_count > 0:
-        lbl = "1 remote agent" if a2a_count == 1 else f"{a2a_count} remote agents"
-        sess_rows.append(("a2a", _sv(lbl), "white"))
-    if cwd:
-        cwd_display = cwd
-        home = str(Path.home())
-        if cwd_display.startswith(home):
-            cwd_display = "~" + cwd_display[len(home):]
-        if len(cwd_display) > _max_val:
-            cwd_display = "…" + cwd_display[-(_max_val - 1):]
-        sess_rows.append(("cwd", cwd_display, "white"))
-    if agent_count > 0:
-        lbl = "1 role loaded" if agent_count == 1 else f"{agent_count} roles loaded"
-        sess_rows.append(("agents", _sv(lbl), "white"))
-    mem_val   = "enabled"  if memory_enabled else "disabled"
-    mem_style = "green"    if memory_enabled else f"dim {GREY}"
-    sess_rows.append(("memory", mem_val, mem_style))
-    if mcp_count > 0:
-        lbl = "1 server active" if mcp_count == 1 else f"{mcp_count} servers active"
-        sess_rows.append(("mcp", _sv(lbl), "white"))
-
-    sess_text = Text()
-    sess_text.append("  session\n", style=f"bold {YELLOW}")
-    sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
-    for i, (key, val, val_style) in enumerate(sess_rows):
-        sess_text.append(f"  {key:<9}", style=GREY)
-        suffix = "\n" if i < len(sess_rows) - 1 else ""
-        sess_text.append(val + suffix, style=val_style)
-
-    # ── Separator ─────────────────────────────────────────────────────────────
-    # cmd_text: header + dots + N commands (no blank line after dots)
-    n_sep = max(2 + len(_BANNER_COMMANDS), 2 + len(sess_rows))
-    sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {GREY}", justify="center")
-
-    # ── Outer layout ──────────────────────────────────────────────────────────
-    outer = Table.grid(expand=True)
-    outer.add_column(ratio=50)
-    outer.add_column(width=SEP_W, justify="center")
-    outer.add_column(ratio=50)
-    outer.add_row(cmd_text, sep_text, sess_text)
-
-    console.print(outer)
+    No-op when warnings is empty. Each entry is a Rich markup string.
+    Add new warning sources by appending to the startup_warnings list before
+    print_greeting() is called, or pass extra warnings directly to this function.
+    """
+    if not warnings:
+        return
+    from rich.rule import Rule
+    for w in warnings:
+        console.print(w)
     console.print()
-    console.print(Rule(style=GREY))
-    console.print()
+    console.print(Rule(style=SILVER))
 
 
 def print_error(message: str) -> None:

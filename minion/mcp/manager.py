@@ -433,11 +433,14 @@ class MCPManager:
 
     def __init__(self) -> None:
         self._states: dict[str, _ServerState] = {}
+        self._connection_warnings: list[str] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def connect_all(self, configs: dict[str, MCPServerConfig]) -> None:
         """Connect to all configured servers concurrently. Warns on failures."""
+        self._connection_warnings.clear()
+
         async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
             state = _ServerState(name=name, config=cfg)
             self._states[name] = state
@@ -449,7 +452,7 @@ class MCPManager:
 
             if state.error is not None:
                 latency_ms = int((time.monotonic() - t0) * 1000)
-                console.print(
+                self._connection_warnings.append(
                     f"[muted]Warning: MCP server '{name}' failed to connect: {state.error}[/]"
                 )
                 get_tracer().emit(
@@ -513,6 +516,10 @@ class MCPManager:
             state.llm_client = client
 
     # ── Sync metadata (no I/O) ────────────────────────────────────────────────
+
+    @property
+    def connection_warnings(self) -> list[str]:
+        return self._connection_warnings
 
     def has_tools(self) -> bool:
         return any(s.tools for s in self._states.values())

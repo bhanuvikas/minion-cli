@@ -44,7 +44,7 @@ from .memory.store import MemoryStore
 from .prompts import build_system_prompt
 from .runner import run_prompt, run_prompt_async
 from .session import list_sessions, load, save
-from .theme import BLUE, YELLOW, console, print_context, print_error, print_greeting, print_mode_toggle
+from .theme import BLUE, SILVER, YELLOW, console, print_context, print_error, print_greeting, print_mode_toggle, print_startup_warnings, startup_warnings
 from .tracing import get_tracer
 
 # ─── REPL session state ───────────────────────────────────────────────────────
@@ -372,6 +372,8 @@ def _handle_slash_command(
 
     if cmd in ("/quit", "/exit"):
         console.print(f"[{YELLOW}]Poopaye! (Goodbye!) 👋[/]")
+        from rich.rule import Rule
+        console.print(Rule(style=SILVER))
         raise typer.Exit()
 
     if cmd == "/help":
@@ -1088,6 +1090,8 @@ async def _handle_mcp_command(raw: str, mcp_manager: "MCPManager") -> Optional[l
         from pathlib import Path as _Path
         console.print(f"[muted]Reloading MCP servers…[/]")
         await mcp_manager.reconnect_all(cwd=_Path.cwd())
+        for _warn in mcp_manager.connection_warnings:
+            console.print(_warn)
         n = len(list(mcp_manager._states))
         console.print(f"[{YELLOW}]MCP reloaded: {n} server{'s' if n != 1 else ''} connected.[/]")
         return None
@@ -1267,6 +1271,9 @@ async def run_repl_async(
         mcp_count=mcp_count,
         a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
     )
+    _all_startup_warnings = startup_warnings[:] + mcp_manager.connection_warnings
+    startup_warnings.clear()
+    print_startup_warnings(_all_startup_warnings)
 
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
@@ -1287,6 +1294,8 @@ async def run_repl_async(
             user_input = await session.prompt_async(you_prompt)
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
+            from rich.rule import Rule
+            console.print(Rule(style=SILVER))
             mcp_manager.shutdown()
             get_tracer().finalize()
             break

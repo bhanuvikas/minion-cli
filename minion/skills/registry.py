@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import ItemsView, Iterator
 
 from .manifest import SkillManifest, load_manifest
-from ..theme import console
+from ..theme import startup_warnings
 
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
 _USER_DIR = Path.home() / ".minion" / "skills"
@@ -72,5 +72,5 @@ def load_skill_registry(cwd: Path | None = None) -> SkillRegistry:
                 manifest = load_manifest(yaml_path, source=source)
                 skills[manifest.name] = manifest
             except Exception as e:
-                console.print(f"[muted]Warning: skipping skill {yaml_path.name}: {e}[/]")
+                startup_warnings.append(f"[muted]Warning: skipping skill {yaml_path.name}: {e}[/]")
     return SkillRegistry(skills)
