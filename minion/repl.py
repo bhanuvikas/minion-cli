@@ -162,13 +162,12 @@ class _SlashCompleter(Completer):
 
 # ─── Input syntax highlighting ────────────────────────────────────────────────
 
-_MENTION_RE = re.compile(r'@[\w./\-]+')
+_TOKEN_RE = re.compile(r'@[\w./\-]+|/\S+')
 
 class _InputLexer(Lexer):
-    """Highlight /commands (yellow) and @file mentions (blue) as the user types."""
+    """Highlight valid /commands (yellow) and @file mentions (blue) anywhere in the input."""
 
     def lex_document(self, document):
-        # Split once; get_line is called per-line by prompt_toolkit in multiline mode.
         lines = document.text.split("\n")
 
         def get_line(lineno):
@@ -176,26 +175,20 @@ class _InputLexer(Lexer):
                 return []
             line = lines[lineno]
             tokens = []
-            pos = 0
-
-            # /command highlighting only on the first line, only for known commands
-            if lineno == 0 and line.startswith('/'):
-                m = re.match(r'/\S*', line)
-                if m:
-                    style = 'class:slash-command' if m.group().lower() in REPL_COMMANDS else ''
-                    tokens.append((style, m.group()))
-                    pos = m.end()
-
-            remaining = line[pos:]
             cursor = 0
-            for m in _MENTION_RE.finditer(remaining):
+            for m in _TOKEN_RE.finditer(line):
                 if m.start() > cursor:
-                    tokens.append(('', remaining[cursor:m.start()]))
-                tokens.append(('class:at-mention', m.group()))
+                    tokens.append(('', line[cursor:m.start()]))
+                text = m.group()
+                if text.startswith('@'):
+                    tokens.append(('class:at-mention', text))
+                elif text.lower() in REPL_COMMANDS:
+                    tokens.append(('class:slash-command', text))
+                else:
+                    tokens.append(('', text))
                 cursor = m.end()
-            if cursor < len(remaining):
-                tokens.append(('', remaining[cursor:]))
-
+            if cursor < len(line):
+                tokens.append(('', line[cursor:]))
             return tokens
 
         return get_line
