@@ -94,6 +94,8 @@ def print_greeting(
     agent_count: int = 0,
     memory_enabled: bool = True,
     mcp_count: int = 0,
+    minion_md: bool = False,
+    a2a_count: int = 0,
 ) -> None:
     from . import __version__
     from pathlib import Path
@@ -140,6 +142,8 @@ def print_greeting(
         ("/model",   "switch provider or model"),
         ("/context", "show context window usage"),
         ("/clear",   "wipe conversation history"),
+        ("/reflect", "enable self-critique mode"),
+        ("/save",    "save current session"),
         ("/quit",    "exit Minion"),
     ]
     _CMD_KEY_W = 10  # /compact (8) + 2 trailing spaces
@@ -149,7 +153,6 @@ def print_greeting(
     cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
     cmd_text.append("description\n", style=GREY)
     cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
-    cmd_text.append("\n")  # gap after dots
     for i, (cmd, desc) in enumerate(_BANNER_COMMANDS):
         cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
         desc_out = desc if len(desc) <= _max_desc else desc[:_max_desc - 1] + "…"
@@ -171,6 +174,11 @@ def print_greeting(
         sess_rows.append(("provider", _sv(provider), "white"))
     if project_name:
         sess_rows.append(("project", _sv(project_name), "white"))
+    if minion_md:
+        sess_rows.append(("config", "MINION.md", f"dim {GREY}"))
+    if a2a_count > 0:
+        lbl = "1 remote agent" if a2a_count == 1 else f"{a2a_count} remote agents"
+        sess_rows.append(("a2a", _sv(lbl), "white"))
     if cwd:
         cwd_display = cwd
         home = str(Path.home())
@@ -192,15 +200,14 @@ def print_greeting(
     sess_text = Text()
     sess_text.append("  session\n", style=f"bold {YELLOW}")
     sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
-    sess_text.append("\n")  # gap after dots
     for i, (key, val, val_style) in enumerate(sess_rows):
         sess_text.append(f"  {key:<9}", style=GREY)
         suffix = "\n" if i < len(sess_rows) - 1 else ""
         sess_text.append(val + suffix, style=val_style)
 
     # ── Separator ─────────────────────────────────────────────────────────────
-    # cmd_text: header + dots + blank + N commands
-    n_sep = max(3 + len(_BANNER_COMMANDS), 3 + len(sess_rows))
+    # cmd_text: header + dots + N commands (no blank line after dots)
+    n_sep = max(2 + len(_BANNER_COMMANDS), 2 + len(sess_rows))
     sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {GREY}", justify="center")
 
     # ── Outer layout ──────────────────────────────────────────────────────────

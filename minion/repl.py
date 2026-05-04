@@ -1200,8 +1200,6 @@ async def run_repl_async(
         cwd=str(project_cwd),
     )
 
-    if project_context.minion_md:
-        console.print(f"[muted]MINION.md loaded.[/]\n")
 
     from .config_file import load_config as _load_cfg
     from .memory.triggers import (
@@ -1255,12 +1253,6 @@ async def run_repl_async(
     agent_registry = load_agent_registry(project_cwd)
     from .a2a import load_a2a_manager
     a2a_manager = load_a2a_manager(project_cwd)
-    if a2a_manager.has_agents():
-        console.print(
-            f"[muted]A2A: {len(a2a_manager.agent_names())} remote agent(s) configured. "
-            f"Type /a2a to list.[/]\n"
-        )
-
     from .mcp import load_mcp_manager_async
     mcp_manager = await load_mcp_manager_async(project_cwd)
     mcp_manager.set_llm_client(client)  # enables sampling/createMessage from MCP servers
@@ -1273,6 +1265,8 @@ async def run_repl_async(
         agent_count=len(agent_registry),
         memory_enabled=state.memory_enabled,
         mcp_count=mcp_count,
+        minion_md=bool(project_context.minion_md),
+        a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
     )
 
     session: PromptSession = PromptSession(
