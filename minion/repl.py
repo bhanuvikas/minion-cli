@@ -251,28 +251,21 @@ Rules:
 - If a value is genuinely unknown, write a short placeholder comment."""
 
 
-def _generate_minion_md_llm(project_context: ProjectContext, client: LLMClient) -> str | None:
-    """Generate a project-specific MINION.md by streaming from the LLM.
+def _generate_minion_md_llm(project_context: ProjectContext, client: LLMClient):
+    """Yield text chunks from LLM generation. Raises on stream error.
 
-    Returns the generated content string, or None on any failure so the caller
-    can fall back to the static template.
+    Caller is responsible for collecting chunks and rendering the display.
     """
-    from .llm.base import Message, StreamComplete, TextChunk
+    from .llm.base import Message, TextChunk
 
     messages = [Message(
         role="user",
         content=f"Generate a MINION.md for this project:\n\n{project_context.to_prompt_block()}",
     )]
-    try:
-        stream = client.stream(messages, system=_INIT_SYSTEM_PROMPT)
-        chunks: list[str] = []
-        for event in stream:
-            if isinstance(event, TextChunk):
-                chunks.append(event.text)
-        content = "".join(chunks).strip()
-        return content + "\n" if content else None
-    except Exception:
-        raise
+    stream = client.stream(messages, system=_INIT_SYSTEM_PROMPT)
+    for event in stream:
+        if isinstance(event, TextChunk):
+            yield event.text
 
 
 def _generate_minion_md(project_context: ProjectContext | None) -> str:
@@ -390,29 +383,56 @@ def _handle_slash_command(
 
     if cmd == "/init":
         minion_md_path = Path.cwd() / "MINION.md"
-        if minion_md_path.exists():
-            console.print(
-                f"[{YELLOW}]MINION.md already exists.[/] "
-                f"[muted]Edit it directly or delete it first.[/]"
-            )
-            return True
+        is_regen = minion_md_path.exists()
+        if is_regen:
+            import questionary
+            from .setup_wizard import _MINION_STYLE
+            regenerate = questionary.confirm(
+                "MINION.md already exists. Regenerate it from the current codebase?",
+                default=False,
+                style=_MINION_STYLE,
+            ).ask()
+            if not regenerate:
+                return True
 
         # Ensure .minion/ project dir exists
         minion_dir = Path.cwd() / ".minion"
         minion_dir.mkdir(exist_ok=True)
 
         content = None
-        llm_attempted = False
+        was_streamed = False
         if project_context:
+            # Strip existing minion_md so the LLM analyses the codebase fresh
+            from .context.project import ProjectContext as _PC
+            fresh_context = _PC(
+                cwd=project_context.cwd,
+                manifest=project_context.manifest,
+                file_tree=project_context.file_tree,
+                minion_md=None,
+            )
             try:
-                with console.status(f"[muted]Generating MINION.md...[/]"):
-                    content = _generate_minion_md_llm(project_context, client)
-                llm_attempted = True
+                from rich.live import Live
+                from rich.markdown import Markdown as _MD
+                gen = _generate_minion_md_llm(fresh_context, client)
+                # Spinner while waiting for first token — erases itself on exit
+                with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
+                    first_chunk = next(gen, None)
+                chunks: list[str] = []
+                if first_chunk is not None:
+                    chunks.append(first_chunk)
+                    with Live(_MD(first_chunk), console=console, refresh_per_second=12,
+                              vertical_overflow="visible") as live:
+                        for chunk in gen:
+                            chunks.append(chunk)
+                            live.update(_MD("".join(chunks)))
+                raw = "".join(chunks).strip()
+                content = raw + "\n" if raw else None
+                was_streamed = True
             except Exception as e:
-                llm_attempted = True
                 console.print(f"[muted]LLM generation failed: {e}[/]")
+
         if content is None:
-            if llm_attempted:
+            if project_context:
                 console.print(f"[muted]Using static template.[/]")
             content = _generate_minion_md(project_context)
 
@@ -423,10 +443,14 @@ def _handle_slash_command(
             new_context = build_project_context(Path.cwd())
             state.system_prompt = build_system_prompt(new_context)
 
-        console.print(f"[{YELLOW}]Created MINION.md[/] [muted]in {Path.cwd()}[/]")
+        action = "Regenerated" if is_regen else "Created"
+        if not was_streamed:
+            # Static fallback — show it since it wasn't streamed live
+            console.print()
+            from rich.markdown import Markdown
+            console.print(Markdown(content))
         console.print()
-        from rich.markdown import Markdown
-        console.print(Markdown(content))
+        console.print(f"[{YELLOW}]{action} MINION.md[/] [muted]in {Path.cwd()}[/]")
         console.print(f"[muted]Edit MINION.md to refine — changes take effect in this session immediately.[/]")
         return True
 

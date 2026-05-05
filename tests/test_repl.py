@@ -208,9 +208,11 @@ class TestInitCommand:
         assert "## How to run" in content
         assert "## How to test" in content
 
-    def test_init_warns_if_already_exists(self, tmp_path):
+    def test_init_confirms_before_overwrite(self, tmp_path):
         (tmp_path / "MINION.md").write_text("existing content")
-        self._call_init(tmp_path)
+        with patch("questionary.confirm") as mock_confirm:
+            mock_confirm.return_value.ask.return_value = False  # user says no
+            self._call_init(tmp_path)
         assert (tmp_path / "MINION.md").read_text() == "existing content"  # not overwritten
 
     def test_init_with_context_prefills_language(self, tmp_path):
@@ -236,8 +238,12 @@ class TestInitCommandLLM:
     def _call_init(self, tmp_path, project_context=None, client=None):
         if client is None:
             client = MagicMock()
+        live_mock = MagicMock()
+        live_mock.__enter__ = MagicMock(return_value=live_mock)
+        live_mock.__exit__ = MagicMock(return_value=False)
         with patch("minion.repl.console"), \
-             patch("minion.repl.Path") as mock_path_cls:
+             patch("minion.repl.Path") as mock_path_cls, \
+             patch("rich.live.Live", return_value=live_mock):
             mock_path_cls.cwd.return_value = tmp_path
             return _handle_slash_command("/init", client, MagicMock(), project_context)
 
@@ -264,18 +270,16 @@ class TestInitCommandLLM:
 
     def test_init_uses_llm_even_without_manifest(self, tmp_path):
         """Context present but no manifest — LLM still attempted using file tree."""
-        from minion.llm.base import StreamComplete, TextChunk
         ctx = ProjectContext(cwd=tmp_path, manifest=None, file_tree="src/\n  main.py", minion_md=None)
         client = self._make_client("# MINION.md\n\nLLM content.\n")
         self._call_init(tmp_path, project_context=ctx, client=client)
         client.stream.assert_called_once()
 
-    def test_generate_minion_md_llm_returns_content(self, tmp_path):
+    def test_generate_minion_md_llm_yields_chunks(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
         client = self._make_client("# MINION.md\n\nGo project.\n")
-        result = _generate_minion_md_llm(ctx, client)
-        assert result is not None
-        assert "Go project." in result
+        chunks = list(_generate_minion_md_llm(ctx, client))
+        assert "Go project." in "".join(chunks)
 
     def test_generate_minion_md_llm_raises_on_exception(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
@@ -283,19 +287,19 @@ class TestInitCommandLLM:
         client.stream.side_effect = RuntimeError("network error")
         import pytest
         with pytest.raises(RuntimeError):
-            _generate_minion_md_llm(ctx, client)
+            list(_generate_minion_md_llm(ctx, client))
 
-    def test_generate_minion_md_llm_returns_none_on_empty_response(self, tmp_path):
+    def test_generate_minion_md_llm_yields_nothing_on_empty_response(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
         client = self._make_client("")  # empty LLM response
-        result = _generate_minion_md_llm(ctx, client)
-        assert result is None
+        chunks = list(_generate_minion_md_llm(ctx, client))
+        assert "".join(chunks) == ""
 
     def test_llm_generated_content_ends_with_newline(self, tmp_path):
         ctx = _make_context(tmp_path, language="Python 3.12")
         client = self._make_client("# MINION.md\nContent")  # no trailing newline
-        result = _generate_minion_md_llm(ctx, client)
-        assert result.endswith("\n")
+        self._call_init(tmp_path, project_context=ctx, client=client)
+        assert (tmp_path / "MINION.md").read_text().endswith("\n")
 
 
 # ─── /reflect command ─────────────────────────────────────────────────────────
