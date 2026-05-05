@@ -25,7 +25,7 @@ from .config_file import load_config as _load_config  # noqa: E402 — after dot
 app = typer.Typer(
     name="minion",
     help="🍌 Minion — your agentic coding assistant.",
-    add_completion=False,
+    add_completion=True,
     rich_markup_mode="rich",
     no_args_is_help=False,
     invoke_without_command=True,
@@ -33,9 +33,15 @@ app = typer.Typer(
 
 # Subcommand names that typer registers — used by _entry() to distinguish
 # "minion doctor" (subcommand) from "minion 'fix the bug'" (one-shot prompt).
-_KNOWN_SUBCOMMANDS = frozenset({"doctor", "skills", "mcp", "agent", "a2a"})
+_KNOWN_SUBCOMMANDS = frozenset({"doctor", "skills", "mcp", "agent", "a2a", "setup"})
 # Options that consume the next token as their value.
-_OPTS_WITH_VALUE = frozenset({"-p", "--provider", "-m", "--model", "--reflect"})
+_OPTS_WITH_VALUE = frozenset({
+    "-p", "--provider",
+    "-m", "--model",
+    "--reflect",
+    "--install-completion",   # consume optional shell-type arg so _entry doesn't treat it as a prompt
+    "--show-completion",
+})
 
 
 @app.callback(invoke_without_command=True)
@@ -335,6 +341,26 @@ def _list_a2a() -> None:
             console.print(f"  {'':16}  [muted]{entry['card_description']}[/]")
 
 
+# ─── First-run detection ──────────────────────────────────────────────────────
+
+def _needs_setup() -> bool:
+    """Return True if no API key is configured anywhere — first-run indicator."""
+    import os
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
+        if os.environ.get(key):
+            return False
+    return True
+
+
+# ─── `minion setup` subcommand ────────────────────────────────────────────────
+
+@app.command("setup")
+def setup_cmd() -> None:
+    """Interactive first-run setup — configure your API key and provider."""
+    from .setup_wizard import run_setup_wizard
+    asyncio.run(run_setup_wizard())
+
+
 # ─── `minion doctor` subcommand ───────────────────────────────────────────────
 
 @app.command("doctor")
@@ -496,8 +522,15 @@ def _entry() -> None:
         else:
             # First positional arg that isn't a subcommand → one-shot prompt
             prompt = " ".join(raw[i:])
+            if _needs_setup():
+                from .setup_wizard import run_setup_wizard
+                asyncio.run(run_setup_wizard())
             _run_one_shot(prompt, prefix)
             return
 
     # No positional args at all → REPL / --help / --version via typer
+    if _needs_setup() and not any(a.startswith("-") for a in raw):
+        # Only trigger wizard on bare `minion` (no flags) so --help etc. still work
+        from .setup_wizard import run_setup_wizard
+        asyncio.run(run_setup_wizard())
     app()
