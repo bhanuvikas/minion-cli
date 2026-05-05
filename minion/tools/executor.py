@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 import questionary
@@ -449,7 +450,8 @@ class ToolExecutor:
     def __init__(self, dry_run: bool = False, mcp_manager=None, agent_runner=None,
                  agent_label=None, remote_task_runner=None, confirm_callback=None,
                  approval_mode: str = "off",
-                 permission_store: Optional[PermissionStore] = None) -> None:
+                 permission_store: Optional[PermissionStore] = None,
+                 hook_runner=None) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
@@ -458,6 +460,7 @@ class ToolExecutor:
         self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
         self._approval_mode = approval_mode  # "off" | "edits" | "yolo"
         self._permission_store = permission_store
+        self._hook_runner = hook_runner          # type: HookRunner | None
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -680,6 +683,23 @@ class ToolExecutor:
                         print_tool_result(result)
                     return result
 
+        # ── Pre-tool hook ──────────────────────────────────────────────────
+        if self._hook_runner is not None:
+            from ..hooks.events import PreToolUseEvent
+            from ..tracing import get_tracer as _get_tracer_hooks
+            _pre_event = PreToolUseEvent(
+                session_id=_get_tracer_hooks().session_id or "",
+                cwd=Path.cwd(),
+                tool_name=name,
+                tool_input=dict(inputs),
+            )
+            _block = await self._hook_runner.fire_pre_tool(_pre_event)
+            if _block is not None:
+                _reason = _block.reason or f"Hook blocked {name}."
+                if _agent_cb is None:
+                    print_tool_error(_reason)
+                return f"Error: {_reason}"
+
         fn = _DISPATCH.get(name)
         if fn is None:
             if "__" in name and self._mcp_manager is not None:
@@ -702,6 +722,17 @@ class ToolExecutor:
                     result = f"Error: {e}"
                 if _agent_cb is None:
                     print_tool_result(result)
+                # ── Post-tool hook (MCP) ───────────────────────────────────
+                if self._hook_runner is not None:
+                    from ..hooks.events import PostToolUseEvent
+                    await self._hook_runner.fire_post_tool(PostToolUseEvent(
+                        session_id=_get_tracer_hooks().session_id or "",
+                        cwd=Path.cwd(),
+                        tool_name=name,
+                        tool_input=dict(inputs),
+                        tool_result=result,
+                        tool_success=not result.startswith("Error:"),
+                    ))
                 return result
             error = f"Unknown tool: '{name}'"
             if _agent_cb is None:
@@ -719,10 +750,32 @@ class ToolExecutor:
             if _agent_cb is None and name == "todo_write":
                 print_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
+            # ── Post-tool hook (native, success) ───────────────────────────
+            if self._hook_runner is not None:
+                from ..hooks.events import PostToolUseEvent
+                await self._hook_runner.fire_post_tool(PostToolUseEvent(
+                    session_id=get_tracer().session_id or "",
+                    cwd=Path.cwd(),
+                    tool_name=name,
+                    tool_input=dict(inputs),
+                    tool_result=result,
+                    tool_success=True,
+                ))
             return result
         except Exception as e:
             error = str(e)
             if _agent_cb is None:
                 print_tool_error(error)
             get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
+            # ── Post-tool hook (native, error) ─────────────────────────────
+            if self._hook_runner is not None:
+                from ..hooks.events import PostToolUseEvent
+                await self._hook_runner.fire_post_tool(PostToolUseEvent(
+                    session_id=get_tracer().session_id or "",
+                    cwd=Path.cwd(),
+                    tool_name=name,
+                    tool_input=dict(inputs),
+                    tool_result=f"Error: {error}",
+                    tool_success=False,
+                ))
             return f"Error: {error}"

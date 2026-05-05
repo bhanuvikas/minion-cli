@@ -608,6 +608,7 @@ def run_prompt(
     approval_mode: str = "off",
     permission_store=None,  # PermissionStore | None
     stream_markdown: bool = False,
+    hook_runner=None,  # HookRunner | None
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -623,7 +624,7 @@ def run_prompt(
         enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
         auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
-        stream_markdown=stream_markdown,
+        stream_markdown=stream_markdown, hook_runner=hook_runner,
     ))
 
 
@@ -1006,6 +1007,7 @@ async def run_prompt_async(
     approval_mode: str = "off",
     permission_store=None,  # PermissionStore | None
     stream_markdown: bool = False,
+    hook_runner=None,  # HookRunner | None
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
@@ -1059,6 +1061,7 @@ async def run_prompt_async(
         confirm_callback=confirm_callback,
         approval_mode=approval_mode,
         permission_store=permission_store,
+        hook_runner=hook_runner,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
@@ -1165,6 +1168,15 @@ async def run_prompt_async(
                         verbose=verbose,
                         conversation=conversation,
                     )
+            if hook_runner is not None:
+                from pathlib import Path as _Path
+                from .hooks.events import StopTurnEvent
+                from .tracing import get_tracer as _gt
+                await hook_runner.fire(StopTurnEvent(
+                    session_id=_gt().session_id or "",
+                    cwd=_Path.cwd(),
+                    response_text=result.full_text,
+                ))
             break
 
         if result.stop_reason == "tool_use":

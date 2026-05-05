@@ -83,6 +83,7 @@ REPL_COMMANDS = {
     "/yolo":    "Auto-approve all tools: /yolo | /yolo on | /yolo off",
     "/debug":   "Debug mode: /debug --on | /debug --off | /debug",
     "/memory":  "Memory status/toggle: /memory | /memory --on | /memory --off",
+    "/hooks":   "Hooks: /hooks | /hooks list | /hooks --on | /hooks --off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
@@ -354,6 +355,7 @@ def _handle_slash_command(
     agent_registry=None,
     cwd: "Path | None" = None,
     permission_store=None,  # PermissionStore | None
+    hook_runner=None,  # HookRunner | None
 ) -> bool:
     """Dispatch a slash command. Returns True if the input was handled.
 
@@ -413,6 +415,14 @@ def _handle_slash_command(
             try:
                 from rich.live import Live
                 from rich.markdown import Markdown as _MD
+                from rich.panel import Panel
+                _panel = lambda text: Panel(
+                    _MD(text),
+                    title=f"[bold {YELLOW}]MINION.md[/]",
+                    subtitle=f"[muted]{minion_md_path}[/]",
+                    expand=False,
+                    border_style="dim",
+                )
                 gen = _generate_minion_md_llm(fresh_context, client)
                 # Spinner while waiting for first token — erases itself on exit
                 with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
@@ -420,11 +430,11 @@ def _handle_slash_command(
                 chunks: list[str] = []
                 if first_chunk is not None:
                     chunks.append(first_chunk)
-                    with Live(_MD(first_chunk), console=console, refresh_per_second=12,
+                    with Live(_panel(first_chunk), console=console, refresh_per_second=12,
                               vertical_overflow="visible") as live:
                         for chunk in gen:
                             chunks.append(chunk)
-                            live.update(_MD("".join(chunks)))
+                            live.update(_panel("".join(chunks)))
                 raw = "".join(chunks).strip()
                 content = raw + "\n" if raw else None
                 was_streamed = True
@@ -446,9 +456,15 @@ def _handle_slash_command(
         action = "Regenerated" if is_regen else "Created"
         if not was_streamed:
             # Static fallback — show it since it wasn't streamed live
-            console.print()
             from rich.markdown import Markdown
-            console.print(Markdown(content))
+            from rich.panel import Panel
+            console.print(Panel(
+                Markdown(content),
+                title=f"[bold {YELLOW}]MINION.md[/]",
+                subtitle=f"[muted]{minion_md_path}[/]",
+                expand=False,
+                border_style="dim",
+            ))
         console.print()
         console.print(f"[{YELLOW}]{action} MINION.md[/] [muted]in {Path.cwd()}[/]")
         console.print(f"[muted]Edit MINION.md to refine — changes take effect in this session immediately.[/]")
@@ -554,6 +570,44 @@ def _handle_slash_command(
                 console.print(f"[{YELLOW}]Memory off.[/]")
             else:
                 print_error("Usage: /memory [--on | --off]")
+        return True
+
+    if cmd == "/hooks":
+        if hook_runner is None:
+            return True
+        sub = arg.strip().lower()
+        if sub in ("", "list"):
+            from rich.table import Table
+            rows = hook_runner.describe()
+            if not rows:
+                console.print(f"[{YELLOW}]Hooks:[/] none registered")
+                return True
+            tbl = Table(show_header=True, header_style="bold", expand=False, box=None)
+            tbl.add_column("Type", style="dim", width=8)
+            tbl.add_column("Event", width=20)
+            tbl.add_column("Tool / Name", width=18)
+            tbl.add_column("Command / Details")
+            for r in rows:
+                if r["type"] == "builtin":
+                    tbl.add_row("builtin", "—", r["name"], "(Python built-in)")
+                else:
+                    tbl.add_row(
+                        "shell",
+                        r["event"],
+                        r["tool"],
+                        r["command"],
+                    )
+            status = "on" if hook_runner.enabled else "off"
+            console.print(f"[{YELLOW}]Hooks:[/] {status} · {hook_runner.handler_count} registered")
+            console.print(tbl)
+        elif sub == "--off":
+            hook_runner.disable()
+            console.print(f"[{YELLOW}]Hooks:[/] disabled for this session")
+        elif sub == "--on":
+            hook_runner.enable()
+            console.print(f"[{YELLOW}]Hooks:[/] enabled")
+        else:
+            print_error("Usage: /hooks [list | --on | --off]")
         return True
 
     if cmd == "/agents":
@@ -1278,6 +1332,9 @@ async def run_repl_async(
     from .permissions import PermissionStore
     permission_store = PermissionStore(project_cwd=project_cwd)
 
+    from .hooks.registry import HookRegistry
+    hook_runner = HookRegistry.from_config(_file_cfg)
+
     conversation = Conversation(model=client.model_id)
     state = ReplState(
         reflect_depth=reflect_depth,
@@ -1337,6 +1394,10 @@ async def run_repl_async(
 
     print_startup_warnings(_all_startup_warnings)
 
+    from .hooks.events import SessionEndEvent, SessionStartEvent
+    _hook_session_id = get_tracer().session_id or ""
+    await hook_runner.fire(SessionStartEvent(session_id=_hook_session_id, cwd=project_cwd))
+
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(
@@ -1358,6 +1419,7 @@ async def run_repl_async(
             console.print(f"\n[{YELLOW}]Poopaye! 👋[/]")
             from rich.rule import Rule
             console.print(Rule(style=SILVER))
+            await hook_runner.fire(SessionEndEvent(session_id=_hook_session_id, cwd=project_cwd))
             mcp_manager.shutdown()
             get_tracer().finalize()
             break
@@ -1368,6 +1430,15 @@ async def run_repl_async(
             continue
 
         get_tracer().emit("user_turn", text=user_input)
+
+        from .hooks.events import UserPromptSubmitEvent
+        _prompt_block = await hook_runner.fire_prompt(
+            UserPromptSubmitEvent(session_id=_hook_session_id, cwd=project_cwd, prompt=user_input)
+        )
+        if _prompt_block is not None:
+            console.print(f"\n  [muted]{_prompt_block.reason or 'Hook blocked this prompt.'}[/]")
+            console.print()
+            continue
 
         if user_input.startswith("/mcp"):
             mcp_messages = await _handle_mcp_command(user_input, mcp_manager)
@@ -1405,6 +1476,7 @@ async def run_repl_async(
             agent_registry=agent_registry,
             cwd=project_cwd,
             permission_store=permission_store,
+            hook_runner=hook_runner,
         ):
             console.print()
             continue
@@ -1466,7 +1538,12 @@ async def run_repl_async(
             approval_mode=state.approval_mode,
             permission_store=permission_store,
             stream_markdown=state.markdown_enabled,
+            hook_runner=hook_runner,
         )
+
+        for _tip in hook_runner.drain_tips():
+            console.print(f"\n  [{YELLOW}]Hook[/]  {_tip}")
+
         console.print()
 
         # Memory extraction — off the hot path: runs in thread pool
