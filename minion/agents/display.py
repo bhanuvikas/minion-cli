@@ -41,6 +41,10 @@ _display_callback_var: contextvars.ContextVar[Optional[Callable]] = contextvars.
     "display_callback", default=None
 )
 
+_active_live_display_var: contextvars.ContextVar[Optional["AgentLiveDisplay"]] = (
+    contextvars.ContextVar("active_live_display", default=None)
+)
+
 
 def get_agent_display_callback() -> Optional[Callable]:
     """Return the live display callback for the current task/thread, or None."""
@@ -50,6 +54,16 @@ def get_agent_display_callback() -> Optional[Callable]:
 def set_agent_display_callback(callback: Optional[Callable]) -> None:
     """Set (or clear) the live display callback for the current task/thread."""
     _display_callback_var.set(callback)
+
+
+def get_active_live_display() -> Optional["AgentLiveDisplay"]:
+    """Return the AgentLiveDisplay active in this task context, or None."""
+    return _active_live_display_var.get()
+
+
+def set_active_live_display(display: Optional["AgentLiveDisplay"]) -> None:
+    """Register (or clear) the active AgentLiveDisplay for this task context."""
+    _active_live_display_var.set(display)
 
 
 # ─── Slot specification ───────────────────────────────────────────────────────

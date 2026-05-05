@@ -674,9 +674,18 @@ class ToolExecutor:
                     question, detail = _confirm_prompt(name, inputs)
                     confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
                 else:
-                    confirmed = await asyncio.to_thread(
-                        _interactive_confirm, name, inputs, self._permission_store
-                    )
+                    from ..agents.display import get_active_live_display as _get_live
+                    async with _get_async_confirm_lock():
+                        _live_display = _get_live()
+                        if _live_display is not None:
+                            _live_display.pause()
+                        try:
+                            confirmed = await asyncio.to_thread(
+                                _interactive_confirm, name, inputs, self._permission_store
+                            )
+                        finally:
+                            if _live_display is not None:
+                                _live_display.resume()
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:

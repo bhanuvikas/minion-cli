@@ -923,7 +923,10 @@ async def _execute_parallel_tools_async(
     conversation: Conversation,
 ) -> None:
     """Async parallel generic tool execution using asyncio.TaskGroup."""
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
+    from .agents.display import (
+        AgentLiveDisplay, SlotSpec,
+        set_agent_display_callback, set_active_live_display,
+    )
 
     display = AgentLiveDisplay()
     slots = [
@@ -936,8 +939,9 @@ async def _execute_parallel_tools_async(
         slot_cb = display.make_callback(tb.id)
         slot_cb("running")
         start = _time.monotonic()
-        # ContextVar set here is visible inside execute_async() and any threads it spawns.
+        # ContextVars set here are visible inside execute_async() and any threads it spawns.
         set_agent_display_callback(slot_cb)
+        set_active_live_display(display)
         try:
             result = await executor.execute_async(tb)
             latency_ms = int((_time.monotonic() - start) * 1000)
