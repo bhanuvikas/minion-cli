@@ -103,6 +103,7 @@ class HookDefinition:
 
 @dataclass
 class HooksBuiltinConfig:
+    enabled: bool = True             # master on/off switch for all hooks
     builtin_minion_md: bool = True   # MINION.md staleness tip after write/edit
 
 
@@ -196,6 +197,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
     if not isinstance(hooks_merged, dict):
         hooks_merged = {}
     hooks_builtin_cfg = HooksBuiltinConfig(
+        enabled=_bool(hooks_merged.get("enabled"), True),
         builtin_minion_md=_bool(hooks_merged.get("builtin_minion_md"), True),
     )
 

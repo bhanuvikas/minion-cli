@@ -30,4 +30,7 @@ class HookRegistry:
         for defn in config.hooks:
             handlers.append(ShellHookHandler(defn))  # type: ignore[arg-type]
 
-        return HookRunner(handlers)
+        runner = HookRunner(handlers)
+        if not config.hooks_config.enabled:
+            runner.disable()
+        return runner

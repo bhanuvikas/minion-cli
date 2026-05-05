@@ -42,3 +42,11 @@ class MinionMdStalenessHandler:
         return HookResult(
             tip=f"MINION.md may be stale — {path.name} was modified. Run /init to refresh."
         )
+
+    def hook_describe(self) -> dict:
+        return {
+            "type": "builtin",
+            "event": "PostToolUse",
+            "tool": "write_file, edit_file",
+            "detail": "Tips when source files change while MINION.md exists",
+        }

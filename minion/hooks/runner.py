@@ -58,8 +58,9 @@ class HookRunner:
     # ── Tips ───────────────────────────────────────────────────────────────
 
     def drain_tips(self) -> list[str]:
-        """Return accumulated tips and clear the buffer."""
-        tips, self.pending_tips = self.pending_tips[:], []
+        """Return deduplicated accumulated tips and clear the buffer."""
+        tips = list(dict.fromkeys(self.pending_tips))   # preserve order, drop duplicates
+        self.pending_tips = []
         return tips
 
     # ── Enable / disable ───────────────────────────────────────────────────
@@ -82,19 +83,17 @@ class HookRunner:
         """Return a list of handler descriptions for /hooks list."""
         rows = []
         for h in self._handlers:
-            name = type(h).__name__
-            event = getattr(h, "_defn", None)
-            if event is not None:
-                # ShellHookHandler
+            if hasattr(h, "_defn"):
                 defn = h._defn  # type: ignore[attr-defined]
                 rows.append({
                     "type": "shell",
                     "event": defn.event,
-                    "tool": defn.tool or "(all)",
-                    "command": defn.command,
-                    "timeout": defn.timeout,
-                    "blocking": defn.blocking,
+                    "tool": defn.tool or "(all tools)",
+                    "detail": defn.command,
                 })
+            elif hasattr(h, "hook_describe"):
+                rows.append(h.hook_describe())
             else:
-                rows.append({"type": "builtin", "name": name})
+                rows.append({"type": "builtin", "event": "—", "tool": "—",
+                             "detail": type(h).__name__})
         return rows

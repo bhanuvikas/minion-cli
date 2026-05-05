@@ -83,7 +83,7 @@ REPL_COMMANDS = {
     "/yolo":    "Auto-approve all tools: /yolo | /yolo on | /yolo off",
     "/debug":   "Debug mode: /debug --on | /debug --off | /debug",
     "/memory":  "Memory status/toggle: /memory | /memory --on | /memory --off",
-    "/hooks":   "Hooks: /hooks | /hooks list | /hooks --on | /hooks --off",
+    "/hooks":   "Hooks: /hooks | /hooks list | /hooks on | /hooks off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
     "/recall":  "Show memories: /recall [query]",
@@ -583,31 +583,23 @@ def _handle_slash_command(
                 console.print(f"[{YELLOW}]Hooks:[/] none registered")
                 return True
             tbl = Table(show_header=True, header_style="bold", expand=False, box=None)
-            tbl.add_column("Type", style="dim", width=8)
-            tbl.add_column("Event", width=20)
-            tbl.add_column("Tool / Name", width=18)
-            tbl.add_column("Command / Details")
+            tbl.add_column("Type", style="dim")
+            tbl.add_column("Event")
+            tbl.add_column("Tool")
+            tbl.add_column("Detail")
             for r in rows:
-                if r["type"] == "builtin":
-                    tbl.add_row("builtin", "—", r["name"], "(Python built-in)")
-                else:
-                    tbl.add_row(
-                        "shell",
-                        r["event"],
-                        r["tool"],
-                        r["command"],
-                    )
+                tbl.add_row(r["type"], r["event"], r["tool"], r["detail"])
             status = "on" if hook_runner.enabled else "off"
             console.print(f"[{YELLOW}]Hooks:[/] {status} · {hook_runner.handler_count} registered")
             console.print(tbl)
-        elif sub == "--off":
+        elif sub == "off":
             hook_runner.disable()
             console.print(f"[{YELLOW}]Hooks:[/] disabled for this session")
-        elif sub == "--on":
+        elif sub == "on":
             hook_runner.enable()
             console.print(f"[{YELLOW}]Hooks:[/] enabled")
         else:
-            print_error("Usage: /hooks [list | --on | --off]")
+            print_error("Usage: /hooks [list | on | off]")
         return True
 
     if cmd == "/agents":
