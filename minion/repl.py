@@ -65,6 +65,7 @@ class ReplState:
     agents_enabled: bool = True   # False = exclude spawn_agent from tool list
     approval_mode: str = "off"   # "off" | "edits" | "yolo"
     markdown_enabled: bool = True  # render LLM responses as live markdown
+    system_prompt: str = ""       # mutable override; updated by /init to hot-reload MINION.md
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -251,23 +252,27 @@ Rules:
 
 
 def _generate_minion_md_llm(project_context: ProjectContext, client: LLMClient) -> str | None:
-    """Generate a project-specific MINION.md via client.complete().
+    """Generate a project-specific MINION.md by streaming from the LLM.
 
     Returns the generated content string, or None on any failure so the caller
     can fall back to the static template.
     """
-    from .llm.base import Message
+    from .llm.base import Message, StreamComplete, TextChunk
 
     messages = [Message(
         role="user",
         content=f"Generate a MINION.md for this project:\n\n{project_context.to_prompt_block()}",
     )]
     try:
-        response = client.complete(messages, system=_INIT_SYSTEM_PROMPT)
-        content = response.content.strip()
+        stream = client.stream(messages, system=_INIT_SYSTEM_PROMPT)
+        chunks: list[str] = []
+        for event in stream:
+            if isinstance(event, TextChunk):
+                chunks.append(event.text)
+        content = "".join(chunks).strip()
         return content + "\n" if content else None
     except Exception:
-        return None
+        raise
 
 
 def _generate_minion_md(project_context: ProjectContext | None) -> str:
@@ -391,23 +396,38 @@ def _handle_slash_command(
                 f"[muted]Edit it directly or delete it first.[/]"
             )
             return True
+
+        # Ensure .minion/ project dir exists
+        minion_dir = Path.cwd() / ".minion"
+        minion_dir.mkdir(exist_ok=True)
+
         content = None
         llm_attempted = False
         if project_context:
-            with console.status(f"[muted]Generating MINION.md...[/]"):
-                content = _generate_minion_md_llm(project_context, client)
-            llm_attempted = True
+            try:
+                with console.status(f"[muted]Generating MINION.md...[/]"):
+                    content = _generate_minion_md_llm(project_context, client)
+                llm_attempted = True
+            except Exception as e:
+                llm_attempted = True
+                console.print(f"[muted]LLM generation failed: {e}[/]")
         if content is None:
             if llm_attempted:
-                console.print(f"[muted]LLM generation failed — using static template.[/]")
+                console.print(f"[muted]Using static template.[/]")
             content = _generate_minion_md(project_context)
+
         minion_md_path.write_text(content, encoding="utf-8")
+
+        # Hot-reload: rebuild system prompt so MINION.md takes effect immediately
+        if state is not None:
+            new_context = build_project_context(Path.cwd())
+            state.system_prompt = build_system_prompt(new_context)
+
         console.print(f"[{YELLOW}]Created MINION.md[/] [muted]in {Path.cwd()}[/]")
-        console.print(
-            f"[muted]MINION.md is for instructions you author: how to run, how to test, "
-            f"conventions, things the agent should know.[/]"
-        )
-        console.print(f"[muted]Edit it to add project instructions, then restart minion to load them.[/]")
+        console.print()
+        from rich.markdown import Markdown
+        console.print(Markdown(content))
+        console.print(f"[muted]Edit MINION.md to refine — changes take effect in this session immediately.[/]")
         return True
 
     if cmd == "/reflect":
@@ -1243,6 +1263,7 @@ async def run_repl_async(
         agents_enabled=agents_enabled,
         approval_mode=_file_cfg.agent.approval_mode,
         markdown_enabled=os.getenv("MINION_MARKDOWN", "true").lower() != "false",
+        system_prompt=base_system_prompt,
     )
 
     from .skills import load_skill_registry
@@ -1273,6 +1294,23 @@ async def run_repl_async(
     )
     _all_startup_warnings = startup_warnings[:] + mcp_manager.connection_warnings
     startup_warnings.clear()
+
+    # Project init tip — shown when MINION.md hasn't been created yet
+    if not (project_cwd / "MINION.md").exists():
+        if project_context and project_context.manifest:
+            lang = project_context.manifest.language
+            if project_context.manifest.framework:
+                lang += f" / {project_context.manifest.framework}"
+            _tip_body = f"This looks like a {lang} project with no MINION.md."
+        elif (project_cwd / ".git").exists():
+            _tip_body = "No MINION.md found in this git repository."
+        else:
+            _tip_body = f"No MINION.md found in {project_cwd.name}/."
+        _all_startup_warnings = [
+            f"  [{YELLOW}]Tip[/]  {_tip_body} "
+            f"Run [bold]/init[/] to analyse your codebase and create one."
+        ] + _all_startup_warnings
+
     print_startup_warnings(_all_startup_warnings)
 
     session: PromptSession = PromptSession(
@@ -1338,7 +1376,7 @@ async def run_repl_async(
         if await asyncio.to_thread(
             _handle_slash_command,
             user_input, client, conversation, project_context, state, memory_store,
-            base_system_prompt=base_system_prompt,
+            base_system_prompt=state.system_prompt,
             skill_registry=skill_registry,
             agent_registry=agent_registry,
             cwd=project_cwd,
@@ -1377,7 +1415,7 @@ async def run_repl_async(
 
         if state.debug:
             console.print(f"[muted]── debug: system prompt ───────────────────[/]")
-            console.print(f"[muted]{base_system_prompt}[/]")
+            console.print(f"[muted]{state.system_prompt}[/]")
             if system_dynamic:
                 console.print(f"[muted]── debug: dynamic context ──────────────────[/]")
                 console.print(f"[muted]{system_dynamic}[/]")
@@ -1389,7 +1427,7 @@ async def run_repl_async(
         )
         console.print()
         await run_prompt_async(
-            user_input, client, conversation, base_system_prompt,
+            user_input, client, conversation, state.system_prompt,
             system_dynamic=system_dynamic,
             dry_run=dry_run,
             reflect_config=reflect_config,

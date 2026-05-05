@@ -79,8 +79,9 @@ async def run_setup_wizard() -> bool:
 
         api_key = api_key.strip()
 
-        # Step 3 — write to .env
-        env_path = Path.cwd() / ".env"
+        # Step 3 — write to ~/.minion/.env (user-level, shared across all projects)
+        env_path = Path.home() / ".minion" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         _write_env_key(env_path, env_var, api_key)
 
         # Populate current process environment so the session works immediately
@@ -89,8 +90,34 @@ async def run_setup_wizard() -> bool:
 
         console.print()
         console.print(f"  [bold green]✓[/]  {env_var} saved to [bold]{env_path}[/]")
-        console.print(f"  [dim {SILVER}]You can change this anytime by editing .env or running [bold]minion setup[/].[/]")
+        console.print(f"  [dim {SILVER}]This key is shared across all projects. Edit [bold]~/.minion/.env[/] or run [bold]minion setup[/] to change it.[/]")
         console.print()
+
+        # Step 4 — optional shell completion (best-effort, skip if shell undetectable)
+        try:
+            import shellingham
+            shell_name, _ = shellingham.detect_shell()
+
+            install_completion = await asyncio.to_thread(
+                questionary.confirm(
+                    f"Install shell tab completion for {shell_name}?",
+                    default=True,
+                    style=_MINION_STYLE,
+                ).ask
+            )
+
+            if install_completion:
+                from typer._completion_shared import install as _typer_install
+                _, comp_path = _typer_install(shell=shell_name, prog_name="minion")
+                console.print(f"  [bold green]✓[/]  Completion installed to [bold]{comp_path}[/]")
+                console.print(f"  [dim {SILVER}]Restart your terminal to activate it.[/]")
+                console.print()
+            elif install_completion is not None:
+                console.print(f"  [dim {SILVER}]Skipped. Run [bold]minion --install-completion[/] anytime to enable it.[/]")
+                console.print()
+
+        except Exception:
+            pass  # Shell undetectable or install failed — not a wizard-blocking issue
 
         return True
 

@@ -17,7 +17,8 @@ from .llm import get_client
 from .repl import run_repl, run_repl_async
 from .theme import YELLOW, console, print_error
 
-load_dotenv()  # must run before any LLM client is constructed
+load_dotenv()  # project-level .env (cwd) — takes precedence
+load_dotenv(Path.home() / ".minion" / ".env")  # user-level fallback
 
 from .config_file import load_config as _load_config  # noqa: E402 — after dotenv
 

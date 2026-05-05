@@ -225,11 +225,12 @@ class TestInitCommand:
 
 class TestInitCommandLLM:
     def _make_client(self, content: str = "# MINION.md\n\nGenerated content.\n") -> MagicMock:
-        from minion.llm.base import LLMResponse
+        from minion.llm.base import StreamComplete, TextChunk
         client = MagicMock()
-        client.complete.return_value = LLMResponse(
-            content=content, input_tokens=50, output_tokens=100, model="test-model"
-        )
+        client.stream.return_value = iter([
+            TextChunk(text=content),
+            StreamComplete(stop_reason="end_turn", input_tokens=50, output_tokens=100, model="test-model"),
+        ])
         return client
 
     def _call_init(self, tmp_path, project_context=None, client=None):
@@ -244,13 +245,13 @@ class TestInitCommandLLM:
         ctx = _make_context(tmp_path, language="Python 3.12", framework="FastAPI")
         client = self._make_client("# MINION.md\n\nLLM-generated content.\n")
         self._call_init(tmp_path, project_context=ctx, client=client)
-        client.complete.assert_called_once()
+        client.stream.assert_called_once()
         assert "LLM-generated content." in (tmp_path / "MINION.md").read_text()
 
     def test_init_falls_back_to_static_when_llm_fails(self, tmp_path):
         ctx = _make_context(tmp_path, language="Python 3.12")
         client = MagicMock()
-        client.complete.side_effect = Exception("API error")
+        client.stream.side_effect = Exception("API error")
         self._call_init(tmp_path, project_context=ctx, client=client)
         content = (tmp_path / "MINION.md").read_text()
         assert "## How to run" in content  # static template
@@ -258,15 +259,16 @@ class TestInitCommandLLM:
     def test_init_uses_static_when_no_project_context(self, tmp_path):
         client = self._make_client()
         self._call_init(tmp_path, project_context=None, client=client)
-        client.complete.assert_not_called()
+        client.stream.assert_not_called()
         assert (tmp_path / "MINION.md").exists()
 
     def test_init_uses_llm_even_without_manifest(self, tmp_path):
         """Context present but no manifest — LLM still attempted using file tree."""
+        from minion.llm.base import StreamComplete, TextChunk
         ctx = ProjectContext(cwd=tmp_path, manifest=None, file_tree="src/\n  main.py", minion_md=None)
         client = self._make_client("# MINION.md\n\nLLM content.\n")
         self._call_init(tmp_path, project_context=ctx, client=client)
-        client.complete.assert_called_once()
+        client.stream.assert_called_once()
 
     def test_generate_minion_md_llm_returns_content(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
@@ -275,12 +277,13 @@ class TestInitCommandLLM:
         assert result is not None
         assert "Go project." in result
 
-    def test_generate_minion_md_llm_returns_none_on_exception(self, tmp_path):
+    def test_generate_minion_md_llm_raises_on_exception(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
         client = MagicMock()
-        client.complete.side_effect = RuntimeError("network error")
-        result = _generate_minion_md_llm(ctx, client)
-        assert result is None
+        client.stream.side_effect = RuntimeError("network error")
+        import pytest
+        with pytest.raises(RuntimeError):
+            _generate_minion_md_llm(ctx, client)
 
     def test_generate_minion_md_llm_returns_none_on_empty_response(self, tmp_path):
         ctx = _make_context(tmp_path, language="Go 1.21")
