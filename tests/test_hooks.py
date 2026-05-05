@@ -170,7 +170,7 @@ class TestMinionMdStalenessHandler:
         assert not h.matches(event)
 
     @pytest.mark.asyncio
-    async def test_execute_returns_tip_containing_filename(self, tmp_path):
+    async def test_execute_returns_generic_stale_tip(self, tmp_path):
         (tmp_path / "MINION.md").write_text("# project")
         h = MinionMdStalenessHandler()
         event = _post(tool_name="write_file",
@@ -178,8 +178,8 @@ class TestMinionMdStalenessHandler:
                       cwd=tmp_path)
         result = await h.execute(event)
         assert result.action == "proceed"
-        assert "app.py" in result.tip
-        assert "stale" in result.tip.lower() or "/init" in result.tip
+        assert "stale" in result.tip.lower()
+        assert "/init" in result.tip
 
 
 # ─── TestHookRunner ───────────────────────────────────────────────────────────

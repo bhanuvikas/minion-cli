@@ -38,9 +38,8 @@ class MinionMdStalenessHandler:
         )
 
     async def execute(self, event: PostToolUseEvent) -> HookResult:  # type: ignore[override]
-        path = Path(event.tool_input.get("path", ""))
         return HookResult(
-            tip=f"MINION.md may be stale — {path.name} was modified. Run /init to refresh."
+            tip="MINION.md may be stale — source files were modified. Run /init to refresh."
         )
 
     def hook_describe(self) -> dict:
