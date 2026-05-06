@@ -263,6 +263,21 @@ class AgentErrorData:
     error: str              # exception message
 
 
+# ─── Hook lifecycle events ───────────────────────────────────────────────────
+
+@dataclass
+class HookFireData:
+    hook_event: str          # lifecycle event: "PreToolUse", "PostToolUse", "SessionStart", …
+    tool_name: str           # tool name if applicable; "" for session/prompt events
+    handler_type: str        # "shell" or "builtin:<ClassName>"
+    command: str             # shell command; "" for built-in handlers
+    action: str              # "proceed" or "block"
+    tip: str                 # tip text shown to user; "" if none
+    blocked: bool            # shorthand for action == "block"
+    latency_ms: int          # handler wall-clock execution time
+    exit_code: Optional[int] = None  # shell process exit code; None for built-ins
+
+
 # ─── A2A lifecycle events ─────────────────────────────────────────────────────
 
 @dataclass

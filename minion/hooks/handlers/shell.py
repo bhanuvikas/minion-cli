@@ -55,7 +55,11 @@ class ShellHookHandler:
                 isinstance(event, PreToolUseEvent)
             )
             if is_blocking:
-                return HookResult(action="block", reason=stderr.decode().strip() or f"Hook blocked {getattr(event, 'tool_name', 'action')}.")
+                return HookResult(
+                    action="block",
+                    reason=stderr.decode().strip() or f"Hook blocked {getattr(event, 'tool_name', 'action')}.",
+                    exit_code=2,
+                )
 
         if proc.returncode == 0 and stdout.strip():
             try:
@@ -63,8 +67,9 @@ class ShellHookHandler:
                 return HookResult(
                     tip=data.get("tip", ""),
                     reason=data.get("reason", ""),
+                    exit_code=0,
                 )
             except json.JSONDecodeError:
                 pass
 
-        return HookResult()
+        return HookResult(exit_code=proc.returncode)

@@ -6,6 +6,7 @@ and converted to a no-op HookResult. Hooks never crash the agent loop.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from .events import HookEvent, PostToolUseEvent, PreToolUseEvent, UserPromptSubmitEvent
@@ -28,16 +29,32 @@ class HookRunner:
         """Fire all matching handlers. Tips are accumulated into pending_tips."""
         if not self._enabled:
             return []
+        from ..tracing import get_tracer
         results: list[HookResult] = []
         for handler in self._handlers:
             if handler.matches(event):
+                _t0 = time.monotonic()
                 try:
                     result = await handler.execute(event)
                 except Exception:
                     result = HookResult()
+                _latency_ms = int((time.monotonic() - _t0) * 1000)
                 results.append(result)
                 if result.tip:
                     self.pending_tips.append(result.tip)
+                _is_shell = hasattr(handler, "_defn")
+                get_tracer().emit(
+                    "hook_fire",
+                    hook_event=event.event_name,
+                    tool_name=getattr(event, "tool_name", ""),
+                    handler_type="shell" if _is_shell else f"builtin:{type(handler).__name__}",
+                    command=handler._defn.command if _is_shell else "",
+                    action=result.action,
+                    tip=result.tip,
+                    blocked=result.action == "block",
+                    exit_code=result.exit_code,
+                    latency_ms=_latency_ms,
+                )
         return results
 
     # ── Specialised fire methods ───────────────────────────────────────────
