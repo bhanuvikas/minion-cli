@@ -186,8 +186,8 @@ class TestToolExecutorConfirmCallback:
         from minion.llm.base import ToolUseBlock
 
         callback_calls = []
-        def my_callback(question: str, detail: str = "") -> bool:
-            callback_calls.append((question, detail))
+        def my_callback(name: str, inputs: dict) -> bool:
+            callback_calls.append((name, inputs))
             return True  # always approve
 
         executor = ToolExecutor(confirm_callback=my_callback)
@@ -197,16 +197,16 @@ class TestToolExecutorConfirmCallback:
             result = executor.execute(tb)
 
         assert len(callback_calls) == 1
-        question, detail = callback_calls[0]
-        assert "run_shell" in question
-        assert "`ls`" in question  # command embedded in question
+        name, inputs = callback_calls[0]
+        assert name == "run_shell"
+        assert inputs == {"command": "ls"}
         assert result == "ok"
 
     def test_confirm_callback_decline_returns_user_declined(self):
         from minion.tools.executor import ToolExecutor
         from minion.llm.base import ToolUseBlock
 
-        executor = ToolExecutor(confirm_callback=lambda q, d="": False)
+        executor = ToolExecutor(confirm_callback=lambda name, inputs: False)
         tb = ToolUseBlock(id="t2", name="run_shell", input={"command": "rm -rf /"})
 
         result = executor.execute(tb)
@@ -217,8 +217,8 @@ class TestToolExecutorConfirmCallback:
         from minion.llm.base import ToolUseBlock
 
         callback_calls = []
-        def my_callback(question: str, detail: str = "") -> bool:
-            callback_calls.append((question, detail))
+        def my_callback(name: str, inputs: dict) -> bool:
+            callback_calls.append((name, inputs))
             return True
 
         executor = ToolExecutor(confirm_callback=my_callback)
@@ -229,9 +229,10 @@ class TestToolExecutorConfirmCallback:
             result = executor.execute(tb)
 
         assert result == "wrote"
-        question, detail = callback_calls[0]
-        assert "foo.py" in question     # path in question
-        assert "line1" in detail        # new-file diff shows lines as additions
+        name, inputs = callback_calls[0]
+        assert name == "write_file"
+        assert inputs["path"] == "foo.py"
+        assert "line1" in inputs["content"]
 
     @pytest.mark.asyncio
     async def test_confirm_callback_used_in_execute_async(self):
@@ -239,8 +240,8 @@ class TestToolExecutorConfirmCallback:
         from minion.llm.base import ToolUseBlock
 
         approved = []
-        def my_callback(question: str, detail: str = "") -> bool:
-            approved.append((question, detail))
+        def my_callback(name: str, inputs: dict) -> bool:
+            approved.append((name, inputs))
             return True
 
         executor = ToolExecutor(confirm_callback=my_callback)
@@ -257,7 +258,7 @@ class TestToolExecutorConfirmCallback:
         from minion.tools.executor import ToolExecutor
         from minion.llm.base import ToolUseBlock
 
-        executor = ToolExecutor(confirm_callback=lambda q, d="": False)
+        executor = ToolExecutor(confirm_callback=lambda name, inputs: False)
         # run_shell is a dangerous tool — confirm_callback will deny it
         tb = ToolUseBlock(id="t4", name="run_shell", input={"command": "echo hi"})
 
