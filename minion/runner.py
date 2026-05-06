@@ -344,7 +344,7 @@ def _execute_parallel_agents(
     shows running → complete/error without subagent internals (remote agent is opaque).
     Traces are emitted manually (bypasses executor.execute() print helpers).
     """
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
+    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback, set_active_live_display
 
     results: dict[str, str] = {}
     display = AgentLiveDisplay()
@@ -364,26 +364,20 @@ def _execute_parallel_agents(
     # fixed height from the first render — Rich Live never resizes, eliminating flicker.
     display.pre_register(slots)
 
-    _parallel_confirm_lock = threading.Lock()
-
     def run_spawn_agent(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
         callback = display.make_callback(tb.id)
         set_agent_display_callback(callback)
+        set_active_live_display(display)
 
-        # Confirmation callback: pauses the live display so the permission UI can own
-        # the terminal cleanly. _parallel_confirm_lock serializes concurrent requests
-        # so at most one prompt appears at a time. display.resume() after each answer
-        # keeps the slot display live between confirmations.
-        def _confirm_cb(name: str, inputs: dict) -> bool:
-            from .tools.executor import _interactive_confirm
-            with _parallel_confirm_lock:
-                display.pause()
-                try:
-                    return _interactive_confirm(name, inputs, executor._permission_store)
-                finally:
-                    display.resume()
+        # Confirmation: ConfirmationManager.confirm_sync() serializes via its own
+        # lock and pauses/resumes the display automatically.
+        if executor._confirmation_manager is not None:
+            _cm = executor._confirmation_manager
+            _confirm_cb = lambda name, inputs: _cm.confirm_sync(name, inputs)
+        else:
+            _confirm_cb = executor._confirm_callback
 
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
@@ -512,7 +506,7 @@ def _execute_tools(
 
     Thread-safety:
     - ToolExecutor.execute() is stateless (reads dry_run/mcp_manager, never writes).
-    - _CONFIRM_LOCK in executor.py serializes questionary.confirm() calls.
+    - ConfirmationManager serializes all confirmation prompts.
     - conversation.add_tool_result() is called sequentially after all futures settle.
     """
     if len(tool_blocks) == 1:
@@ -842,9 +836,6 @@ async def _execute_parallel_agents_async(
     # Create callbacks once so pre-marking and task callbacks share the same slot state.
     _callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
 
-    # Serializes questionary prompts across concurrent subagents.
-    _parallel_confirm_lock = threading.Lock()
-
     async def _run_spawn_async(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
@@ -852,14 +843,13 @@ async def _execute_parallel_agents_async(
         set_agent_display_callback(callback)
         set_active_live_display(display)
 
-        def _confirm_cb(name: str, inputs: dict) -> bool:
-            from .tools.executor import _interactive_confirm
-            with _parallel_confirm_lock:
-                display.pause()
-                try:
-                    return _interactive_confirm(name, inputs, executor._permission_store)
-                finally:
-                    display.resume()
+        # Confirmation: ConfirmationManager.confirm_sync() serializes via its own
+        # lock and pauses/resumes the display automatically (uses get_active_live_display()).
+        if executor._confirmation_manager is not None:
+            _cm = executor._confirmation_manager
+            _confirm_cb = lambda name, inputs: _cm.confirm_sync(name, inputs)
+        else:
+            _confirm_cb = executor._confirm_callback
 
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)

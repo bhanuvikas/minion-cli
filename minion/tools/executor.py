@@ -24,9 +24,6 @@ from ..permissions import PermissionStore, split_compound, suggest_patterns_for_
 # Serializes questionary prompts across threads (sync path only).
 _CONFIRM_LOCK = threading.Lock()
 
-# Async confirmation lock — lazy-initialised on first use inside an event loop.
-_ASYNC_CONFIRM_LOCK: Optional[asyncio.Lock] = None
-
 
 def _flush_stdin() -> None:
     """Drain any buffered stdin keystrokes before showing a confirmation prompt.
@@ -42,11 +39,6 @@ def _flush_stdin() -> None:
         pass  # Windows or non-tty — best-effort only
 
 
-def _get_async_confirm_lock() -> asyncio.Lock:
-    global _ASYNC_CONFIRM_LOCK
-    if _ASYNC_CONFIRM_LOCK is None:
-        _ASYNC_CONFIRM_LOCK = asyncio.Lock()
-    return _ASYNC_CONFIRM_LOCK
 from ..llm.base import ToolUseBlock
 from ..theme import console, print_todo_list, print_tool_call, print_tool_error, print_tool_result, print_trust_saved
 from ..tracing import get_tracer
@@ -451,7 +443,7 @@ class ToolExecutor:
                  agent_label=None, remote_task_runner=None, confirm_callback=None,
                  approval_mode: str = "off",
                  permission_store: Optional[PermissionStore] = None,
-                 hook_runner=None) -> None:
+                 hook_runner=None, confirmation_manager=None) -> None:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
@@ -461,6 +453,10 @@ class ToolExecutor:
         self._approval_mode = approval_mode  # "off" | "edits" | "yolo"
         self._permission_store = permission_store
         self._hook_runner = hook_runner          # type: HookRunner | None
+        if confirmation_manager is None and confirm_callback is None:
+            from ..confirmation import ConfirmationManager
+            confirmation_manager = ConfirmationManager(permission_store)
+        self._confirmation_manager = confirmation_manager
 
     def execute(self, tool_block: ToolUseBlock) -> str:
         """Execute a tool call and return the result string for context injection."""
@@ -538,7 +534,7 @@ class ToolExecutor:
                 if self._confirm_callback is not None:
                     confirmed = self._confirm_callback(name, inputs)
                 else:
-                    confirmed = _interactive_confirm(name, inputs, self._permission_store)
+                    confirmed = self._confirmation_manager.confirm_sync(name, inputs)
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:
@@ -550,13 +546,10 @@ class ToolExecutor:
             # MCP tool: namespaced as "server__tool"
             if "__" in name and self._mcp_manager is not None:
                 if self._mcp_manager.is_dangerous(name):
-                    with _CONFIRM_LOCK:
-                        _flush_stdin()
-                        confirmed = questionary.confirm(
-                            f"  Allow {name}?",
-                            default=False,
-                            style=MINION_STYLE,
-                        ).ask()
+                    if self._confirm_callback is not None:
+                        confirmed = self._confirm_callback(name, {})
+                    else:
+                        confirmed = self._confirmation_manager.confirm_sync(name, {})
                     if not confirmed:
                         result = "User declined tool execution."
                         if _agent_cb is None:
@@ -672,18 +665,7 @@ class ToolExecutor:
                 if self._confirm_callback is not None:
                     confirmed = await asyncio.to_thread(self._confirm_callback, name, inputs)
                 else:
-                    from ..agents.display import get_active_live_display as _get_live
-                    async with _get_async_confirm_lock():
-                        _live_display = _get_live()
-                        if _live_display is not None:
-                            _live_display.pause()
-                        try:
-                            confirmed = await asyncio.to_thread(
-                                _interactive_confirm, name, inputs, self._permission_store
-                            )
-                        finally:
-                            if _live_display is not None:
-                                _live_display.resume()
+                    confirmed = await self._confirmation_manager.confirm_async(name, inputs)
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:
@@ -711,13 +693,10 @@ class ToolExecutor:
         if fn is None:
             if "__" in name and self._mcp_manager is not None:
                 if self._mcp_manager.is_dangerous(name):
-                    async with _get_async_confirm_lock():
-                        _flush_stdin()
-                        confirmed = await asyncio.to_thread(
-                            lambda: questionary.confirm(
-                                f"  Allow {name}?", default=False, style=MINION_STYLE
-                            ).ask()
-                        )
+                    if self._confirm_callback is not None:
+                        confirmed = await asyncio.to_thread(self._confirm_callback, name, {})
+                    else:
+                        confirmed = await self._confirmation_manager.confirm_async(name, {})
                     if not confirmed:
                         result = "User declined tool execution."
                         if _agent_cb is None:
