@@ -2,7 +2,6 @@
 
 import asyncio
 import threading
-from typing import Optional
 
 
 class ConfirmationManager:
@@ -19,24 +18,17 @@ class ConfirmationManager:
 
     def __init__(self, permission_store=None) -> None:
         self._permission_store = permission_store
-        self._sync_lock = threading.Lock()
-        self._async_lock: Optional[asyncio.Lock] = None
-
-    def _get_async_lock(self) -> asyncio.Lock:
-        """Lazy-init so the lock belongs to the calling event loop."""
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
-        return self._async_lock
+        self._lock = threading.Lock()
 
     def confirm_sync(self, name: str, inputs: dict) -> bool:
         """Sync confirmation — serialized via threading.Lock.
 
-        Safe to call from threads (including asyncio.to_thread workers).
+        Safe to call from any context (threads, asyncio.to_thread workers, etc).
         Pauses any active AgentLiveDisplay so the prompt is fully visible.
         """
         from .tools.executor import _interactive_confirm
         from .agents.display import get_active_live_display
-        with self._sync_lock:
+        with self._lock:
             display = get_active_live_display()
             if display is not None:
                 display.pause()
@@ -47,21 +39,9 @@ class ConfirmationManager:
                     display.resume()
 
     async def confirm_async(self, name: str, inputs: dict) -> bool:
-        """Async confirmation — serialized via asyncio.Lock.
+        """Async confirmation — runs confirm_sync in a thread.
 
-        Use from the top-level event loop only (not from asyncio.to_thread workers,
-        since asyncio.Lock is event-loop bound). Pauses any active display.
+        Safe to call from any event loop. The single threading.Lock ensures
+        prompts are fully serialized across all callers (async and threaded).
         """
-        from .tools.executor import _interactive_confirm
-        from .agents.display import get_active_live_display
-        async with self._get_async_lock():
-            display = get_active_live_display()
-            if display is not None:
-                display.pause()
-            try:
-                return await asyncio.to_thread(
-                    _interactive_confirm, name, inputs, self._permission_store
-                )
-            finally:
-                if display is not None:
-                    display.resume()
+        return await asyncio.to_thread(self.confirm_sync, name, inputs)
