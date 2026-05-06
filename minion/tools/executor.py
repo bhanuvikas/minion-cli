@@ -536,8 +536,7 @@ class ToolExecutor:
                             console.print(f"[muted]{detail}[/]")
             else:
                 if self._confirm_callback is not None:
-                    question, detail = _confirm_prompt(name, inputs)
-                    confirmed = self._confirm_callback(question, detail)
+                    confirmed = self._confirm_callback(name, inputs)
                 else:
                     confirmed = _interactive_confirm(name, inputs, self._permission_store)
                 if not confirmed:
@@ -671,8 +670,7 @@ class ToolExecutor:
                             console.print(f"[muted]{detail}[/]")
             else:
                 if self._confirm_callback is not None:
-                    question, detail = _confirm_prompt(name, inputs)
-                    confirmed = await asyncio.to_thread(self._confirm_callback, question, detail)
+                    confirmed = await asyncio.to_thread(self._confirm_callback, name, inputs)
                 else:
                     from ..agents.display import get_active_live_display as _get_live
                     async with _get_async_confirm_lock():

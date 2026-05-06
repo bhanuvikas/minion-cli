@@ -12,13 +12,14 @@ the same for subagent status updates.
 
 import contextvars
 import threading
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, ClassVar, NamedTuple, Optional
 
 from rich.live import Live
 from rich.text import Text
 
 YELLOW = "#FFD700"
 BLUE = "#1E90FF"
+GREEN = "#4CAF50"
 
 
 def _format_tool_args(inputs: dict) -> str:
@@ -88,17 +89,17 @@ class SlotSpec(NamedTuple):
 class AgentLiveDisplay:
     """Thread-safe live status panel for parallel tool execution.
 
-    Each tool call gets a slot that updates in place — 3 fixed lines per slot:
+    Subagent slots (label set) use a compact 2-line Claude-Code-inspired format:
+        ⏺  [researcher]  Count the methods in game.py…
+          └─  Running · ↳ read_file  path='game.py'
 
-    For spawn_agent (with label):
-        ⚙  spawn_agent  role='researcher'  task="Count the methods in..."
-          ⚙  [researcher]  running...
-             ↳ read_file  'game.py'
+        ⏺  [researcher]  Count the methods in game.py…
+          └─  Done (4.2s)
 
-    For generic tools (no label):
+    Generic tool slots (no label) use a 3-line format:
         ⚙  read_file  path='/path/to/tetris.py'
-          ⚙  running...
-             (blank while running)
+          ⚙  running…
+             ↳ read_file  'game.py'
         ⚙  read_file  path='/path/to/tetris.py'
           ✓  done (0.1s)
              └─  import pygame  +301 more lines
@@ -116,10 +117,10 @@ class AgentLiveDisplay:
         self._lock = threading.Lock()
         self._states: dict[str, dict] = {}  # key → state dict
         self._order: list[str] = []          # insertion order for stable rendering
-        # transient=True: stop() clears the live area instead of freezing it.
-        # This prevents duplication when pause()/resume() are called mid-run —
-        # stop() clears, start() re-renders from the current state. __exit__
-        # then prints the final state once as permanent output.
+        self._paused = False
+        # transient=True: stop() erases the live area so the permission UI can render
+        # in its place without leaving a frozen "Running" duplicate. pause()/resume()
+        # bracket each confirmation; __exit__ prints the final Done state permanently.
         self._live = Live(Text(""), refresh_per_second=8, transient=True)
 
     def __enter__(self) -> "AgentLiveDisplay":
@@ -128,16 +129,30 @@ class AgentLiveDisplay:
 
     def __exit__(self, *args) -> None:
         self._live.__exit__(*args)
-        # Print final state permanently after the transient live area clears.
+        # transient=True erases the live area on exit. If the live was already stopped
+        # (paused for questionary), stop() is a no-op and the cursor stays where
+        # questionary left it (start of a new line). Either way, print the final state
+        # permanently here — this is the single Done frame the user sees.
         self._live.console.print(self._render())
 
     def pause(self) -> None:
-        """Clear the live area so questionary owns a clean terminal."""
+        """Freeze the live area in place so questionary owns a clean terminal below it."""
+        if self._paused:
+            return
+        self._paused = True
         self._live.stop()
 
     def resume(self) -> None:
-        """Restart the live area after questionary finishes."""
+        """Start a new live area below the questionary output."""
+        if not self._paused:
+            return
+        self._paused = False
         self._live.start()
+
+    def render_now(self) -> None:
+        """Force an immediate render without waiting for the 8-FPS refresh cycle."""
+        if not self._paused:
+            self._live.refresh()
 
     def prompt_user_confirmation(self, message: str) -> str:
         """Print a confirmation prompt above the live area and read one line of input.
@@ -205,18 +220,44 @@ class AgentLiveDisplay:
                     flat = " ".join(state["_text_buf"].split())
                     if flat:
                         state["last_activity"] = f"· {flat[-80:]}"
+                elif event == "parallel_sub_start":
+                    state["sub_activities"] = [
+                        {
+                            "key": t["key"],
+                            "text": f"↳ {t['name']}  {_format_tool_args(t['inputs'])}",
+                            "done": False,
+                        }
+                        for t in data.get("tools", [])
+                    ]
+                elif event == "parallel_sub_done":
+                    done_key = data.get("key")
+                    for sa in state.get("sub_activities", []):
+                        if sa["key"] == done_key:
+                            sa["done"] = True
+                elif event == "parallel_sub_clear":
+                    state["sub_activities"] = []
                 self._live.update(self._render())
         return callback
+
+    _SLOT_SKIP_KEYS: ClassVar[dict[str, set[str]]] = {
+        "write_file": {"content"},
+        "edit_file": {"old_string", "new_string"},
+    }
 
     def _append_slot_header(self, text: Text, tool_name: str, inputs: dict) -> None:
         """Append the ⚙ tool_name args... header line for a slot (no trailing newline)."""
         text.append("⚙  ", style=f"bold {YELLOW}")
         text.append(tool_name, style="bold")
+        skip = self._SLOT_SKIP_KEYS.get(tool_name, set())
         for k, v in inputs.items():
-            if isinstance(v, str) and len(v) > 50:
-                v_display = f'"{v[:50]}…"'
-            elif isinstance(v, str):
-                v_display = f"'{v}'"
+            if k in skip:
+                continue
+            if isinstance(v, str):
+                v_clean = v.replace("\n", "↵").replace("\r", "")
+                if len(v_clean) > 50:
+                    v_display = f'"{v_clean[:50]}…"'
+                else:
+                    v_display = f"'{v_clean}'"
             else:
                 v_display = repr(v)[:40]
             text.append(f"  {k}=", style="dim")
@@ -225,13 +266,8 @@ class AgentLiveDisplay:
     def _render(self) -> Text:
         """Build the current live display as a Rich Text object.
 
-        Every slot always occupies exactly 3 lines:
-          Line 1: ⚙ tool_name args... (tool call header)
-          Line 2: status (running / complete / error / waiting)
-          Line 3: detail (last activity, preview, or blank)
-
-        Keeping the height constant prevents Rich from having to resize the live
-        area when slots complete and add preview text — eliminating flicker.
+        Subagent slots (label set): 2-line compact format.
+        Generic tool slots (no label): 3-line format with a dedicated detail row.
         """
         text = Text()
         first = True
@@ -245,53 +281,73 @@ class AgentLiveDisplay:
             label = state.get("label")
             status = state.get("status", "pending")
 
-            # Line 1: tool call header
-            self._append_slot_header(text, tool_name, inputs)
+            if label:
+                # ── Subagent slot — 2-line Claude-Code-style ──────────────────
+                # Line 1: ⏺  [role]  task description…
+                text.append("⏺  ", style=f"bold {YELLOW}")
+                text.append(f"[{label}]", style="bold")
+                task = inputs.get("task", "")
+                if task:
+                    task_clean = task.replace("\n", " ").strip()
+                    if len(task_clean) > 58:
+                        task_clean = task_clean[:58] + "…"
+                    text.append(f"  {task_clean}", style="dim")
 
-            label_part = f"[{label}]  " if label else ""
-            label_style = "bold" if label else "dim"
+                # Line 2: └─  status
+                text.append("\n  └─  ", style="dim")
 
-            if status == "pending":
-                text.append(f"\n  ·  ", style="dim")
-                if label:
-                    text.append(f"[{label}]", style="bold")
-                    text.append("  waiting...", style="dim")
-                else:
-                    text.append("waiting...", style="dim")
-                text.append("\n")  # blank detail row — holds the slot height
+                if status == "pending":
+                    text.append("waiting…", style="dim")
 
-            elif status == "running":
-                text.append(f"\n  ⚙  ", style="dim")
-                if label:
-                    text.append(f"[{label}]", style="bold")
-                    text.append("  running...", style="dim")
-                else:
-                    text.append("running...", style="dim")
-                last_activity = state.get("last_activity", "")
-                # Always emit the detail line (even if blank) to keep slot height stable.
-                # Replace any stray newlines so the row never expands beyond one line.
-                last_activity_line = last_activity.replace("\n", " ").replace("\r", "")[:90]
-                text.append(f"\n     {last_activity_line}", style="dim")
+                elif status == "running":
+                    sub_activities = state.get("sub_activities", [])
+                    if sub_activities:
+                        # Show active sub-tools inline; completed ones dimmed
+                        parts = []
+                        for sa in sub_activities:
+                            parts.append(("✓ " if sa["done"] else "") + sa["text"])
+                        activity = "  ".join(parts)
+                        text.append(f"Running · {activity[:80]}", style="dim")
+                    else:
+                        last_activity = state.get("last_activity", "")
+                        activity = last_activity.replace("\n", " ").replace("\r", "")[:72]
+                        if activity:
+                            text.append(f"Running · {activity}", style="dim")
+                        else:
+                            text.append("Running…", style="dim")
 
-            elif status == "complete":
-                latency = state.get("latency_ms", 0) / 1000
-                text.append(f"\n  ✓  ", style="dim")
-                if label:
-                    text.append(f"[{label}]", style="bold")
-                    text.append(f"  complete ({latency:.1f}s)", style="dim")
-                else:
-                    text.append(f"done ({latency:.1f}s)", style="dim")
-                preview = state.get("preview", "")
-                text.append(f"\n     └─  {preview[:100]}", style="dim")
+                elif status == "complete":
+                    latency = state.get("latency_ms", 0) / 1000
+                    text.append(f"Done ({latency:.1f}s)", style=f"bold {GREEN}")
 
-            elif status == "error":
-                error = state.get("error", "")
-                text.append(f"\n  ✗  ", style="dim")
-                if label:
-                    text.append(f"[{label}]", style="bold")
-                    text.append(f"  error: {error[:60]}", style="red")
-                else:
-                    text.append(f"error: {error[:60]}", style="red")
-                text.append("\n")  # blank detail row — holds the slot height
+                elif status == "error":
+                    error = state.get("error", "")
+                    text.append(f"Error · {error[:72]}", style="red")
+
+            else:
+                # ── Generic tool slot — 3-line format ────────────────────────
+                # Line 1: ⚙  tool_name  key='value'…
+                self._append_slot_header(text, tool_name, inputs)
+
+                if status == "pending":
+                    text.append("\n  ·  waiting…", style="dim")
+                    text.append("\n")  # blank detail row — holds slot height
+
+                elif status == "running":
+                    text.append("\n  ⚙  running…", style="dim")
+                    last_activity = state.get("last_activity", "")
+                    last_activity_line = last_activity.replace("\n", " ").replace("\r", "")[:90]
+                    text.append(f"\n     {last_activity_line}", style="dim")
+
+                elif status == "complete":
+                    latency = state.get("latency_ms", 0) / 1000
+                    text.append(f"\n  ✓  done ({latency:.1f}s)", style="dim")
+                    preview = state.get("preview", "")
+                    text.append(f"\n     └─  {preview[:100]}", style="dim")
+
+                elif status == "error":
+                    error = state.get("error", "")
+                    text.append(f"\n  ✗  error: {error[:60]}", style="red")
+                    text.append("\n")  # blank detail row — holds slot height
 
         return text

@@ -372,21 +372,16 @@ def _execute_parallel_agents(
         callback = display.make_callback(tb.id)
         set_agent_display_callback(callback)
 
-        # Confirmation callback: pauses the live display so questionary can own
-        # the terminal cleanly. _parallel_confirm_lock serializes concurrent
-        # approval requests so at most one prompt appears at a time.
-        def _confirm_cb(question: str, detail: str = "") -> bool:
-            import questionary
-            from .config import MINION_STYLE
-            from .theme import console as _console
+        # Confirmation callback: pauses the live display so the permission UI can own
+        # the terminal cleanly. _parallel_confirm_lock serializes concurrent requests
+        # so at most one prompt appears at a time. display.resume() after each answer
+        # keeps the slot display live between confirmations.
+        def _confirm_cb(name: str, inputs: dict) -> bool:
+            from .tools.executor import _interactive_confirm
             with _parallel_confirm_lock:
                 display.pause()
                 try:
-                    if detail:
-                        _console.print(f"[muted]{detail}[/]")
-                    return bool(questionary.confirm(
-                        f" [{role}] {question}", default=False, style=MINION_STYLE
-                    ).ask())
+                    return _interactive_confirm(name, inputs, executor._permission_store)
                 finally:
                     display.resume()
 
@@ -832,7 +827,7 @@ async def _execute_parallel_agents_async(
     runs in asyncio.to_thread() so sync agent runners don't block the event loop.
     The callback is set inside the thread (thread-local) to route output correctly.
     """
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
+    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback, set_active_live_display
 
     display = AgentLiveDisplay()
     slots = []
@@ -844,29 +839,25 @@ async def _execute_parallel_agents_async(
         slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
     display.pre_register(slots)
 
-    _parallel_confirm_lock_async = threading.Lock()
+    # Create callbacks once so pre-marking and task callbacks share the same slot state.
+    _callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
+
+    # Serializes questionary prompts across concurrent subagents.
+    _parallel_confirm_lock = threading.Lock()
 
     async def _run_spawn_async(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
-        callback = display.make_callback(tb.id)
+        callback = _callbacks[tb.id]
         set_agent_display_callback(callback)
+        set_active_live_display(display)
 
-        # Confirmation callback: pauses the live display so questionary can own
-        # the terminal cleanly. Called from the subagent's thread.
-        # _parallel_confirm_lock_async serializes concurrent approval requests.
-        def _confirm_cb(question: str, detail: str = "") -> bool:
-            import questionary
-            from .config import MINION_STYLE
-            from .theme import console as _console
-            with _parallel_confirm_lock_async:
+        def _confirm_cb(name: str, inputs: dict) -> bool:
+            from .tools.executor import _interactive_confirm
+            with _parallel_confirm_lock:
                 display.pause()
                 try:
-                    if detail:
-                        _console.print(f"[muted]{detail}[/]")
-                    return bool(questionary.confirm(
-                        f" [{role}] {question}", default=False, style=MINION_STYLE
-                    ).ask())
+                    return _interactive_confirm(name, inputs, executor._permission_store)
                 finally:
                     display.resume()
 
@@ -883,7 +874,7 @@ async def _execute_parallel_agents_async(
             set_agent_display_callback(None)
 
     async def _run_remote_async(tb: ToolUseBlock) -> str:
-        callback = display.make_callback(tb.id)
+        callback = _callbacks[tb.id]
         callback("running")
         start = _time.monotonic()
         set_agent_display_callback(callback)
@@ -909,6 +900,11 @@ async def _execute_parallel_agents_async(
 
     tasks_map: dict[str, asyncio.Task] = {}
     with display:
+        # Pre-mark ALL slots as running so the initial frozen frame always shows
+        # both agents active (not one running + one "waiting..." for later start).
+        for tb in tool_blocks:
+            _callbacks[tb.id]("running")
+        display.render_now()
         async with asyncio.TaskGroup() as tg:
             for tb in tool_blocks:
                 tasks_map[tb.id] = tg.create_task(_run_one_async(tb))
@@ -922,13 +918,56 @@ async def _execute_parallel_tools_async(
     executor: ToolExecutor,
     conversation: Conversation,
 ) -> None:
-    """Async parallel generic tool execution using asyncio.TaskGroup."""
+    """Async parallel generic tool execution using asyncio.TaskGroup.
+
+    STANDALONE mode (no outer callback): top-level parallel tools. Creates its own
+    AgentLiveDisplay, pre-marks all slots running, and lets execute_async handle
+    pause/resume for each confirmation via the async lock.
+
+    SUBAGENT mode (outer callback exists): running inside spawn_agent. Notifies the
+    outer slot via parallel_sub_* events instead of creating a conflicting inner
+    Live display. Sets active_live_display so confirmation still pauses the outer
+    display correctly.
+    """
     from .agents.display import (
         AgentLiveDisplay, SlotSpec,
+        get_agent_display_callback, get_active_live_display,
         set_agent_display_callback, set_active_live_display,
     )
 
+    outer_cb = get_agent_display_callback()
+    outer_display = get_active_live_display()
+
+    # ── SUBAGENT MODE: avoid nested Live display conflict ────────────────────
+    if outer_cb is not None:
+        outer_cb("parallel_sub_start", tools=[
+            {"key": tb.id, "name": tb.name, "inputs": tb.input}
+            for tb in tool_blocks
+        ])
+
+        async def _run_sub(tb: ToolUseBlock) -> str:
+            if outer_display is not None:
+                set_active_live_display(outer_display)
+            try:
+                result = await executor.execute_async(tb)
+                outer_cb("parallel_sub_done", key=tb.id)
+                return result
+            except Exception as exc:
+                outer_cb("parallel_sub_done", key=tb.id)
+                return f"Error: {exc}"
+
+        tasks_map: dict[str, asyncio.Task] = {}
+        async with asyncio.TaskGroup() as tg:
+            for tb in tool_blocks:
+                tasks_map[tb.id] = tg.create_task(_run_sub(tb))
+        outer_cb("parallel_sub_clear")
+        for tb in tool_blocks:
+            conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
+        return
+
+    # ── STANDALONE MODE: top-level parallel tools ────────────────────────────
     display = AgentLiveDisplay()
+    callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
     slots = [
         SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
         for tb in tool_blocks
@@ -936,12 +975,10 @@ async def _execute_parallel_tools_async(
     display.pre_register(slots)
 
     async def _run_tb_async(tb: ToolUseBlock) -> str:
-        slot_cb = display.make_callback(tb.id)
-        slot_cb("running")
-        start = _time.monotonic()
-        # ContextVars set here are visible inside execute_async() and any threads it spawns.
+        slot_cb = callbacks[tb.id]
         set_agent_display_callback(slot_cb)
         set_active_live_display(display)
+        start = _time.monotonic()
         try:
             result = await executor.execute_async(tb)
             latency_ms = int((_time.monotonic() - start) * 1000)
@@ -957,6 +994,13 @@ async def _execute_parallel_tools_async(
 
     tasks_map: dict[str, asyncio.Task] = {}
     with display:
+        # Pre-mark ALL slots "running" before any task can pause for confirmation.
+        # This guarantees the frozen frame shows "running" (not "pending") even if
+        # a task reaches the dangerous-tool check before the 8-FPS refresh fires.
+        for tb in tool_blocks:
+            callbacks[tb.id]("running")
+        display.render_now()
+
         async with asyncio.TaskGroup() as tg:
             for tb in tool_blocks:
                 tasks_map[tb.id] = tg.create_task(_run_tb_async(tb))
