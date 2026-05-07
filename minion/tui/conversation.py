@@ -36,13 +36,13 @@ from typing import Callable, Optional
 # _THINK_FRAMES = ["◡·◡", "○·○", "◠·◠", "◉·◉", "◠·◠", "○·○"]
 
 # Two eyes — blink sequence (closed → open → left-squint → open → right-squint)
-# _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○"]
+_THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○"]
 
 # Single eye: glancing down → open → looking up → sharp focus → contract
 # _THINK_FRAMES = ["◡", "○", "◠", "◉", "◠", "○"]
 
 # Crystallising thought: seed → diamond → 4-star → open star → contract
-_THINK_FRAMES = ["·", "◇", "◆", "✦", "✧", "✦", "◆", "◇"]
+# _THINK_FRAMES = ["·", "◇", "◆", "✦", "✧", "✦", "◆", "◇"]
 
 # Morse-like pulse: two short dits then a long dah  (· · —)
 # _THINK_FRAMES = ["·", "•", "·", "–", "—", "–"]

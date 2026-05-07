@@ -128,6 +128,11 @@ class SlotsManager:
     def render_now(self) -> None:
         self._invalidate()
 
+    def slot_results(self) -> list[dict]:
+        """Return a snapshot of all slot states in registration order."""
+        with self._lock:
+            return [dict(self._states[k]) for k in self._order if k in self._states]
+
     # ── Visibility ────────────────────────────────────────────────────────────
 
     @property
@@ -189,7 +194,7 @@ class SlotsManager:
                             fragments.append(("class:slot-running", "Running…"))
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    fragments.append(("class:slot-done", f"Done ({latency:.1f}s)"))
+                    fragments.append(("class:slot-done", f"done ({latency:.1f}s)"))
                 elif status == "error":
                     error = state.get("error", "")
                     fragments.append(("class:slot-error", f"Error · {error[:72]}"))

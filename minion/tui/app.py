@@ -203,8 +203,8 @@ class MinionApp:
         # When idle, get_streaming_formatted_text() returns a single blank line
         # so the window stays at height=1 and the bottom strip never shifts.
         def _streaming_content():
-            # Suppress thinking animation while the permission panel is visible
-            # so the two zones don't fight for attention.
+            # Suppress while the permission panel is visible so it gets
+            # full attention; slots are below this zone so they don't conflict.
             if self.permission.is_visible:
                 return FormattedText([("", " ")])
             return self.conversation.get_streaming_formatted_text()
@@ -426,6 +426,27 @@ class MinionApp:
             self._pending_flush.cancel()
             self._pending_flush = None
         self._flush_pending_output()
+
+    async def flush_and_exit(self) -> None:
+        """Drain pending scrollback writes then tear down the application.
+
+        The sync _flush_writes() path uses the sync run_in_terminal() which
+        may not execute when called from an async context right before exit.
+        This async version uses the awaitable form so the write is guaranteed
+        to land in the terminal before the TUI tears down.
+        """
+        if self._pending_flush is not None:
+            self._pending_flush.cancel()
+            self._pending_flush = None
+        if self._pending_output and self._app is not None and self._app.is_running:
+            combined = "".join(self._pending_output)
+            self._pending_output.clear()
+            from prompt_toolkit.application import run_in_terminal
+            await run_in_terminal(
+                lambda: (sys.stdout.write(combined), sys.stdout.flush())
+            )
+        if self._app is not None:
+            self._app.exit()
 
     def _print_ansi_to_scrollback(self, ansi: str) -> None:
         """External path: write ANSI from print_renderable() to the scrollback.

@@ -1351,29 +1351,38 @@ async def _run_repl_tui(
             tui_app.set_thinking(False)
             return
 
-        # Slash commands: capture console output into the conversation zone
+        # Slash commands: capture console output into the conversation zone.
+        # Run in a thread executor via run_in_terminal so the TUI is suspended
+        # and the thread has no running event loop — required for commands that
+        # use questionary (which calls asyncio.run() internally).
         if user_input.startswith("/"):
+            from prompt_toolkit.application import run_in_terminal
             _buf = _CaptureBuf()
-            _old_file = console._file
-            console._file = _buf
-            try:
-                _handle_slash_command(
-                    user_input, client, conversation, project_context, state, memory_store,
-                    base_system_prompt=state.system_prompt,
-                    skill_registry=skill_registry,
-                    agent_registry=agent_registry,
-                    cwd=project_cwd,
-                    permission_store=permission_store,
-                    hook_runner=hook_runner,
-                )
-            except (SystemExit, typer.Exit):
-                console._file = _old_file
-                if tui_app._app is not None:
-                    tui_app._flush_writes()  # drain buffer before TUI tears down
-                    tui_app._app.exit()
+            _exit_requested = [False]
+
+            def _exec_slash():
+                _old_file = console._file
+                console._file = _buf
+                try:
+                    _handle_slash_command(
+                        user_input, client, conversation, project_context, state, memory_store,
+                        base_system_prompt=state.system_prompt,
+                        skill_registry=skill_registry,
+                        agent_registry=agent_registry,
+                        cwd=project_cwd,
+                        permission_store=permission_store,
+                        hook_runner=hook_runner,
+                    )
+                except (SystemExit, typer.Exit):
+                    _exit_requested[0] = True
+                finally:
+                    console._file = _old_file
+
+            await run_in_terminal(_exec_slash, in_executor=True)
+
+            if _exit_requested[0]:
+                await tui_app.flush_and_exit()
                 return
-            finally:
-                console._file = _old_file
             ansi = _buf.getvalue().strip()
             if ansi:
                 tui_app.conversation.append_ansi(ansi + "\n")
