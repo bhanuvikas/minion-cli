@@ -146,6 +146,7 @@ class MinionApp:
             else:
                 if self._on_quit is not None:
                     await self._on_quit()
+                self._flush_writes()  # drain buffer before TUI tears down
                 event.app.exit()
 
         @kb.add("c-l")
@@ -336,6 +337,15 @@ class MinionApp:
             if not self.conversation.is_streaming:
                 _orig_show_cursor()
         app.output.show_cursor = _guarded_show_cursor
+
+        # Initialise with the real width right away (before first render).
+        try:
+            w = app.output.get_size().columns
+            self._terminal_width = w
+            self.conversation.set_width(w)
+            self.status.set_width(w)
+        except Exception:
+            pass
 
         return app
 

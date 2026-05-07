@@ -20,6 +20,8 @@ import io
 YOU_STYLE    = "bold #FFD700"
 MINION_STYLE = "bold #1E90FF"
 SEP_STYLE    = "#888888"      # › separator
+RULE_STYLE   = "#333333"      # dim separator rule before user turns
+ACCENT_STYLE = "#FFD700"      # ▌ left accent bar on user message line
 TOOL_ICON    = "#C0C0C0"
 TOOL_DETAIL  = "#666666"
 TOOL_OK      = "#4CAF50"
@@ -55,18 +57,28 @@ def render_markdown(text: str, width: int = 120) -> str:
 # ── Turn renderers ────────────────────────────────────────────────────────────
 
 def user_turn(text: str, width: int = 120) -> str:
-    """Render a user turn (no trailing newline).
+    """Render a user turn: dim rule + gold accent bar + message.
 
+    Layout:
+        ──────────────────────────────   (dim rule, full width)
+        ▌ you › message text here
     Multi-line inputs are indented to align under the first line.
     """
+    from rich.console import Console
+    from rich.rule import Rule
+    _rbuf = io.StringIO()
+    Console(file=_rbuf, force_terminal=True, color_system="truecolor",
+            width=width, highlight=False).print(Rule(style=RULE_STYLE))
+    rule = _rbuf.getvalue().rstrip("\n")
     lines = text.strip().split("\n")
-    markup = f"[{YOU_STYLE}]you[/] [{SEP_STYLE}]›[/] " + lines[0]
+    first = f"[{ACCENT_STYLE}]▌[/] [{YOU_STYLE}]you[/] [{SEP_STYLE}]›[/] " + lines[0]
     for line in lines[1:]:
-        markup += "\n      " + line
+        first += "\n  " + " " * 6 + line   # align continuation under first-line text
     try:
-        return render_rich(markup, width)
+        msg = render_rich(first, width)
     except Exception:
-        return f"you › {text}"
+        msg = f"▌ you › {text}"
+    return rule + "\n" + msg
 
 
 def assistant_turn(text: str, width: int = 120) -> str:

@@ -1369,6 +1369,7 @@ async def _run_repl_tui(
             except (SystemExit, typer.Exit):
                 console._file = _old_file
                 if tui_app._app is not None:
+                    tui_app._flush_writes()  # drain buffer before TUI tears down
                     tui_app._app.exit()
                 return
             finally:

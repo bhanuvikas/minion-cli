@@ -144,7 +144,12 @@ class ConversationBuffer:
         Resets _had_external_print — each new user message is a fresh slate.
         Tool calls that run AFTER this will re-set the flag before finalize_turn().
         """
-        ansi = _r.user_turn(text, self._width)
+        try:
+            from prompt_toolkit.application.current import get_app
+            width = get_app().output.get_size().columns
+        except Exception:
+            width = self._width
+        ansi = _r.user_turn(text, width)
         # \n prefix  = blank line separating from previous output
         # \n\n suffix = blank line separating from what follows (tools / response)
         self._emit("\n" + ansi + "\n\n")
