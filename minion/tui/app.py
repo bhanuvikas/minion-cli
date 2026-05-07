@@ -28,6 +28,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import (
@@ -77,6 +78,7 @@ class MinionApp:
         self.conversation.set_callbacks(
             print_ansi_fn=self._write_ansi,
             invalidate_fn=self._invalidate,
+            flush_fn=self._flush_writes,
         )
 
         # Callbacks set by run_async()
@@ -85,6 +87,13 @@ class MinionApp:
 
         # Background task tracking
         self._current_task: Optional[asyncio.Task] = None
+
+        # Batched scrollback write state.
+        # All _write_ansi() calls within a 16ms window are combined into a
+        # single run_in_terminal() call so the TUI erases and redraws only
+        # once per batch instead of once per individual emit.
+        self._pending_output: list[str] = []
+        self._pending_flush: Optional[object] = None  # asyncio.TimerHandle
 
         # The Application — built lazily so the event loop is available
         self._app: Optional[Application] = None
@@ -189,21 +198,20 @@ class MinionApp:
 
         # ── Layout zones ──────────────────────────────────────────────────────
 
-        # Streaming zone: shows the in-progress assistant response.
-        # Visible only while the assistant is actively generating.
-        # When the turn finalises, the complete response is committed to the
-        # terminal scrollback and this zone clears automatically.
-        streaming_window = Window(
-            content=FormattedTextControl(
-                lambda: self.conversation.get_streaming_formatted_text(),
-                focusable=False,
-            ),
+        # Streaming zone: always in the layout (never conditionally removed).
+        # When idle, get_streaming_formatted_text() returns a single blank line
+        # so the window stays at height=1 and the bottom strip never shifts.
+        def _streaming_content():
+            # Suppress thinking animation while the permission panel is visible
+            # so the two zones don't fight for attention.
+            if self.permission.is_visible:
+                return FormattedText([("", " ")])
+            return self.conversation.get_streaming_formatted_text()
+
+        streaming_zone = Window(
+            content=FormattedTextControl(_streaming_content, focusable=False),
             wrap_lines=True,
             dont_extend_height=True,
-        )
-        streaming_zone = ConditionalContainer(
-            content=streaming_window,
-            filter=Condition(lambda: self.conversation.is_streaming),
         )
 
         slots_window = Window(
@@ -313,13 +321,23 @@ class MinionApp:
             focused_element=input_buf,
         )
 
-        return Application(
+        app = Application(
             layout=layout,
             key_bindings=kb,
             style=TUI_STYLE,
             full_screen=False,
             mouse_support=False,
         )
+
+        # Suppress the terminal cursor while streaming/thinking is active so
+        # any layout-height transition frame can't flash the cursor.
+        _orig_show_cursor = app.output.show_cursor
+        def _guarded_show_cursor():
+            if not self.conversation.is_streaming:
+                _orig_show_cursor()
+        app.output.show_cursor = _guarded_show_cursor
+
+        return app
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
@@ -334,15 +352,27 @@ class MinionApp:
         self._on_quit   = on_quit
         self._app       = self._build()
         await self._app.run_async()
+        # Flush any buffered writes that didn't fire before the app exited
+        if self._pending_flush is not None:
+            self._pending_flush.cancel()
+            self._pending_flush = None
+        if self._pending_output:
+            combined = "".join(self._pending_output)
+            self._pending_output.clear()
+            sys.stdout.write(combined)
+            sys.stdout.flush()
 
     # ── Scrollback write paths ────────────────────────────────────────────────
 
     def _write_ansi(self, ansi: str) -> None:
-        """Internal path: write ANSI to the terminal scrollback.
+        """Internal path: write ANSI to the terminal scrollback (batched).
 
-        Used exclusively by ConversationBuffer via the print_ansi_fn callback.
-        Does NOT call mark_printed() — ConversationBuffer's own emits must not
-        set the external-print flag.
+        Multiple calls within the same ~16ms window are combined into a single
+        run_in_terminal() invocation so the TUI only erases+redraws once per
+        batch, eliminating the flicker that separate emit() calls would cause.
+
+        Falls back to an immediate run_in_terminal() when called from a thread
+        (sync subagent execution) where no running event loop is accessible.
         """
         if not ansi.endswith("\n"):
             ansi = ansi + "\n"
@@ -350,8 +380,42 @@ class MinionApp:
             sys.stdout.write(ansi)
             sys.stdout.flush()
             return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Thread context — write immediately (no loop to schedule on)
+            from prompt_toolkit.application import run_in_terminal
+            run_in_terminal(lambda: (sys.stdout.write(ansi), sys.stdout.flush()))
+            return
+        self._pending_output.append(ansi)
+        if self._pending_flush is None:
+            self._pending_flush = loop.call_later(0.016, self._flush_pending_output)
+
+    def _flush_pending_output(self) -> None:
+        """Drain the write buffer in a single run_in_terminal() call."""
+        self._pending_flush = None
+        if not self._pending_output:
+            return
+        combined = "".join(self._pending_output)
+        self._pending_output.clear()
+        if self._app is None or not self._app.is_running:
+            sys.stdout.write(combined)
+            sys.stdout.flush()
+            return
         from prompt_toolkit.application import run_in_terminal
-        run_in_terminal(lambda: (sys.stdout.write(ansi), sys.stdout.flush()))
+        run_in_terminal(lambda: (sys.stdout.write(combined), sys.stdout.flush()))
+
+    def _flush_writes(self) -> None:
+        """Immediately drain the write buffer, bypassing the 16ms delay.
+
+        Called by ConversationBuffer.start_assistant_turn() so the blank line
+        before the assistant response lands in the terminal at the same moment
+        the streaming zone switches from thinking → streaming, not 16ms later.
+        """
+        if self._pending_flush is not None:
+            self._pending_flush.cancel()
+            self._pending_flush = None
+        self._flush_pending_output()
 
     def _print_ansi_to_scrollback(self, ansi: str) -> None:
         """External path: write ANSI from print_renderable() to the scrollback.
@@ -396,14 +460,13 @@ class MinionApp:
             self._thinking_task = None
 
     async def _animate_thinking(self) -> None:
-        """Invalidate at ~8 fps while thinking so the spinner advances."""
+        """Invalidate at ~4 fps while thinking so the spinner advances."""
         try:
             while self._thinking:
                 self._invalidate()
-                await asyncio.sleep(0.12)
+                await asyncio.sleep(0.25)
         except asyncio.CancelledError:
             pass
-        self._invalidate()
 
     def set_thinking(self, thinking: bool) -> None:
         self._set_thinking(thinking)

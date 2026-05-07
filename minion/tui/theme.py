@@ -53,8 +53,9 @@ TUI_STYLE = Style.from_dict({
     "tool-ok":          "#4CAF50",         # ✓
     "tool-err":         "bold red",        # ✗
 
-    # Thinking animation icon
+    # Thinking animation icon and label
     "thinking-icon":    "bold #FFD700",
+    "thinking-text":    "italic #1E90FF",
 
     # Separator line
     "separator":        "#C0C0C0",

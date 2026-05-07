@@ -25,8 +25,36 @@ import threading
 import time as _time
 from typing import Callable, Optional
 
-# Crystallising-thought animation: seed → diamond → star → open → contract
+# ── Thinking animation frames — uncomment one to try it ──────────────────────
+# Color is driven by class:minion-prefix (blue #1E90FF) so pick a frame style,
+# not a colour. All render inline as:  <frame>  thinking
+
+# Two eyes — both animate in sync (open → look up → focus → open)
+# _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ◠", "◉ ◉", "◠ ◠", "○ ○"]
+
+# Two eyes with nose — wider face feel
+# _THINK_FRAMES = ["◡·◡", "○·○", "◠·◠", "◉·◉", "◠·◠", "○·○"]
+
+# Two eyes — blink sequence (closed → open → left-squint → open → right-squint)
+# _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○"]
+
+# Single eye: glancing down → open → looking up → sharp focus → contract
+# _THINK_FRAMES = ["◡", "○", "◠", "◉", "◠", "○"]
+
+# Crystallising thought: seed → diamond → 4-star → open star → contract
 _THINK_FRAMES = ["·", "◇", "◆", "✦", "✧", "✦", "◆", "◇"]
+
+# Morse-like pulse: two short dits then a long dah  (· · —)
+# _THINK_FRAMES = ["·", "•", "·", "–", "—", "–"]
+
+# Sine wave: flat → wave → double wave → triple wave → contract
+# _THINK_FRAMES = ["˜", "∿", "≈", "≋", "≈", "∿"]
+
+# Braille orbit: classic dot-spinning around a circle
+# _THINK_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# Block pulse: light shading → dark → full → contract (signal level meter feel)
+# _THINK_FRAMES = ["░", "▒", "▓", "█", "▓", "▒"]
 
 from prompt_toolkit.formatted_text import FormattedText
 
@@ -63,17 +91,25 @@ class ConversationBuffer:
         # visually separating hook messages from the assistant response.
         self._last_was_assistant: bool = False
 
+        # _gap_emitted: set by emit_spacer() when a blank line is pushed to the
+        # scrollback after tool output, so start_assistant_turn() doesn't emit
+        # a second blank line.
+        self._gap_emitted: bool = False
+
         # ── Callbacks wired by MinionApp ──────────────────────────────────────
         self._print_ansi_fn:  Optional[Callable[[str], None]] = None
         self._invalidate_fn:  Optional[Callable[[], None]]    = None
+        self._flush_fn:       Optional[Callable[[], None]]    = None
 
     def set_callbacks(
         self,
         print_ansi_fn: Callable[[str], None],
         invalidate_fn: Callable[[], None],
+        flush_fn: Optional[Callable[[], None]] = None,
     ) -> None:
         self._print_ansi_fn = print_ansi_fn
         self._invalidate_fn = invalidate_fn
+        self._flush_fn      = flush_fn
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -115,25 +151,30 @@ class ConversationBuffer:
         with self._lock:
             self._last_was_assistant = False
             self._had_external_print = False   # reset for the new turn
+            self._gap_emitted = False
 
     def start_assistant_turn(self) -> None:
         """Begin a new streaming assistant turn.
 
-        Emits a blank line immediately when tool calls/system messages preceded
-        this turn so the streaming zone is visually separated from the tool
-        output right away — not only after finalize_turn() commits.
-
-        Does NOT reset _had_external_print — it is read here and also in
-        finalize_turn() so the finalized text omits a redundant second prefix.
-        It is reset only in append_user() when a new user turn begins.
+        When tool calls / system messages preceded this turn, emits a blank
+        line to the scrollback and flushes it immediately (via flush_fn) so it
+        lands in the terminal at the same moment the streaming zone switches
+        from the thinking animation to "minion › …".  Bypassing the 16ms write
+        buffer here prevents the two-step render (thinking disappears → 16ms
+        gap with no blank line → blank line appears) that the user saw as
+        misalignment.
         """
         with self._lock:
             had_print = self._had_external_print
+            gap_already = self._gap_emitted
             self._streaming_text = ""
             self._is_streaming = True
             self._last_was_assistant = False
-        if had_print:
-            self._emit("\n")  # blank line now so streaming zone starts separated
+            self._gap_emitted = False
+        if had_print and not gap_already:
+            self._emit("\n")
+            if self._flush_fn:
+                self._flush_fn()  # flush immediately, not after 16ms
         self._invalidate()
 
     def stream_chunk(self, chunk: str) -> None:
@@ -145,8 +186,8 @@ class ConversationBuffer:
     def finalize_turn(self) -> None:
         """Commit the complete assistant response to the scrollback.
 
-        The blank line before the response (when tools preceded it) was already
-        emitted by start_assistant_turn(), so no prefix is added here.
+        The blank line before the response was already emitted and flushed
+        by start_assistant_turn(), so no prefix is added here.
         """
         with self._lock:
             text = self._streaming_text
@@ -208,6 +249,20 @@ class ConversationBuffer:
             self._is_thinking = thinking
         self._invalidate()
 
+    def emit_spacer(self) -> None:
+        """Emit a blank line to the scrollback and flush immediately.
+
+        Called by TuiRenderer.on_info("") after all tools in a batch finish,
+        so the blank gap between tool output and the assistant response is
+        visible in the scrollback while the thinking animation is showing.
+        Sets _gap_emitted so start_assistant_turn() skips its own blank line.
+        """
+        self._emit("\n")
+        if self._flush_fn:
+            self._flush_fn()
+        with self._lock:
+            self._gap_emitted = True
+
     def clear(self) -> None:
         with self._lock:
             self._streaming_text = ""
@@ -215,6 +270,7 @@ class ConversationBuffer:
             self._is_thinking = False
             self._had_external_print = False
             self._last_was_assistant = False
+            self._gap_emitted = False
 
     def scroll_to_bottom(self) -> None:
         pass  # terminal handles its own scroll
@@ -245,12 +301,18 @@ class ConversationBuffer:
             is_thinking  = self._is_thinking
             is_streaming = self._is_streaming
 
-        # Pre-token thinking phase: crystallising-thought animation
+        # Idle: return one blank line so the streaming zone always occupies
+        # exactly 1 row.  This keeps the bottom strip at a fixed position —
+        # no layout shift when thinking starts or finishes.
+        if not is_thinking and not is_streaming:
+            return FormattedText([("", " ")])
+
+        # Pre-token thinking phase: two-eyes animation in minion blue
         if is_thinking and not is_streaming:
-            frame = _THINK_FRAMES[int(_time.monotonic() * 8) % len(_THINK_FRAMES)]
+            frame = _THINK_FRAMES[int(_time.monotonic() * 4) % len(_THINK_FRAMES)]
             return FormattedText([
-                ("class:thinking-icon", frame),
-                ("class:slot-running",  "  thinking"),
+                ("class:minion-prefix", frame),
+                ("class:thinking-text", "  thinking"),
             ])
 
         # Normal streaming phase
@@ -263,10 +325,14 @@ class ConversationBuffer:
             frags.append(("class:slot-running", "…"))
             return FormattedText(frags)
 
-        # Clip to last 12 lines to keep the streaming zone compact
+        # Clip to last 12 lines to keep the streaming zone compact.
+        # Rich's Markdown renderer adds trailing newlines; strip them so the
+        # streaming zone height matches the visible line count.  A stray \n
+        # makes the window 1 row taller than prompt_toolkit's layout pass
+        # expects, shifting the input-buffer cursor up into that gap.
         visible = "\n".join(text.split("\n")[-12:])
         try:
-            frags.extend(ANSI(_r.render_markdown(visible, width)).__pt_formatted_text__())
+            frags.extend(ANSI(_r.render_markdown(visible, width).rstrip("\n")).__pt_formatted_text__())
         except Exception:
             frags.append(("", visible))
 

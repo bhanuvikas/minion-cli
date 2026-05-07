@@ -92,7 +92,10 @@ class TuiRenderer(OutputRenderer):
     # ── System messages ───────────────────────────────────────────────────────
 
     def on_info(self, message: str) -> None:
-        self._app.conversation.append_system(message)
+        if not message:
+            self._app.conversation.emit_spacer()
+        else:
+            self._app.conversation.append_system(message)
         self._app.invalidate()
 
     def on_error(self, message: str) -> None:
