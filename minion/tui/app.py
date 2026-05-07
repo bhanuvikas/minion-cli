@@ -328,6 +328,7 @@ class MinionApp:
             style=TUI_STYLE,
             full_screen=False,
             mouse_support=False,
+            erase_when_done=True,
         )
 
         # Suppress the terminal cursor while streaming/thinking is active so
@@ -371,6 +372,10 @@ class MinionApp:
             self._pending_output.clear()
             sys.stdout.write(combined)
             sys.stdout.flush()
+        # Print a closing rule so the shell prompt has a clean visual boundary
+        rule = "\033[38;2;192;192;192m" + "─" * self._terminal_width + "\033[0m\n"
+        sys.stdout.write(rule)
+        sys.stdout.flush()
 
     # ── Scrollback write paths ────────────────────────────────────────────────
 
