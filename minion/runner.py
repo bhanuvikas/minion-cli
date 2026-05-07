@@ -25,11 +25,12 @@ from typing import Optional
 
 from .conversation import Conversation
 from .llm.base import ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
+from .output import ConsoleRenderer, OutputRenderer
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
-    BLUE, YELLOW, console, MarkdownStreamer,
+    BLUE, YELLOW, console,
     print_critique, print_diff, print_error, print_iteration_limit,
-    print_reflection_header, print_todo_list, print_tool_call, print_usage,
+    print_reflection_header, print_tool_call,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
@@ -83,8 +84,6 @@ class _IterationResult:
     cancelled: bool = False
 
 
-def _show_cancellation() -> None:
-    console.print(f"\n[{YELLOW}]⚠ Cancelled.[/]\n")
 
 
 def _complete_cancelled_tools(tool_blocks: list[ToolUseBlock], conversation: Conversation) -> None:
@@ -598,6 +597,9 @@ def run_prompt(
     permission_store=None,  # PermissionStore | None
     stream_markdown: bool = False,
     hook_runner=None,  # HookRunner | None
+    tui_app=None,  # kept for backward compat — ignored; use renderer= instead
+    confirmation_manager=None,  # ConfirmationManager | None — pre-built instance
+    renderer: Optional[OutputRenderer] = None,
 ) -> Optional[str]:
     """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
 
@@ -614,6 +616,7 @@ def run_prompt(
         agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
         auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
         stream_markdown=stream_markdown, hook_runner=hook_runner,
+        tui_app=tui_app, confirmation_manager=confirmation_manager, renderer=renderer,
     ))
 
 
@@ -634,6 +637,7 @@ async def _stream_one_iteration_async(
     spinner_label: Optional[str] = None,
     agent_label: Optional[str] = None,
     stream_markdown: bool = False,
+    renderer: Optional[OutputRenderer] = None,
 ) -> Optional[_IterationResult]:
     """Async equivalent of _stream_one_iteration(). Uses client.async_stream()."""
     _llm_start = _time.monotonic()
@@ -649,10 +653,11 @@ async def _stream_one_iteration_async(
         estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
     )
     effective_spinner = spinner_label or _SPINNER_LABEL
+    _renderer = renderer or ConsoleRenderer()
 
     gen = client.async_stream(conversation.messages, system=system_prompt, system_dynamic=system_dynamic, tools=effective_tools)
     _in_live = _get_slot_cb() is not None
-    _first_cm = contextlib.nullcontext() if _in_live else console.status(effective_spinner, spinner="dots")
+    _first_cm = contextlib.nullcontext() if _in_live else _renderer.spinner(effective_spinner)
 
     try:
         with _first_cm:
@@ -680,13 +685,13 @@ async def _stream_one_iteration_async(
         # assistant tool_use block without a matching tool_result, causing a 400.
         if conversation.messages and isinstance(conversation.messages[-1].content, str):
             conversation.messages.pop()
-        print_error(str(e))
+        _renderer.on_error(str(e))
         return None
 
     if first_event is None:
         if conversation.messages and isinstance(conversation.messages[-1].content, str):
             conversation.messages.pop()
-        print_error("Received an empty response from the model.")
+        _renderer.on_error("Received an empty response from the model.")
         return None
 
     text_chunks: list[str] = []
@@ -694,49 +699,33 @@ async def _stream_one_iteration_async(
     stop_reason = "end_turn"
     usage: Optional[LLMResponse] = None
     printed_prefix = False
-    _tool_spinner = None
-    _tool_newline_printed = False
-    _md_streamer = MarkdownStreamer(display_name=agent_label or "minion")
 
     def _process(event) -> None:
-        nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
+        nonlocal printed_prefix, stop_reason, usage
         if isinstance(event, TextChunk):
             text_chunks.append(event.text)
             _slot_cb = _get_slot_cb()
             if _slot_cb is not None:
+                # Subagent mode: route to slot display (takes priority over renderer)
                 _slot_cb("text", text=event.text)
                 return
-            if not silent:
-                if not printed_prefix:
-                    display_name = agent_label or "minion"
-                    if stream_markdown:
-                        _md_streamer.__enter__()
-                    else:
-                        console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
-                    printed_prefix = True
-                if stream_markdown:
-                    _md_streamer.write(event.text)
-                else:
-                    sys.stdout.write(event.text)
-                    sys.stdout.flush()
+            # Renderer handles silent vs non-silent and TUI vs console internally
+            if not printed_prefix:
+                _renderer.on_assistant_start(
+                    display_name=agent_label or "minion",
+                    stream_markdown=stream_markdown,
+                    silent=silent,
+                )
+                printed_prefix = True
+            _renderer.on_assistant_chunk(event.text)
         elif isinstance(event, ToolAccumulationStart):
             if not silent and printed_prefix and _get_slot_cb() is None:
-                if stream_markdown:
-                    _md_streamer.close()
-                else:
-                    print()
-                _tool_newline_printed = True
-                _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
-                _tool_spinner.start()
+                _renderer.on_tool_accumulation_start(event.name)
         elif isinstance(event, ToolUseBlock):
-            if _tool_spinner is not None:
-                _tool_spinner.stop()
-                _tool_spinner = None
+            _renderer.on_tool_use_block_received()
             tool_blocks.append(event)
         elif isinstance(event, StreamComplete):
-            if _tool_spinner is not None:
-                _tool_spinner.stop()
-                _tool_spinner = None
+            _renderer.on_tool_use_block_received()  # stop any pending spinner
             stop_reason = event.stop_reason
             usage = LLMResponse(
                 content="",
@@ -761,7 +750,7 @@ async def _stream_one_iteration_async(
 
     if silent:
         _in_live2 = _get_slot_cb() is not None
-        _silent_cm = contextlib.nullcontext() if _in_live2 else console.status(effective_spinner, spinner="dots")
+        _silent_cm = contextlib.nullcontext() if _in_live2 else _renderer.spinner(effective_spinner)
         with _silent_cm:
             _process(first_event)
             try:
@@ -769,14 +758,8 @@ async def _stream_one_iteration_async(
                     _process(event)
             except (KeyboardInterrupt, asyncio.CancelledError):
                 _cancelled = True
-                if _tool_spinner is not None:
-                    _tool_spinner.stop()
-                    _tool_spinner = None
         if not _cancelled and flush_narration and stop_reason == "tool_use" and text_chunks:
-            display_name = agent_label or "minion"
-            console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
-            sys.stdout.write("".join(text_chunks))
-            print()
+            _renderer.on_narration_flush("".join(text_chunks), display_name=agent_label or "minion")
     else:
         _process(first_event)
         try:
@@ -784,14 +767,10 @@ async def _stream_one_iteration_async(
                 _process(event)
         except (KeyboardInterrupt, asyncio.CancelledError):
             _cancelled = True
-            if _tool_spinner is not None:
-                _tool_spinner.stop()
-                _tool_spinner = None
 
-    if stream_markdown:
-        _md_streamer.close()
-    elif text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
-        print()
+    # Commit/finalise the assistant turn (close MD streamer, print newline, or finalize TUI buffer)
+    if printed_prefix:
+        _renderer.on_assistant_end()
 
     if _cancelled:
         return _IterationResult(
@@ -814,6 +793,7 @@ async def _execute_parallel_agents_async(
     tool_blocks: list[ToolUseBlock],
     executor: ToolExecutor,
     conversation: Conversation,
+    renderer: Optional[OutputRenderer] = None,
 ) -> None:
     """Async parallel agent dispatch using asyncio.TaskGroup.
 
@@ -823,7 +803,9 @@ async def _execute_parallel_agents_async(
     """
     from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback, set_active_live_display
 
-    display = AgentLiveDisplay()
+    _parallel = renderer.parallel_display if renderer is not None else None
+    display = _parallel if _parallel is not None else AgentLiveDisplay()
+
     slots = []
     for tb in tool_blocks:
         if tb.name == "spawn_agent":
@@ -889,11 +871,10 @@ async def _execute_parallel_agents_async(
         return await _run_remote_async(tb)
 
     tasks_map: dict[str, asyncio.Task] = {}
+    for tb in tool_blocks:
+        _callbacks[tb.id]("running")
+
     with display:
-        # Pre-mark ALL slots as running so the initial frozen frame always shows
-        # both agents active (not one running + one "waiting..." for later start).
-        for tb in tool_blocks:
-            _callbacks[tb.id]("running")
         display.render_now()
         async with asyncio.TaskGroup() as tg:
             for tb in tool_blocks:
@@ -907,6 +888,7 @@ async def _execute_parallel_tools_async(
     tool_blocks: list[ToolUseBlock],
     executor: ToolExecutor,
     conversation: Conversation,
+    renderer: Optional[OutputRenderer] = None,
 ) -> None:
     """Async parallel generic tool execution using asyncio.TaskGroup.
 
@@ -956,7 +938,9 @@ async def _execute_parallel_tools_async(
         return
 
     # ── STANDALONE MODE: top-level parallel tools ────────────────────────────
-    display = AgentLiveDisplay()
+    _parallel = renderer.parallel_display if renderer is not None else None
+    display = _parallel if _parallel is not None else AgentLiveDisplay()
+
     callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
     slots = [
         SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
@@ -983,14 +967,12 @@ async def _execute_parallel_tools_async(
             return f"Error: {exc}"
 
     tasks_map: dict[str, asyncio.Task] = {}
-    with display:
-        # Pre-mark ALL slots "running" before any task can pause for confirmation.
-        # This guarantees the frozen frame shows "running" (not "pending") even if
-        # a task reaches the dangerous-tool check before the 8-FPS refresh fires.
-        for tb in tool_blocks:
-            callbacks[tb.id]("running")
-        display.render_now()
+    # Pre-mark ALL slots "running" before any task can pause for confirmation.
+    for tb in tool_blocks:
+        callbacks[tb.id]("running")
 
+    with display:
+        display.render_now()
         async with asyncio.TaskGroup() as tg:
             for tb in tool_blocks:
                 tasks_map[tb.id] = tg.create_task(_run_tb_async(tb))
@@ -1003,6 +985,7 @@ async def _execute_tools_async(
     tool_blocks: list[ToolUseBlock],
     executor: ToolExecutor,
     conversation: Conversation,
+    renderer: Optional[OutputRenderer] = None,
 ) -> None:
     """Async router for tool execution — mirrors _execute_tools()."""
     if len(tool_blocks) == 1:
@@ -1012,10 +995,10 @@ async def _execute_tools_async(
         return
 
     if all(tb.name in DELEGATION_TOOLS for tb in tool_blocks):
-        await _execute_parallel_agents_async(tool_blocks, executor, conversation)
+        await _execute_parallel_agents_async(tool_blocks, executor, conversation, renderer=renderer)
         return
 
-    await _execute_parallel_tools_async(tool_blocks, executor, conversation)
+    await _execute_parallel_tools_async(tool_blocks, executor, conversation, renderer=renderer)
 
 
 async def run_prompt_async(
@@ -1046,12 +1029,26 @@ async def run_prompt_async(
     permission_store=None,  # PermissionStore | None
     stream_markdown: bool = False,
     hook_runner=None,  # HookRunner | None
+    tui_app=None,  # kept for backward compat — ignored; use renderer= instead
+    confirmation_manager=None,  # ConfirmationManager | None — pre-built instance
+    renderer: Optional[OutputRenderer] = None,  # output strategy; auto-detected when None
 ) -> Optional[str]:
     """Async version of run_prompt(). Same behaviour, runs in an asyncio event loop.
 
     Use this from async callers (e.g. run_repl_async). The sync run_prompt() is
     kept for backward-compatible callers (agents, one-shot CLI) during migration.
     """
+    # Auto-detect renderer when not provided: check if TUI is active in this context.
+    if renderer is None:
+        from .tui import get_tui_app as _detect_tui
+        _detected = _detect_tui()
+        if _detected is not None:
+            from .output import TuiRenderer
+            renderer = TuiRenderer(_detected)
+        else:
+            renderer = ConsoleRenderer()
+    _renderer = renderer
+
     limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
 
     if tools is None and mcp_manager is not None and mcp_manager.has_tools():
@@ -1100,6 +1097,8 @@ async def run_prompt_async(
         approval_mode=approval_mode,
         permission_store=permission_store,
         hook_runner=hook_runner,
+        confirmation_manager=confirmation_manager,
+        renderer=_renderer,
     )
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
@@ -1117,13 +1116,14 @@ async def run_prompt_async(
                 spinner_label=spinner_label,
                 agent_label=agent_label,
                 stream_markdown=stream_markdown,
+                renderer=_renderer,
             )
         except (KeyboardInterrupt, asyncio.CancelledError):
             # Ctrl+C before the first token arrived — nothing was committed to the
             # conversation except possibly the initial user message (a plain string).
             if conversation.messages and isinstance(conversation.messages[-1].content, str):
                 conversation.messages.pop()
-            _show_cancellation()
+            _renderer.on_cancellation()
             return None
         except InputTokenRateLimitError:
             if auto_compact and not _auto_compacted:
@@ -1133,17 +1133,17 @@ async def run_prompt_async(
                 pending_user_msg = None
                 if conversation.messages and isinstance(conversation.messages[-1].content, str):
                     pending_user_msg = conversation.messages.pop()
-                console.print(
+                _renderer.on_info(
                     f"\n[{YELLOW}]⚠ Input token rate limit hit — auto-compacting conversation...[/]"
                 )
                 from .compact import get_strategy as _get_compact_strategy
                 _compact_strategy = _get_compact_strategy("summary")
-                with console.status("[muted]summarizing...[/]", spinner="dots"):
+                with _renderer.spinner("[muted]summarizing...[/]"):
                     await asyncio.to_thread(
                         _compact_strategy.compact, conversation, client, system_prompt
                     )
                 msgs_after = len(conversation.messages)
-                console.print(
+                _renderer.on_info(
                     f"[{YELLOW}]Compacted.[/] [muted]"
                     f"Context reduced to {msgs_after} messages — retrying...[/]"
                 )
@@ -1151,7 +1151,7 @@ async def run_prompt_async(
                     conversation.messages.append(pending_user_msg)
                 continue  # retry this iteration with compacted context
             # auto_compact disabled or already tried once — surface the error
-            print_error(
+            _renderer.on_error(
                 "Rate limited due to input token count. "
                 "Use /compact to reduce context size, or set auto_compact = false in config.toml."
             )
@@ -1165,7 +1165,7 @@ async def run_prompt_async(
             elif conversation.messages and isinstance(conversation.messages[-1].content, str):
                 # First iteration, no output — clean up the pending user message
                 conversation.messages.pop()
-            _show_cancellation()
+            _renderer.on_cancellation()
             return None
 
         if result.usage:
@@ -1174,7 +1174,7 @@ async def run_prompt_async(
         if result.stop_reason not in ("end_turn", "tool_use"):
             conversation.add_assistant(result.full_text, result.usage)
             if _get_slot_cb() is None:
-                console.print(f"\n[muted]  ↳ stopped: {result.stop_reason}[/]")
+                _renderer.on_stop_reason(result.stop_reason)
             if capture_output:
                 return result.full_text
             break
@@ -1184,19 +1184,10 @@ async def run_prompt_async(
             if capture_output:
                 return result.full_text
             if render_markdown and result.full_text:
-                from rich.markdown import Markdown
-                from rich.panel import Panel
-                console.print(
-                    Panel(
-                        Markdown(result.full_text),
-                        title=f"[bold {YELLOW}]{markdown_title or 'Response'}[/]",
-                        expand=False,
-                        border_style="dim",
-                    )
-                )
+                _renderer.on_markdown_panel(result.full_text, title=markdown_title or "Response")
             if reflect_config and reflect_config.depth > 0:
                 if side_effects_occurred:
-                    console.print("[muted]  ↳ reflection skipped (side-effecting tools were used)[/]")
+                    _renderer.on_info("[muted]  ↳ reflection skipped (side-effecting tools were used)[/]")
                 else:
                     _run_reflection(
                         prompt=prompt,
@@ -1222,8 +1213,8 @@ async def run_prompt_async(
 
             if dry_run:
                 for tb in result.tool_blocks:
-                    print_tool_call(tb.name, tb.input, dry_run=True)
-                console.print(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
+                    _renderer.on_tool_call(tb.name, tb.input, dry_run=True)
+                _renderer.on_info(f"\n[muted]Dry-run complete. {len(result.tool_blocks)} tool call(s) shown.[/]")
                 break
 
             for tb in result.tool_blocks:
@@ -1231,16 +1222,16 @@ async def run_prompt_async(
                     side_effects_occurred = True
 
             try:
-                await _execute_tools_async(result.tool_blocks, executor, conversation)
+                await _execute_tools_async(result.tool_blocks, executor, conversation, renderer=_renderer)
             except (KeyboardInterrupt, asyncio.CancelledError):
                 _complete_cancelled_tools(result.tool_blocks, conversation)
-                _show_cancellation()
+                _renderer.on_cancellation()
                 return None
             if _get_slot_cb() is None:
-                print()
+                _renderer.on_info("")  # blank line spacer after tool block (console only shows blank)
 
     else:
-        print_iteration_limit(limit)
+        _renderer.on_iteration_limit(limit)
 
     if not capture_output:
         system_prompt_tokens = len(system_prompt) // 4
@@ -1249,13 +1240,7 @@ async def run_prompt_async(
                            + final_usage.cache_creation_tokens)
             conversation.truncate_if_needed(total_input, final_usage.output_tokens)
         snapshot = conversation.build_snapshot(final_usage, system_prompt_tokens, memory_tokens)
-        print_todo_list()
-        print_usage(snapshot, active_mode=approval_mode if approval_mode != "off" else None)
+        _renderer.on_session_summary(snapshot, approval_mode=approval_mode)
         if _subagent_tokens:
-            total_sub = sum(_subagent_tokens)
-            n_sub = len(_subagent_tokens)
-            console.print(
-                f"  [muted]subagents: {n_sub} agent{'s' if n_sub > 1 else ''}, "
-                f"{total_sub:,} tokens total[/]"
-            )
+            _renderer.on_subagent_tokens(len(_subagent_tokens), sum(_subagent_tokens))
     return None

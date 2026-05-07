@@ -169,8 +169,6 @@ def _build_session_rows(
     rows.append(("version", _sv(f"v{version}"), "white"))
     if model:
         rows.append(("model", _sv(model), BLUE))
-    if provider:
-        rows.append(("provider", _sv(provider), "white"))
     if project_name:
         rows.append(("project", _sv(project_name), "white"))
     if a2a_count > 0:
@@ -575,12 +573,12 @@ def print_tool_result(result: str) -> None:
     preview = escape(first_line[:100]) + ("…" if len(first_line) > 100 else "")
     extra_lines = result.count("\n")
     suffix = f"  [muted]+{extra_lines} more lines[/]" if extra_lines > 0 else ""
-    console.print(f"  [muted]└─[/] {preview}{suffix}")
+    console.print(f"   [muted]└─[/] {preview}{suffix}")
 
 
 def print_tool_error(error: str) -> None:
     """Display a tool execution error."""
-    console.print(f"  [bold red]└─ Error:[/] {error}")
+    console.print(f"   [bold red]└─ Error:[/] {error}")
 
 
 def print_iteration_limit(max_iter: int) -> None:

@@ -224,28 +224,31 @@ class TestRunAgent:
 
 # ─── TestSpawnAgentTool ───────────────────────────────────────────────────────
 
+def _mock_renderer():
+    """Return a MagicMock satisfying OutputRenderer interface for tests."""
+    from minion.output import OutputRenderer
+    r = MagicMock(spec=OutputRenderer)
+    r.spinner.return_value.__enter__ = MagicMock(return_value=None)
+    r.spinner.return_value.__exit__ = MagicMock(return_value=False)
+    return r
+
+
 class TestSpawnAgentTool:
     def test_executor_routes_spawn_agent_to_agent_runner(self):
         runner = MagicMock(return_value="subagent output")
-        executor = ToolExecutor(agent_runner=runner)
+        executor = ToolExecutor(agent_runner=runner, renderer=_mock_renderer())
         tb = _make_tool_use_block("spawn_agent", inputs={"task": "do stuff", "role": "researcher"})
 
-        with patch("minion.tools.executor.print_tool_call"), \
-             patch("minion.tools.executor.print_tool_result"), \
-             patch("minion.tools.executor.get_tracer"):
+        with patch("minion.tools.executor.get_tracer"):
             result = executor.execute(tb)
 
         runner.assert_called_once_with("do stuff", "researcher")
         assert result == "subagent output"
 
     def test_executor_spawn_agent_no_runner_returns_error(self):
-        executor = ToolExecutor(agent_runner=None)
+        executor = ToolExecutor(agent_runner=None, renderer=_mock_renderer())
         tb = _make_tool_use_block("spawn_agent", inputs={"task": "task"})
-
-        with patch("minion.tools.executor.print_tool_call"), \
-             patch("minion.tools.executor.print_tool_error"):
-            result = executor.execute(tb)
-
+        result = executor.execute(tb)
         assert "not available" in result.lower()
 
     def test_executor_spawn_agent_extracts_task_and_role(self):
@@ -255,13 +258,11 @@ class TestSpawnAgentTool:
             received["role"] = role
             return "done"
 
-        executor = ToolExecutor(agent_runner=fake_runner)
+        executor = ToolExecutor(agent_runner=fake_runner, renderer=_mock_renderer())
         tb = _make_tool_use_block(
             "spawn_agent", inputs={"task": "analyze auth.py", "role": "reviewer"}
         )
-        with patch("minion.tools.executor.print_tool_call"), \
-             patch("minion.tools.executor.print_tool_result"), \
-             patch("minion.tools.executor.get_tracer"):
+        with patch("minion.tools.executor.get_tracer"):
             executor.execute(tb)
 
         assert received["task"] == "analyze auth.py"
@@ -269,7 +270,7 @@ class TestSpawnAgentTool:
 
     def test_executor_native_tools_still_work_alongside_agent_runner(self):
         runner = MagicMock(return_value="agent result")
-        executor = ToolExecutor(agent_runner=runner)
+        executor = ToolExecutor(agent_runner=runner, renderer=_mock_renderer())
         tb = _make_tool_use_block("read_file", inputs={"path": "README.md"})
 
         # _DISPATCH holds references captured at import time; patch via _DISPATCH directly.
@@ -278,10 +279,7 @@ class TestSpawnAgentTool:
         mock_read = MagicMock(return_value="file contents")
         _exec_mod._DISPATCH["read_file"] = mock_read
         try:
-            with patch("minion.tools.executor.print_tool_call"), \
-                 patch("minion.tools.executor.print_tool_result"), \
-                 patch("minion.tools.executor.get_tracer"), \
-                 patch("minion.tools.executor.console"):
+            with patch("minion.tools.executor.get_tracer"):
                 result = executor.execute(tb)
         finally:
             _exec_mod._DISPATCH["read_file"] = original

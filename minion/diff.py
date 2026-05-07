@@ -16,12 +16,12 @@ from typing import Optional
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
-# Line background colors (dark, terminal-friendly)
-_REMOVED_LINE_STYLE = "on #3b1111"
-_ADDED_LINE_STYLE   = "on #113b11"
+# Line background colors
+_REMOVED_LINE_STYLE = "on #4a0000"
+_ADDED_LINE_STYLE   = "on #004a00"
 # Inline word highlight colors (brighter, within the line background)
-_REMOVED_WORD_STYLE = "on #6b2020"
-_ADDED_WORD_STYLE   = "on #1f6b1f"
+_REMOVED_WORD_STYLE = "on #8b0000"
+_ADDED_WORD_STYLE   = "on #006400"
 
 
 def compute_diff(original: str, revised: str) -> list[tuple[str, str]]:

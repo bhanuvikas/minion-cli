@@ -784,9 +784,18 @@ class TestAgentCard(unittest.TestCase):
 
 class TestSendRemoteTaskTool(unittest.TestCase):
 
+    def _mock_renderer(self):
+        from unittest.mock import MagicMock
+        from minion.output import OutputRenderer
+        r = MagicMock(spec=OutputRenderer)
+        r.spinner.return_value.__enter__ = MagicMock(return_value=None)
+        r.spinner.return_value.__exit__ = MagicMock(return_value=False)
+        return r
+
     def _make_executor(self, remote_task_runner=None):
         from minion.tools.executor import ToolExecutor
-        return ToolExecutor(dry_run=False, remote_task_runner=remote_task_runner)
+        return ToolExecutor(dry_run=False, remote_task_runner=remote_task_runner,
+                            renderer=self._mock_renderer())
 
     def _make_block(self, name: str, inputs: dict) -> ToolUseBlock:
         return ToolUseBlock(id=f"id_{name}", name=name, input=inputs)
@@ -798,9 +807,8 @@ class TestSendRemoteTaskTool(unittest.TestCase):
 
         with patch("minion.tools.executor.get_tracer") as mock_tracer:
             mock_tracer.return_value = MagicMock()
-            with patch("minion.tools.executor.print_tool_result"):
-                with patch("minion.agents.display.get_agent_display_callback", return_value=None):
-                    result = executor.execute(block)
+            with patch("minion.agents.display.get_agent_display_callback", return_value=None):
+                result = executor.execute(block)
 
         self.assertEqual(result, "remote result")
         runner.assert_called_once_with("coder", "do stuff")
@@ -809,10 +817,8 @@ class TestSendRemoteTaskTool(unittest.TestCase):
         executor = self._make_executor(remote_task_runner=None)
         block = self._make_block("send_remote_task", {"agent": "bot", "task": "hi"})
 
-        with patch("minion.tools.executor.print_tool_call"):
-            with patch("minion.tools.executor.print_tool_error"):
-                with patch("minion.agents.display.get_agent_display_callback", return_value=None):
-                    result = executor.execute(block)
+        with patch("minion.agents.display.get_agent_display_callback", return_value=None):
+            result = executor.execute(block)
 
         self.assertIn("Error", result)
         self.assertIn("A2A", result)
@@ -830,9 +836,8 @@ class TestSendRemoteTaskTool(unittest.TestCase):
 
         with patch("minion.tools.executor.get_tracer") as mock_tracer:
             mock_tracer.return_value = MagicMock()
-            with patch("minion.tools.executor.print_tool_result"):
-                with patch("minion.agents.display.get_agent_display_callback", return_value=None):
-                    executor.execute(block)
+            with patch("minion.agents.display.get_agent_display_callback", return_value=None):
+                executor.execute(block)
 
         self.assertEqual(calls, [("reviewer", "review the PR")])
 

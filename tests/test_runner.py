@@ -11,8 +11,17 @@ import pytest
 
 from minion.conversation import Conversation
 from minion.llm.base import LLMResponse, Message, StreamComplete, TextChunk, ToolUseBlock
+from minion.output import OutputRenderer
 from minion.reflection import ReflectionConfig, ReflectionResult, CritiqueResult
 from minion.runner import run_prompt_async, MAX_ITERATIONS
+
+
+def _mock_renderer():
+    r = MagicMock(spec=OutputRenderer)
+    r.spinner.return_value.__enter__ = MagicMock(return_value=None)
+    r.spinner.return_value.__exit__ = MagicMock(return_value=False)
+    r.parallel_display = None
+    return r
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -104,19 +113,19 @@ class TestRunPromptErrorHandling:
     @pytest.mark.asyncio
     async def test_empty_stream_shows_error(self):
         client = _make_async_client(events=[])
-        with patch("minion.runner.console"), \
-             patch("minion.runner.print_error") as mock_err:
-            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT)
-        mock_err.assert_called_once()
-        assert "empty" in mock_err.call_args[0][0].lower()
+        mock_r = _mock_renderer()
+        with patch("minion.runner.console"):
+            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
+        mock_r.on_error.assert_called_once()
+        assert "empty" in mock_r.on_error.call_args[0][0].lower()
 
     @pytest.mark.asyncio
     async def test_exception_during_stream_shows_error(self):
         client = _make_async_client(exception=ValueError("ANTHROPIC_API_KEY not set"))
-        with patch("minion.runner.console"), \
-             patch("minion.runner.print_error") as mock_err:
-            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT)
-        mock_err.assert_called_once_with("ANTHROPIC_API_KEY not set")
+        mock_r = _mock_renderer()
+        with patch("minion.runner.console"):
+            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
+        mock_r.on_error.assert_called_once_with("ANTHROPIC_API_KEY not set")
 
     @pytest.mark.asyncio
     async def test_exception_emits_llm_error_trace(self):
@@ -157,11 +166,10 @@ class TestRunPromptOutput:
     @pytest.mark.asyncio
     async def test_print_usage_called_after_stream(self):
         client = _make_async_client()
-        with patch("minion.runner.console"), \
-             patch("minion.runner.print_usage") as mock_usage, \
-             patch("sys.stdout"):
-            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT)
-        mock_usage.assert_called_once()
+        mock_r = _mock_renderer()
+        with patch("minion.runner.console"), patch("sys.stdout"):
+            await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
+        mock_r.on_session_summary.assert_called_once()
 
 
 # ─── Agent loop: tool use ─────────────────────────────────────────────────────
@@ -195,14 +203,18 @@ class TestAgentLoop:
     @pytest.mark.asyncio
     async def test_dry_run_passed_to_executor(self):
         client = _make_async_client()
+        mock_r = _mock_renderer()
         with patch("minion.runner.console"), \
              patch("minion.runner.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
-            await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT, dry_run=True)
+            await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT,
+                                   dry_run=True, renderer=mock_r)
         MockExecutor.assert_called_once_with(
             dry_run=True, mcp_manager=None, agent_runner=None, agent_label=None,
             remote_task_runner=None, confirm_callback=None,
             approval_mode="off", permission_store=None, hook_runner=None,
+            confirmation_manager=None,
+            renderer=mock_r,
         )
 
     @pytest.mark.asyncio
@@ -217,15 +229,16 @@ class TestAgentLoop:
         client = MagicMock()
         client.model_id = "test-model"
         client.async_stream = _always_tool
+        mock_r = _mock_renderer()
 
         with patch("minion.runner.console"), \
              patch("minion.runner.ToolExecutor") as MockExecutor, \
-             patch("minion.runner.print_iteration_limit") as mock_limit, \
              patch("sys.stdout"):
             MockExecutor.return_value.execute_async = AsyncMock(return_value="result")
-            await run_prompt_async("loop forever", client, Conversation(), _SYSTEM_PROMPT)
+            await run_prompt_async("loop forever", client, Conversation(), _SYSTEM_PROMPT,
+                                   renderer=mock_r)
 
-        mock_limit.assert_called_once_with(MAX_ITERATIONS)
+        mock_r.on_iteration_limit.assert_called_once_with(MAX_ITERATIONS)
 
 
 # ─── Reflection integration ───────────────────────────────────────────────────

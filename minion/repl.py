@@ -9,8 +9,10 @@ stays focused on input/UX concerns.
 """
 
 import asyncio
+import io
 import os
 import re
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +44,7 @@ from .memory.injection import _format_age, inject_memories
 from .memory.record import MemoryRecord
 from .memory.store import MemoryStore
 from .prompts import build_system_prompt
+from .output import ConsoleRenderer, TuiRenderer
 from .runner import run_prompt, run_prompt_async
 from .session import list_sessions, load, save
 from .theme import BLUE, SILVER, YELLOW, console, print_context, print_error, print_greeting, print_mode_toggle, print_startup_warnings, startup_warnings
@@ -200,6 +203,28 @@ _INPUT_STYLE = Style.from_dict({
     'slash-command': f'bold {YELLOW}',   # /command → gold, matches "you ›" prompt
     'at-mention':    f'bold {BLUE}',     # @file.py → blue, matches "minion ›" prefix
 })
+
+
+# ─── TUI console capture ──────────────────────────────────────────────────────
+# Strip cursor-movement ANSI codes (A-Z, lowercase except 'm', and \r) while
+# preserving SGR color codes (which always end in 'm').
+
+_CURSOR_ANSI_RE = re.compile(
+    r'\r'                         # carriage return — used by Live/Status to overwrite
+    r'|\x1b\[[\d;?]*[A-Z]'       # uppercase CSI: cursor movement, erase, scroll
+    r'|\x1b\[[\d;?]*[a-ln-z]'    # lowercase CSI except 'm': mode set/reset, etc.
+)
+
+
+class _CaptureBuf(io.StringIO):
+    """StringIO that claims to be a TTY so Rich emits color codes, while
+    filtering cursor-movement escape sequences on write."""
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        return super().write(_CURSOR_ANSI_RE.sub('', s))
 
 
 # ─── Key bindings ─────────────────────────────────────────────────────────────
@@ -1265,6 +1290,186 @@ def run_repl(
         agents_enabled=agents_enabled,
     ))
 
+async def _run_repl_tui(
+    *,
+    tui_app,
+    client, conversation, state, project_context,
+    memory_store, permission_store, hook_runner,
+    agent_registry, skill_registry, a2a_manager, mcp_manager,
+    base_system_prompt, confirmation_manager,
+    dry_run, _file_cfg,
+    _hook_session_id: str,
+    project_cwd,
+) -> None:
+    """TUI REPL loop — called when stdout is a TTY and MINION_NO_TUI is unset."""
+    from .tui import set_tui_app
+    _renderer = TuiRenderer(tui_app)
+
+    async def on_submit(user_input: str) -> None:
+        get_tracer().emit("user_turn", text=user_input)
+
+        from .hooks.events import UserPromptSubmitEvent
+        _prompt_block = await hook_runner.fire_prompt(
+            UserPromptSubmitEvent(
+                session_id=_hook_session_id, cwd=project_cwd, prompt=user_input
+            )
+        )
+        if _prompt_block is not None:
+            tui_app.conversation.append_system(
+                f"[muted]{_prompt_block.reason or 'Hook blocked this prompt.'}[/]"
+            )
+            tui_app.conversation.finalize_turn()
+            tui_app.set_thinking(False)
+            return
+
+        if user_input.startswith("/mcp"):
+            mcp_messages = await _handle_mcp_command(user_input, mcp_manager)
+            if mcp_messages is None:
+                tui_app.set_thinking(False)
+                return
+            for msg in mcp_messages[:-1]:
+                _inject_mcp_message(msg, conversation)
+            last = mcp_messages[-1]
+            if last.get("role") == "user":
+                user_input = _extract_mcp_text(last)
+            else:
+                _inject_mcp_message(last, conversation)
+                tui_app.conversation.append_system(
+                    "[muted]Conversation primed with prompt template. Ask a follow-up to continue.[/]"
+                )
+                tui_app.conversation.finalize_turn()
+                tui_app.set_thinking(False)
+                return
+
+        if user_input.startswith("/agent "):
+            await asyncio.to_thread(_handle_agent_direct, user_input, agent_registry, client)
+            tui_app.set_thinking(False)
+            return
+
+        if user_input.startswith("/a2a"):
+            _handle_a2a_command(user_input, a2a_manager)
+            tui_app.set_thinking(False)
+            return
+
+        # Slash commands: capture console output into the conversation zone
+        if user_input.startswith("/"):
+            _buf = _CaptureBuf()
+            _old_file = console._file
+            console._file = _buf
+            try:
+                _handle_slash_command(
+                    user_input, client, conversation, project_context, state, memory_store,
+                    base_system_prompt=state.system_prompt,
+                    skill_registry=skill_registry,
+                    agent_registry=agent_registry,
+                    cwd=project_cwd,
+                    permission_store=permission_store,
+                    hook_runner=hook_runner,
+                )
+            except (SystemExit, typer.Exit):
+                console._file = _old_file
+                if tui_app._app is not None:
+                    tui_app._app.exit()
+                return
+            finally:
+                console._file = _old_file
+            ansi = _buf.getvalue().strip()
+            if ansi:
+                tui_app.conversation.append_ansi(ansi + "\n")
+                tui_app.scroll_to_bottom()
+            tui_app.set_thinking(False)
+            return
+
+        # Memory injection
+        memory_tokens = 0
+        system_dynamic = ""
+        if state.memory_enabled:
+            memories = await asyncio.to_thread(memory_store.retrieve, user_input)
+            mem_block = inject_memories("", memories)
+            if mem_block:
+                system_dynamic += mem_block
+                memory_tokens = len(mem_block) // 4
+                get_tracer().emit(
+                    "context_inject",
+                    memory_count=len(memories),
+                    token_estimate=memory_tokens,
+                    memories=[m.content for m in memories],
+                )
+
+        if state.active_plan and state.active_plan.exists():
+            goal_hint = state.active_plan_goal or state.active_plan.stem
+            system_dynamic += (
+                f"\n\n## Recently Executed Plan\n"
+                f"Goal: {goal_hint}\n"
+                f"Path: {state.active_plan}\n"
+                f"Use read_file on this path if it is relevant to the current request."
+            )
+
+        reflect_config = (
+            ReflectionConfig(depth=state.reflect_depth)
+            if state.reflect_depth > 0 else None
+        )
+
+        try:
+            await run_prompt_async(
+                user_input, client, conversation, state.system_prompt,
+                system_dynamic=system_dynamic,
+                dry_run=dry_run,
+                reflect_config=reflect_config,
+                verbose=state.verbose,
+                memory_tokens=memory_tokens,
+                mcp_manager=mcp_manager,
+                enable_agents=state.agents_enabled,
+                agent_registry=agent_registry,
+                agent_depth=0,
+                a2a_manager=a2a_manager,
+                auto_compact=_file_cfg.context.auto_compact,
+                approval_mode=state.approval_mode,
+                permission_store=permission_store,
+                stream_markdown=state.markdown_enabled,
+                hook_runner=hook_runner,
+                confirmation_manager=confirmation_manager,
+                renderer=_renderer,
+            )
+        except Exception as _run_exc:
+            tui_app.conversation.append_system(f"Error: {_run_exc}")
+        finally:
+            tui_app.conversation.finalize_turn()
+
+        for _tip in hook_runner.drain_tips():
+            tui_app.conversation.append_system(f"[bold #FFD700]⚡ Hook[/]  [#C0C0C0]{_tip}[/]")
+
+        # Memory extraction — isolated so errors here don't surface to the user
+        if state.memory_enabled:
+            try:
+                last_response = _get_last_response_text(conversation)
+                if last_response:
+                    extracted = await asyncio.to_thread(
+                        memory_store.maybe_extract, user_input, last_response
+                    )
+                    if extracted and state.verbose:
+                        tui_app.conversation.append_system(
+                            f"[#C0C0C0]  ↳ remembered {len(extracted)} fact(s)[/]"
+                        )
+            except Exception:
+                pass
+
+        tui_app.set_thinking(False)
+        tui_app.conversation.scroll_to_bottom()
+        tui_app.invalidate()
+
+    async def on_quit() -> None:
+        from .hooks.events import SessionEndEvent
+        await hook_runner.fire(SessionEndEvent(
+            session_id=_hook_session_id, cwd=project_cwd
+        ))
+        mcp_manager.shutdown()
+        get_tracer().finalize()
+        set_tui_app(None)
+
+    await tui_app.run_async(on_submit=on_submit, on_quit=on_quit)
+
+
 # ─── Async REPL entry point (Phase 12) ───────────────────────────────────────
 # Mirrors run_repl() but uses prompt_async() so the event loop stays live
 # between user inputs. Memory retrieval and extraction run in asyncio.to_thread()
@@ -1390,6 +1595,55 @@ async def run_repl_async(
     _hook_session_id = get_tracer().session_id or ""
     await hook_runner.fire(SessionStartEvent(session_id=_hook_session_id, cwd=project_cwd))
 
+    # ── ConfirmationManager — shared by both TUI and non-TUI paths ────────────
+    from .confirmation import ConfirmationManager
+    confirmation_manager = ConfirmationManager(permission_store=permission_store)
+
+    # ── TUI / console bifurcation ─────────────────────────────────────────────
+    _use_tui = (
+        sys.stdout.isatty()
+        and os.getenv("MINION_NO_TUI", "").lower() not in ("1", "true")
+    )
+    if _use_tui:
+        from .tui import MinionApp, set_tui_app
+        tui_app = MinionApp(
+            model_name=client.model_id,
+            completer=_SlashCompleter(
+                agent_registry=agent_registry,
+                skill_registry=skill_registry,
+                a2a_manager=a2a_manager,
+            ),
+        )
+        from minion import __version__ as _minion_ver
+        tui_app.update_session(
+            model=client.model_id,
+            provider=getattr(client, "provider_name", ""),
+            project=project_context.label if project_context and project_context.label else "",
+            cwd=str(project_cwd),
+            memory=state.memory_enabled,
+            agents=len(agent_registry) if agent_registry else 0,
+            version=_minion_ver,
+        )
+        loop = asyncio.get_event_loop()
+        confirmation_manager.set_tui(tui_app, loop)
+        set_tui_app(tui_app)
+        await _run_repl_tui(
+            tui_app=tui_app,
+            client=client, conversation=conversation, state=state,
+            project_context=project_context,
+            memory_store=memory_store, permission_store=permission_store,
+            hook_runner=hook_runner, agent_registry=agent_registry,
+            skill_registry=skill_registry, a2a_manager=a2a_manager,
+            mcp_manager=mcp_manager, base_system_prompt=base_system_prompt,
+            confirmation_manager=confirmation_manager,
+            dry_run=dry_run, _file_cfg=_file_cfg,
+            _hook_session_id=_hook_session_id,
+            project_cwd=project_cwd,
+        )
+        return
+
+    # ── Non-TUI path: existing PromptSession loop ─────────────────────────────
+    _renderer = ConsoleRenderer()
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(
@@ -1531,6 +1785,7 @@ async def run_repl_async(
             permission_store=permission_store,
             stream_markdown=state.markdown_enabled,
             hook_runner=hook_runner,
+            renderer=_renderer,
         )
 
         for _tip in hook_runner.drain_tips():

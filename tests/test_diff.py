@@ -64,12 +64,12 @@ class TestFormatDiffRich:
 
     def test_additions_get_green_background(self):
         result = format_diff_rich("line1", "line1\nline2")
-        assert "on #113b11" in result
+        assert "on #004a00" in result
         assert "line2" in result
 
     def test_removals_get_red_background(self):
         result = format_diff_rich("line1\nline2", "line1")
-        assert "on #3b1111" in result
+        assert "on #4a0000" in result
 
     def test_context_lines_get_dim_markup(self):
         original = "a\nb\nc\nd\ne"
@@ -99,34 +99,34 @@ class TestFormatDiffRich:
         original = "a\nb\nc"
         revised = "a\nc"
         result = format_diff_rich(original, revised, context_lines=0)
-        removed_lines = [p for p in result.split("\n") if "on #3b1111" in p]
+        removed_lines = [p for p in result.split("\n") if "on #4a0000" in p]
         assert any("2" in p for p in removed_lines)
 
     def test_added_line_shows_new_lineno(self):
         original = "a\nc"
         revised = "a\nb\nc"
         result = format_diff_rich(original, revised, context_lines=0)
-        added_lines = [p for p in result.split("\n") if "on #113b11" in p]
+        added_lines = [p for p in result.split("\n") if "on #004a00" in p]
         assert any("2" in p for p in added_lines)
 
     def test_replacement_pair_gets_inline_diff(self):
         """Adjacent -/+ lines (replacements) should have word-level highlights."""
         result = format_diff_rich("hello world", "hello earth", context_lines=0)
         # The changed word should get a brighter inline highlight
-        assert "on #6b2020" in result   # removed word highlight
-        assert "on #1f6b1f" in result   # added word highlight
+        assert "on #8b0000" in result   # removed word highlight
+        assert "on #006400" in result   # added word highlight
 
     def test_pure_addition_no_inline_diff(self):
         """A pure addition (no adjacent removal) gets line bg only, no word highlights."""
         result = format_diff_rich("a\nb", "a\nb\nc", context_lines=0)
-        assert "on #113b11" in result
-        assert "on #1f6b1f" not in result
+        assert "on #004a00" in result
+        assert "on #006400" not in result
 
     def test_pure_removal_no_inline_diff(self):
         """A pure removal (no adjacent addition) gets line bg only, no word highlights."""
         result = format_diff_rich("a\nb\nc", "a\nb", context_lines=0)
-        assert "on #3b1111" in result
-        assert "on #6b2020" not in result
+        assert "on #4a0000" in result
+        assert "on #8b0000" not in result
 
 
 # ─── _inline_diff_markup ──────────────────────────────────────────────────────
@@ -139,8 +139,8 @@ class TestInlineDiffMarkup:
 
     def test_changed_word_gets_highlight(self):
         old_hl, new_hl = _inline_diff_markup("hello world", "hello earth")
-        assert "on #6b2020" in old_hl   # "world" highlighted in old
-        assert "on #1f6b1f" in new_hl   # "earth" highlighted in new
+        assert "on #8b0000" in old_hl   # "world" highlighted in old
+        assert "on #006400" in new_hl   # "earth" highlighted in new
 
     def test_unchanged_prefix_not_highlighted(self):
         old_hl, _ = _inline_diff_markup("hello world", "hello earth")
@@ -150,11 +150,11 @@ class TestInlineDiffMarkup:
     def test_pure_insertion_only_in_new(self):
         old_hl, new_hl = _inline_diff_markup("hi", "hi there")
         assert "on #" not in old_hl
-        assert "on #1f6b1f" in new_hl
+        assert "on #006400" in new_hl
 
     def test_pure_deletion_only_in_old(self):
         old_hl, new_hl = _inline_diff_markup("hi there", "hi")
-        assert "on #6b2020" in old_hl
+        assert "on #8b0000" in old_hl
         assert "on #" not in new_hl
 
     def test_no_minion_package_imports(self):

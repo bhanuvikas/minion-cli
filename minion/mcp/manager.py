@@ -93,9 +93,10 @@ async def _console_print_safe(text: str) -> None:
     """
     try:
         from prompt_toolkit.application.current import get_app_or_none
+        from prompt_toolkit.application import run_in_terminal
         app = get_app_or_none()
         if app is not None and app.is_running:
-            await app.run_in_terminal(lambda: console.print(text))
+            run_in_terminal(lambda: console.print(text))
             return
     except Exception:
         pass
