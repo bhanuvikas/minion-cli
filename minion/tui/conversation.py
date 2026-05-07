@@ -22,7 +22,11 @@ This module contains NO Rich/ANSI rendering logic.
 from __future__ import annotations
 
 import threading
+import time as _time
 from typing import Callable, Optional
+
+# Crystallising-thought animation: seed → diamond → star → open → contract
+_THINK_FRAMES = ["·", "◇", "◆", "✦", "✧", "✦", "◆", "◇"]
 
 from prompt_toolkit.formatted_text import FormattedText
 
@@ -45,6 +49,7 @@ class ConversationBuffer:
         # ── Streaming state (rendered live in the streaming zone) ─────────────
         self._streaming_text: str = ""
         self._is_streaming: bool = False
+        self._is_thinking: bool = False   # true between submit and first token
 
         # ── Spacing trackers ──────────────────────────────────────────────────
         # _had_external_print: set by mark_printed() when MinionApp.print_renderable()
@@ -197,10 +202,17 @@ class ConversationBuffer:
     def has_pending_tools(self) -> bool:
         return False  # pending tracking removed; spinner driven by streaming state
 
+    def set_thinking(self, thinking: bool) -> None:
+        """Show/hide the streaming zone during the pre-token thinking phase."""
+        with self._lock:
+            self._is_thinking = thinking
+        self._invalidate()
+
     def clear(self) -> None:
         with self._lock:
             self._streaming_text = ""
             self._is_streaming = False
+            self._is_thinking = False
             self._had_external_print = False
             self._last_was_assistant = False
 
@@ -216,7 +228,7 @@ class ConversationBuffer:
     @property
     def is_streaming(self) -> bool:
         with self._lock:
-            return self._is_streaming
+            return self._is_streaming or self._is_thinking
 
     def get_streaming_formatted_text(self) -> FormattedText:
         """Return prompt_toolkit fragments for the live streaming zone.
@@ -228,10 +240,20 @@ class ConversationBuffer:
         from prompt_toolkit.formatted_text import ANSI
 
         with self._lock:
-            text  = self._streaming_text
-            width = self._width
+            text         = self._streaming_text
+            width        = self._width
+            is_thinking  = self._is_thinking
+            is_streaming = self._is_streaming
 
-        # Prefix via prompt_toolkit class tokens — TUI_STYLE applies correctly
+        # Pre-token thinking phase: crystallising-thought animation
+        if is_thinking and not is_streaming:
+            frame = _THINK_FRAMES[int(_time.monotonic() * 8) % len(_THINK_FRAMES)]
+            return FormattedText([
+                ("class:thinking-icon", frame),
+                ("class:slot-running",  "  thinking"),
+            ])
+
+        # Normal streaming phase
         frags: list[tuple[str, str]] = [
             ("class:minion-prefix", "minion"),
             ("", " › "),

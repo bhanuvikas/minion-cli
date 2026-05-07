@@ -70,8 +70,6 @@ class StatusBar:
     # ── Section builders ──────────────────────────────────────────────────────
 
     def left_sections(self) -> list[Section]:
-        if self._thinking:
-            return [("class:status-thinking", "● thinking…")]
         return []
 
     def right_sections(self) -> list[Section]:

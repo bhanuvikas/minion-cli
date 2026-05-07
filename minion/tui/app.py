@@ -63,6 +63,7 @@ class MinionApp:
         self._thinking   = False
         self._terminal_width = 120
         self._completer  = completer
+        self._thinking_task: Optional[asyncio.Task] = None
 
         # Components
         self.conversation = ConversationBuffer()
@@ -102,12 +103,18 @@ class MinionApp:
 
         @kb.add("enter", filter=is_input_active)
         async def _on_enter(event):
-            text = event.app.current_buffer.text
+            buf = event.app.current_buffer
+            # Apply a selected (or the only) completion before submitting.
+            state = buf.complete_state
+            if state is not None and state.completions:
+                buf.apply_completion(state.current_completion or state.completions[0])
+                return
+            text = buf.text
             stripped = text.strip()
             if not stripped:
                 return
-            event.app.current_buffer.append_to_history()
-            event.app.current_buffer.reset()
+            buf.append_to_history()
+            buf.reset()
             self.conversation.append_user(stripped)
             self._set_thinking(True)
             if self._on_submit is not None:
@@ -176,6 +183,7 @@ class MinionApp:
             history=FileHistory(str(history_path)),
             multiline=True,
             completer=self._completer,
+            complete_while_typing=True,
             accept_handler=None,  # handled by Enter key above
         )
 
@@ -288,6 +296,7 @@ class MinionApp:
                 content=HSplit([
                     streaming_zone,
                     slots_zone,
+                    Window(height=1),
                     Window(height=1, char="─", style="class:separator"),
                     bottom_zone,
                     Window(height=1, char="─", style="class:separator"),
@@ -374,7 +383,26 @@ class MinionApp:
 
     def _set_thinking(self, thinking: bool) -> None:
         self._thinking = thinking
+        self.conversation.set_thinking(thinking)
         self.status.set_thinking(thinking)
+        if thinking:
+            if self._thinking_task is None or self._thinking_task.done():
+                self._thinking_task = asyncio.get_event_loop().create_task(
+                    self._animate_thinking()
+                )
+        else:
+            if self._thinking_task and not self._thinking_task.done():
+                self._thinking_task.cancel()
+            self._thinking_task = None
+
+    async def _animate_thinking(self) -> None:
+        """Invalidate at ~8 fps while thinking so the spinner advances."""
+        try:
+            while self._thinking:
+                self._invalidate()
+                await asyncio.sleep(0.12)
+        except asyncio.CancelledError:
+            pass
         self._invalidate()
 
     def set_thinking(self, thinking: bool) -> None:
