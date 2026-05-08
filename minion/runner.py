@@ -963,20 +963,6 @@ async def _execute_parallel_tools_async(
     _parallel = renderer.parallel_display if renderer is not None else None
     display = _parallel if _parallel is not None else AgentLiveDisplay()
 
-    # Write tool call lines to scrollback and AWAIT the flush before pre_register.
-    # run_in_terminal() always returns ensure_future() (deferred), so the sync
-    # on_tool_call() path fires after we yield — by which time pre_register has
-    # already made the slots zone visible, burning it into the scrollback.
-    # pre_write_tool_calls() uses await run_in_terminal() so the write lands
-    # on screen before the slots zone appears.
-    if renderer is not None:
-        from .output.tui import TuiRenderer as _TuiRenderer
-        if isinstance(renderer, _TuiRenderer):
-            await renderer.pre_write_tool_calls(tool_blocks)
-        else:
-            for tb in tool_blocks:
-                renderer.on_tool_call(tb.name, tb.input)
-
     callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
     slots = [
         SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
@@ -1017,22 +1003,22 @@ async def _execute_parallel_tools_async(
     for tb in tool_blocks:
         conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
 
-    # Commit results to scrollback and clear the live zone.
-    # Results are written after all tasks complete. _parallel.clear() is called
-    # last so the stored rendered height (which covers the slots zone) is still
-    # in effect when run_in_terminal fires for the result writes — ensuring the
-    # slots zone is correctly erased before the results appear.
+    # Commit completed slots to the scrollback and clear the live zone.
+    # Without this, prompt_toolkit burns the live slots zone into the terminal
+    # on the next run_in_terminal() call, placing the tool output after the
+    # assistant response rather than before it.
     if _parallel is not None and renderer is not None:
         from .tui.slots import SlotsManager as _SlotsManager
         if isinstance(_parallel, _SlotsManager):
             states = _parallel.slot_results()
             for tb, state in zip(tool_blocks, states):
                 result = tasks_map[tb.id].result()
+                renderer.on_tool_call(tb.name, tb.input)
                 if result.startswith("Error:"):
                     renderer.on_tool_error(state.get("error", result))
                 else:
                     latency = state.get("latency_ms", 0) / 1000
-                    renderer.on_info(f"[#888888]▌[/]   [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
+                    renderer.on_info(f"  [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
                     renderer.on_tool_result(result)
             _parallel.clear()
 

@@ -98,15 +98,15 @@ def _tool_call_markup(name: str, inputs: dict, dry_run: bool, agent_label: str |
             continue
         if isinstance(v, str) and "\n" in v:
             n = v.count("\n") + 1
-            block_lines.append(f"[#888888]▌[/]   [muted]{k} ({n} lines):[/]")
+            block_lines.append(f"  [muted]{k} ({n} lines):[/]")
             for line in v.splitlines():
-                block_lines.append(f"[#888888]▌[/]   [muted]│[/] {line}")
+                block_lines.append(f"  [muted]│[/] {line}")
         elif isinstance(v, str) and len(v) > 60:
             inline_args.append(f"[muted]{k}=[/][{BLUE}]\"{v[:50]}…\"[/]")
         else:
             inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
 
-    header = f"[#888888]▌[/] {agent_prefix}[#888888]⚙[/]  {label}[{name_color}]{name}[/]{badge_str}  {'  '.join(inline_args)}"
+    header = f"{agent_prefix}[#888888]⚙[/]  {label}[{name_color}]{name}[/]{badge_str}  {'  '.join(inline_args)}"
     if block_lines:
         return header + "\n" + "\n".join(block_lines)
     return header
@@ -116,18 +116,18 @@ def _tool_result_markup(result: str) -> str:
     """Rich markup matching print_tool_result() output, routed through run_in_terminal in TUI."""
     from rich.markup import escape
     if result.startswith("Error:"):
-        return f"[#888888]▌[/]   [bold red]└─ Error:[/] {escape(result[7:].strip())}"
+        return f"   [bold red]└─ Error:[/] {escape(result[7:].strip())}"
     first_line = result.split("\n")[0]
     preview = escape(first_line[:100]) + ("…" if len(first_line) > 100 else "")
     extra_lines = result.count("\n")
     suffix = f"  [muted]+{extra_lines} more lines[/]" if extra_lines > 0 else ""
-    return f"[#888888]▌[/]   [muted]└─[/] {preview}{suffix}"
+    return f"   [muted]└─[/] {preview}{suffix}"
 
 
 def _err_markup(error: str) -> str:
     """Rich markup matching print_tool_error() output, routed through run_in_terminal in TUI."""
     from rich.markup import escape
-    return f"[#888888]▌[/]   [bold red]└─ Error:[/] {escape(error)}"
+    return f"   [bold red]└─ Error:[/] {escape(error)}"
 
 
 def _todo_list_markup(show_if_all_done: bool = False) -> str:
