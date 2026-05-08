@@ -21,8 +21,10 @@ YOU_STYLE    = "bold #FFD700"
 MINION_STYLE = "bold #1E90FF"
 SEP_STYLE    = "#888888"      # › separator
 RULE_STYLE   = "#333333"      # dim separator rule before user turns
-ACCENT_STYLE = "#FFD700"      # ▌ left accent bar on user message line
-TOOL_ICON    = "#C0C0C0"
+ACCENT_STYLE  = "#FFD700"      # ▌ left accent bar on user message line
+ACCENT_BLUE   = "#1E90FF"      # ▌ left accent bar on minion response
+ACCENT_TOOL   = "#444444"      # │ continuous left rail through tool blocks
+TOOL_ICON     = "#C0C0C0"
 TOOL_DETAIL  = "#666666"
 TOOL_OK      = "#4CAF50"
 TOOL_ERR     = "bold red"
@@ -82,42 +84,46 @@ def user_turn(text: str, width: int = 120) -> str:
 
 
 def assistant_turn(text: str, width: int = 120) -> str:
-    """Render a complete assistant turn (prefix + rendered markdown).
+    """Render a complete assistant turn (blue ▌ bar + prefix + rendered markdown).
 
     Returns the combined string; trailing newlines come from Rich's markdown
     renderer and are preserved as-is.
     """
     try:
-        prefix = render_rich(f"[{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/]", width)
+        prefix = render_rich(
+            f"[{ACCENT_BLUE}]▌[/] [{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/]", width
+        )
         md     = render_markdown(text, width)
         # Strip prefix's own trailing newline (end="" doesn't always prevent it)
         # and markdown's leading newline, then join with a space.
         return prefix.rstrip("\n") + " " + md.lstrip("\n")
     except Exception:
-        return render_rich(f"[{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/] {text}", width)
+        return render_rich(
+            f"[{ACCENT_BLUE}]▌[/] [{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/] {text}", width
+        )
 
 
 def tool_call_line(name: str, key_arg: str = "", width: int = 120) -> str:
-    """Render the "⚙  name  arg" pending line (no trailing newline)."""
+    """Render the grey-railed "│ ⚙  name  arg" pending line."""
     detail = f"  {key_arg}" if key_arg else ""
-    markup = f"  [{TOOL_ICON}]⚙[/]  [bold]{name}[/][{TOOL_DETAIL}]{detail}[/]"
+    markup = f"[{ACCENT_TOOL}]│[/] [{TOOL_ICON}]⚙[/]  [bold]{name}[/][{TOOL_DETAIL}]{detail}[/]"
     try:
         return render_rich(markup, width)
     except Exception:
-        return f"  ⚙  {name}{detail}"
+        return f"│ ⚙  {name}{detail}"
 
 
 def tool_result_line(success: bool, summary: str = "", width: int = 120) -> str:
-    """Render the "   └─ ✓/✗  summary" result line (no trailing newline)."""
+    """Render the grey-railed "│   └─ ✓/✗  summary" result line."""
     icon   = "✓" if success else "✗"
     color  = TOOL_OK if success else TOOL_ERR
-    markup = f"     └─ [{color}]{icon}[/]"
+    markup = f"[{ACCENT_TOOL}]│[/]   └─ [{color}]{icon}[/]"
     if summary:
         markup += f"  [{TOOL_DETAIL}]{summary}[/]"
     try:
         return render_rich(markup, width)
     except Exception:
-        return f"     └─ {icon} {summary}"
+        return f"│   └─ {icon} {summary}"
 
 
 def system_message(rich_markup: str, width: int = 120) -> str:

@@ -359,6 +359,8 @@ class ConversationBuffer:
 
         # Normal streaming phase
         frags: list[tuple[str, str]] = [
+            ("class:minion-prefix", "▌"),
+            ("", " "),
             ("class:minion-prefix", "minion"),
             ("", " › "),
         ]

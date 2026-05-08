@@ -16,7 +16,7 @@ TUI_STYLE = Style.from_dict({
     "conv-text":        "",
 
     # Slots zone
-    "slot-icon":        "bold #FFD700",
+    "slot-icon":        "#888888",
     "slot-label":       "bold",
     "slot-task":        "#C0C0C0",
     "slot-running":     "#C0C0C0",

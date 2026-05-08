@@ -66,6 +66,10 @@ class TuiRenderer(OutputRenderer):
         from ..tools.executor import _tool_call_markup
         markup = _tool_call_markup(name, inputs, dry_run, agent_label, mode_badge)
         self._app.conversation.append_system(markup)
+        # Flush immediately so "│ ⚙ name" appears before the tool runs,
+        # not batched with the result line 16ms later.
+        if self._app.conversation._flush_fn:
+            self._app.conversation._flush_fn()
         self._app.invalidate()
 
     def on_tool_result(self, result: str) -> None:
