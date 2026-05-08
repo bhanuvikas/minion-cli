@@ -813,6 +813,11 @@ async def _execute_parallel_agents_async(
         else:
             label = tb.input.get("agent") or "remote"
         slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
+
+    # Show thinking animation while the system transitions from the assistant's
+    # text response to spawning agents.  300 ms is short enough to feel snappy
+    # but long enough for the terminal to render the animation visibly.
+    await asyncio.sleep(0.3)
     display.pre_register(slots)
 
     # Create callbacks once so pre-marking and task callbacks share the same slot state.
@@ -829,18 +834,35 @@ async def _execute_parallel_agents_async(
         # lock and pauses/resumes the display automatically (uses get_active_live_display()).
         if executor._confirmation_manager is not None:
             _cm = executor._confirmation_manager
-            _confirm_cb = lambda name, inputs: _cm.confirm_sync(name, inputs)
+            def _confirm_cb(name, inputs):
+                from .tools.executor import _diff_lines_for_panel as _dlp
+                from .tui import is_tui_active as _ita
+                _dlns = _dlp(name, inputs) if _ita() else []
+                return _cm.confirm_sync(name, inputs, diff_lines=_dlns)
         else:
             _confirm_cb = executor._confirm_callback
 
+        _start = _time.monotonic()
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
             result = await asyncio.to_thread(executor._agent_runner, task, role, _confirm_cb)
+            latency_ms = int((_time.monotonic() - _start) * 1000)
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
+            # Skip empty lines and markdown headers to find the first meaningful line.
+            first_line = next(
+                (l.strip() for l in result.split("\n")
+                 if l.strip() and not l.strip().startswith("#")),
+                result.split("\n")[0],
+            )[:100]
+            if result.startswith("Error:"):
+                callback("error", error=first_line.removeprefix("Error: "))
+            else:
+                callback("complete", latency_ms=latency_ms, preview=first_line)
             return result
         except Exception as exc:
             err = f"Error: {exc}"
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=err, success=False)
+            callback("error", error=str(exc)[:72])
             return err
         finally:
             set_agent_display_callback(None)
@@ -883,10 +905,14 @@ async def _execute_parallel_agents_async(
     for tb in tool_blocks:
         conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
 
+    # Let the done+preview state render in the slots zone before clearing.
+    await asyncio.sleep(0)
+
     # Commit completed agent slots to the scrollback and clear the live zone.
     if _parallel is not None and renderer is not None:
         from .tui.slots import SlotsManager as _SlotsManager
         if isinstance(_parallel, _SlotsManager):
+            from rich.markup import escape as _rme
             for tb, state in zip(tool_blocks, _parallel.slot_results()):
                 label = state.get("label", tb.name)
                 task = tb.input.get("task", "")
@@ -894,15 +920,18 @@ async def _execute_parallel_agents_async(
                 if len(task_clean) > 58:
                     task_clean = task_clean[:58] + "…"
                 renderer.on_info(
-                    f"[bold #FFD700]⏺[/]  [bold]{label}[/]  [#C0C0C0]{task_clean}[/]"
+                    f"[#888888]⏺[/]  [bold]\\[{_rme(label)}][/]  [#C0C0C0]{_rme(task_clean)}[/]"
                 )
                 status = state.get("status", "")
                 if status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    renderer.on_info(f"  [muted]└─[/]  [bold #4CAF50]done ({latency:.1f}s)[/]")
+                    renderer.on_info(f"   [muted]└─[/]  [bold #4CAF50]done ({latency:.1f}s)[/]")
+                    preview = state.get("preview", "")
+                    if preview:
+                        renderer.on_info(f"       [#C0C0C0]{_rme(preview[:100])}[/]")
                 elif status == "error":
                     error = state.get("error", "unknown error")
-                    renderer.on_info(f"  [muted]└─[/]  [bold red]Error: {error}[/]")
+                    renderer.on_info(f"   [muted]└─[/]  [bold red]Error: {error}[/]")
             _parallel.clear()
 
 

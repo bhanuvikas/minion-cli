@@ -175,7 +175,7 @@ class SlotsManager:
                     if len(task_clean) > 58:
                         task_clean = task_clean[:58] + "…"
                     fragments.append(("class:slot-task", f"  {task_clean}"))
-                fragments.append(("", "\n  └─  "))
+                fragments.append(("", "\n   └─  "))
 
                 if status == "pending":
                     fragments.append(("class:slot-running", "waiting…"))
@@ -185,18 +185,17 @@ class SlotsManager:
                         parts = []
                         for sa in sub_activities:
                             parts.append(("✓ " if sa["done"] else "") + sa["text"])
-                        activity = "  ".join(parts)
-                        fragments.append(("class:slot-running", f"Running · {activity[:80]}"))
+                        fragments.append(("class:slot-running", "  ".join(parts)[:80]))
                     else:
                         last = state.get("last_activity", "")
                         act  = last.replace("\n", " ").replace("\r", "")[:72]
-                        if act:
-                            fragments.append(("class:slot-running", f"Running · {act}"))
-                        else:
-                            fragments.append(("class:slot-running", "Running…"))
+                        fragments.append(("class:slot-running", act if act else "running…"))
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
                     fragments.append(("class:slot-done", f"done ({latency:.1f}s)"))
+                    preview = state.get("preview", "")
+                    if preview:
+                        fragments.append(("class:slot-detail", f"\n       {preview[:100]}"))
                 elif status == "error":
                     error = state.get("error", "")
                     fragments.append(("class:slot-error", f"Error · {error[:72]}"))

@@ -691,7 +691,7 @@ class ToolExecutor:
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
                 _diff_lns: list = []
-                if self._confirm_callback is None and _agent_cb is None:
+                if self._confirm_callback is None:
                     from ..tui import is_tui_active as _is_tui_active
                     if _is_tui_active():
                         _diff_lns = _diff_lines_for_panel(name, inputs)
