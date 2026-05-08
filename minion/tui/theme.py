@@ -59,4 +59,10 @@ TUI_STYLE = Style.from_dict({
 
     # Separator line
     "separator":        "#C0C0C0",
+
+    # Inspector panel
+    "inspector-title":      "bold",
+    "inspector-tab-sel":    "bg:#2a1f00 fg:#FFD700 bold",  # selected tab — gold pill (minion palette)
+    "inspector-tab":        "#555555",                     # unselected tab — dim
+    "inspector-hint":       "#444444",                     # bottom key-hint row
 })

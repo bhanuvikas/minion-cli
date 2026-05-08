@@ -61,6 +61,30 @@ def _serialize_messages(messages) -> list:
         result.append({"role": msg.role, "content": content_out})
     return result
 
+def _snapshot_messages(messages) -> list[dict]:
+    """Snapshot conversation messages as plain dicts for the subagent inspector.
+
+    Converts SDK content blocks to simple dicts so the result is safe to store
+    across threads without holding references to live SDK objects.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if isinstance(m.content, str):
+            out.append({"role": m.role, "type": "text", "text": m.content})
+        elif isinstance(m.content, list):
+            blocks: list[dict] = []
+            for b in m.content:
+                if hasattr(b, "text") and not hasattr(b, "name"):      # TextBlock
+                    blocks.append({"type": "text", "text": b.text})
+                elif hasattr(b, "name") and hasattr(b, "input"):       # ToolUseBlock
+                    blocks.append({"type": "tool_use", "name": b.name, "input": dict(b.input)})
+                elif hasattr(b, "tool_use_id"):                        # ToolResultBlock
+                    rc = b.content if isinstance(b.content, str) else str(b.content)
+                    blocks.append({"type": "tool_result", "tool_use_id": b.tool_use_id, "content": rc})
+            out.append({"role": m.role, "type": "blocks", "blocks": blocks})
+    return out
+
+
 # Matches @path patterns that contain at least one / or a file extension.
 # Examples: @src/auth.py  @README.md  @config/settings.ts
 # Does NOT match bare @property, @classmethod (no slash or extension dot).
@@ -820,8 +844,22 @@ async def _execute_parallel_agents_async(
     await asyncio.sleep(0.3)
     display.pre_register(slots)
 
+    # Register agents with the inspector registry and wrap display callbacks so
+    # turn_end / complete / error events also update the registry.
+    from .tui.agent_registry import get_registry as _get_agent_registry
+    _reg = _get_agent_registry()
+    _reg.clear()
+    for tb, slot in zip(tool_blocks, slots):
+        _reg.register(tb.id, label=slot.label, task=tb.input.get("task", ""), role=tb.input.get("role", ""))
+
+    def _make_registry_cb(tb_id: str, display_cb):
+        def _cb(event: str, **data) -> None:
+            display_cb(event, **data)
+            _reg.update(tb_id, event, **data)
+        return _cb
+
     # Create callbacks once so pre-marking and task callbacks share the same slot state.
-    _callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
+    _callbacks = {tb.id: _make_registry_cb(tb.id, display.make_callback(tb.id)) for tb in tool_blocks}
 
     async def _run_spawn_async(tb: ToolUseBlock) -> str:
         task = tb.input.get("task", "")
@@ -1249,6 +1287,8 @@ async def run_prompt_async(
 
         if result.stop_reason == "end_turn":
             conversation.add_assistant(result.full_text, result.usage)
+            if (_scb := _get_slot_cb()) is not None:
+                _scb("turn_end", messages=_snapshot_messages(conversation.messages))
             if capture_output:
                 return result.full_text
             if render_markdown and result.full_text:
@@ -1295,6 +1335,8 @@ async def run_prompt_async(
                 _complete_cancelled_tools(result.tool_blocks, conversation)
                 _renderer.on_cancellation()
                 return None
+            if (_scb := _get_slot_cb()) is not None:
+                _scb("turn_end", messages=_snapshot_messages(conversation.messages))
             if _get_slot_cb() is None:
                 _renderer.on_info("")  # blank line spacer after tool block (console only shows blank)
 

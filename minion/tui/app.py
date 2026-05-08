@@ -44,7 +44,9 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput
 from prompt_toolkit.lexers import Lexer
 
+from .agent_registry import get_registry
 from .conversation import ConversationBuffer
+from .inspector import InspectorPanel
 from .permission import PermissionPanel
 from .slots import SlotsManager
 from .status import StatusBar
@@ -71,6 +73,9 @@ class MinionApp:
         self.slots        = SlotsManager(invalidate_fn=self._invalidate)
         self.permission   = PermissionPanel(app_ref=self)
         self.status       = StatusBar(model_name=model_name, width=self._terminal_width)
+        _reg = get_registry()
+        _reg.set_invalidate(self._invalidate)
+        self.inspector    = InspectorPanel(registry=_reg)
 
         # Wire conversation callbacks now (before _build).
         # Use the *internal* write path so ConversationBuffer's own emits do NOT
@@ -104,9 +109,11 @@ class MinionApp:
         kb = KeyBindings()
 
         # ── Condition filters ─────────────────────────────────────────────────
-        is_perm_visible = Condition(lambda: self.permission.is_visible)
-        is_thinking     = Condition(lambda: self._thinking)
-        is_input_active = ~is_perm_visible & ~is_thinking
+        is_perm_visible      = Condition(lambda: self.permission.is_visible)
+        is_thinking          = Condition(lambda: self._thinking)
+        is_inspector_visible = Condition(lambda: self.inspector.is_visible)
+        is_inspector_active  = is_inspector_visible & ~is_perm_visible
+        is_input_active      = ~is_perm_visible & ~is_thinking & ~is_inspector_visible
 
         # ── Key bindings ──────────────────────────────────────────────────────
 
@@ -184,6 +191,48 @@ class MinionApp:
             self.permission.confirm_current()
             event.app.invalidate()
 
+        # ── Inspector keys ────────────────────────────────────────────────────
+
+        @kb.add("c-o", filter=~is_perm_visible)
+        def _toggle_inspector(event):
+            self.inspector.toggle()
+            self.status.set_inspector_hint(self.inspector.hint() if self.inspector.is_visible else "")
+            event.app.invalidate()
+
+        @kb.add("c-e", filter=is_inspector_visible)
+        def _expand_inspector(event):
+            self.inspector.toggle_expanded()
+            self.status.set_inspector_hint(self.inspector.hint())
+            event.app.invalidate()
+
+        @kb.add("left", filter=is_inspector_active)
+        def _inspector_left(event):
+            self.inspector.move_agent(-1)
+            self.status.set_inspector_hint(self.inspector.hint())
+            event.app.invalidate()
+
+        @kb.add("right", filter=is_inspector_active)
+        def _inspector_right(event):
+            self.inspector.move_agent(1)
+            self.status.set_inspector_hint(self.inspector.hint())
+            event.app.invalidate()
+
+        @kb.add("up", filter=is_inspector_active)
+        def _inspector_up(event):
+            self.inspector.scroll(-1)
+            event.app.invalidate()
+
+        @kb.add("down", filter=is_inspector_active)
+        def _inspector_down(event):
+            self.inspector.scroll(1)
+            event.app.invalidate()
+
+        @kb.add("escape", filter=is_inspector_active)
+        def _close_inspector(event):
+            self.inspector.close()
+            self.status.set_inspector_hint("")
+            event.app.invalidate()
+
         # ── Input buffer ──────────────────────────────────────────────────────
         history_path = __import__("pathlib").Path.home() / ".minion" / "history"
         history_path.parent.mkdir(exist_ok=True)
@@ -203,11 +252,9 @@ class MinionApp:
         # When idle, get_streaming_formatted_text() returns a single blank line
         # so the window stays at height=1 and the bottom strip never shifts.
         def _streaming_content():
-            # Suppress while the permission panel is visible, or while parallel
-            # tools are running (slots visible).  Between two consecutive tool
-            # confirmations the permission panel briefly clears; without this
-            # guard the thinking animation would flash for one frame in that gap.
-            if self.permission.is_visible or self.slots.is_visible:
+            # Suppress while the permission panel is visible, parallel tools are
+            # running (slots visible), or the inspector is open.
+            if self.permission.is_visible or self.slots.is_visible or self.inspector.is_visible:
                 return FormattedText([("", " ")])
             return self.conversation.get_streaming_formatted_text()
 
@@ -229,6 +276,19 @@ class MinionApp:
         slots_zone = ConditionalContainer(
             content=slots_window,
             filter=Condition(lambda: self.slots.is_visible),
+        )
+
+        inspector_window = Window(
+            content=FormattedTextControl(
+                lambda: self.inspector.get_formatted_text(),
+                focusable=False,
+            ),
+            wrap_lines=False,   # box lines must not wrap — each row is exactly box_w chars
+        )
+
+        inspector_zone = ConditionalContainer(
+            content=inspector_window,
+            filter=is_inspector_visible,
         )
 
         status_window = Window(
@@ -307,6 +367,7 @@ class MinionApp:
                 content=HSplit([
                     streaming_zone,
                     slots_zone,
+                    inspector_zone,
                     Window(height=1),
                     Window(height=1, char="─", style="class:separator"),
                     bottom_zone,

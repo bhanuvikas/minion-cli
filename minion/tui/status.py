@@ -26,6 +26,7 @@ class StatusBar:
     def __init__(self, model_name: str, width: int = 120) -> None:
         self._width    = width
         self._thinking = False
+        self._inspector_hint = ""   # set by InspectorPanel; shown on left when non-empty
 
         # Session fields — set via update_session()
         self._model    = model_name
@@ -40,6 +41,9 @@ class StatusBar:
 
     def set_thinking(self, thinking: bool) -> None:
         self._thinking = thinking
+
+    def set_inspector_hint(self, hint: str) -> None:
+        self._inspector_hint = hint
 
     def set_model(self, model_name: str) -> None:
         self._model = model_name
@@ -70,6 +74,12 @@ class StatusBar:
     # ── Section builders ──────────────────────────────────────────────────────
 
     def left_sections(self) -> list[Section]:
+        if self._inspector_hint:
+            return [("class:status-dim", self._inspector_hint)]
+        # Show availability hint whenever agents are registered (running or done)
+        from .agent_registry import get_registry as _gr
+        if len(_gr()):
+            return [("class:status-dim", "ctrl+o to inspect agents")]
         return []
 
     def right_sections(self) -> list[Section]:
