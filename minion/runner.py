@@ -963,6 +963,13 @@ async def _execute_parallel_tools_async(
     _parallel = renderer.parallel_display if renderer is not None else None
     display = _parallel if _parallel is not None else AgentLiveDisplay()
 
+    # Write tool call lines to scrollback BEFORE pre_register so that the
+    # run_in_terminal() flush fires while the slots zone is not yet visible.
+    # Writing after pre_register burns the slots zone into the scrollback.
+    if renderer is not None:
+        for tb in tool_blocks:
+            renderer.on_tool_call(tb.name, tb.input)
+
     callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
     slots = [
         SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
@@ -984,29 +991,15 @@ async def _execute_parallel_tools_async(
                 slot_cb("error", error=first_line.removeprefix("Error: "))
             else:
                 slot_cb("complete", latency_ms=latency_ms, preview=first_line)
-            # Stream result to scrollback as soon as this tool finishes.
-            if renderer is not None:
-                if not result.startswith("Error:"):
-                    latency = latency_ms / 1000
-                    renderer.on_info(f"[#888888]▌[/]   [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
-                renderer.on_tool_result(result)
             return result
         except Exception as exc:
             slot_cb("error", error=str(exc))
-            if renderer is not None:
-                renderer.on_tool_result(f"Error: {exc}")
             return f"Error: {exc}"
 
     tasks_map: dict[str, asyncio.Task] = {}
     # Pre-mark ALL slots "running" before any task can pause for confirmation.
     for tb in tool_blocks:
         callbacks[tb.id]("running")
-
-    # Write all tool call lines to scrollback immediately so the ▌ bars appear
-    # as execution starts rather than after all tools finish.
-    if renderer is not None:
-        for tb in tool_blocks:
-            renderer.on_tool_call(tb.name, tb.input)
 
     with display:
         display.render_now()
@@ -1017,10 +1010,23 @@ async def _execute_parallel_tools_async(
     for tb in tool_blocks:
         conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
 
-    # Clear the slots zone now that results are already in the scrollback.
-    if _parallel is not None:
+    # Commit results to scrollback and clear the live zone.
+    # Results are written after all tasks complete. _parallel.clear() is called
+    # last so the stored rendered height (which covers the slots zone) is still
+    # in effect when run_in_terminal fires for the result writes — ensuring the
+    # slots zone is correctly erased before the results appear.
+    if _parallel is not None and renderer is not None:
         from .tui.slots import SlotsManager as _SlotsManager
         if isinstance(_parallel, _SlotsManager):
+            states = _parallel.slot_results()
+            for tb, state in zip(tool_blocks, states):
+                result = tasks_map[tb.id].result()
+                if result.startswith("Error:"):
+                    renderer.on_tool_error(state.get("error", result))
+                else:
+                    latency = state.get("latency_ms", 0) / 1000
+                    renderer.on_info(f"[#888888]▌[/]   [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
+                    renderer.on_tool_result(result)
             _parallel.clear()
 
 
