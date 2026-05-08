@@ -44,7 +44,7 @@ class ConfirmationManager:
         self._tui_app  = tui_app
         self._tui_loop = loop
 
-    def confirm_sync(self, name: str, inputs: dict) -> bool:
+    def confirm_sync(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
         """Sync confirmation — serialized via threading.Lock.
 
         TUI path: schedules PermissionPanel.request() in the TUI event loop
@@ -59,7 +59,7 @@ class ConfirmationManager:
             # ── TUI path ──────────────────────────────────────────────────────
             if self._tui_app is not None and self._tui_loop is not None:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._tui_app.permission.request(name, inputs),
+                    self._tui_app.permission.request(name, inputs, diff_lines=diff_lines),
                     self._tui_loop,
                 )
                 return future.result()
@@ -76,10 +76,10 @@ class ConfirmationManager:
                 if display is not None:
                     display.resume()
 
-    async def confirm_async(self, name: str, inputs: dict) -> bool:
+    async def confirm_async(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
         """Async confirmation — runs confirm_sync in a thread.
 
         Safe to call from any event loop. The single threading.Lock ensures
         prompts are fully serialized across all callers (async and threaded).
         """
-        return await asyncio.to_thread(self.confirm_sync, name, inputs)
+        return await asyncio.to_thread(self.confirm_sync, name, inputs, diff_lines)

@@ -68,8 +68,17 @@ class TuiRenderer(OutputRenderer):
         self._app.conversation.append_system(markup)
         self._app.invalidate()
 
-    def on_tool_result(self, result: str) -> None:
+    def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
         from ..tools.executor import _tool_result_markup
+        is_success = (
+            latency_ms > 0
+            and not result.startswith("Error:")
+            and result != "User declined tool execution."
+        )
+        if is_success:
+            # ANSI directly so color matches class:slot-done (bold #4CAF50 = RGB 76,175,80)
+            done_ansi = f"   \033[1m\033[38;2;76;175;80m✓  done ({latency_ms / 1000:.1f}s)\033[0m\n"
+            self._app.conversation.append_ansi(done_ansi)
         self._app.conversation.append_system(_tool_result_markup(result))
         self._app.invalidate()
 

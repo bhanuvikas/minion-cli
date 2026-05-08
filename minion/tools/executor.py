@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import sys
 import threading
+import time as _time_exec
 from pathlib import Path
 from typing import Optional
 
@@ -80,12 +81,13 @@ def _tool_call_markup(name: str, inputs: dict, dry_run: bool, agent_label: str |
     from ..theme import YELLOW, BLUE, _TOOL_NAME_COLORS
     label = "[muted][dry-run][/] " if dry_run else ""
     agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
-    name_color = _TOOL_NAME_COLORS.get(name, "bold")
+    name_color = _TOOL_NAME_COLORS.get(name, "")
+    name_style = f"bold {name_color}".strip()
     badge_str = ""
     if mode_badge == "edits":
         badge_str = f" [{YELLOW}]»[/]"
     elif mode_badge == "yolo":
-        badge_str = f" [{name_color}]⚡[/]"
+        badge_str = f" [{name_color or YELLOW}]⚡[/]"
     elif mode_badge == "trusted":
         badge_str = " [green]~[/]"
 
@@ -106,7 +108,7 @@ def _tool_call_markup(name: str, inputs: dict, dry_run: bool, agent_label: str |
         else:
             inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
 
-    header = f"{agent_prefix}[#888888]⚙[/]  {label}[{name_color}]{name}[/]{badge_str}  {'  '.join(inline_args)}"
+    header = f"{agent_prefix}[#888888]⚙[/]  {label}[{name_style}]{name}[/]{badge_str}  {'  '.join(inline_args)}"
     if block_lines:
         return header + "\n" + "\n".join(block_lines)
     return header
@@ -115,8 +117,9 @@ def _tool_call_markup(name: str, inputs: dict, dry_run: bool, agent_label: str |
 def _tool_result_markup(result: str) -> str:
     """Rich markup matching print_tool_result() output, routed through run_in_terminal in TUI."""
     from rich.markup import escape
-    if result.startswith("Error:"):
-        return f"   [bold red]└─ Error:[/] {escape(result[7:].strip())}"
+    if result.startswith("Error:") or result == "User declined tool execution.":
+        error_text = result[7:].strip() if result.startswith("Error:") else result
+        return f"   [bold red]└─ Error:[/] {escape(error_text)}"
     first_line = result.split("\n")[0]
     preview = escape(first_line[:100]) + ("…" if len(first_line) > 100 else "")
     extra_lines = result.count("\n")
@@ -188,6 +191,51 @@ def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
 
     markup = format_diff_rich(existing, result)
     return markup if markup else "[muted](no changes)[/]"
+
+
+def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
+    """Compute diff for the TUI permission panel using the same format_diff_rich as non-TUI.
+
+    Returns prompt_toolkit (style, text) pairs ready for FormattedText.
+    Limited to 30 lines to keep the panel usable.
+    """
+    from pathlib import Path as _Path
+    from ..diff import format_diff_rich
+
+    if name == "write_file":
+        path = inputs.get("path", "")
+        new_content = inputs.get("content", "")
+        try:
+            existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
+        except Exception:
+            existing = ""
+    elif name == "edit_file":
+        path = inputs.get("path", "")
+        old_str = inputs.get("old_string", "")
+        new_str = inputs.get("new_string", "")
+        try:
+            existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
+        except Exception:
+            existing = ""
+        new_content = existing.replace(old_str, new_str, 1)
+    else:
+        return []
+
+    markup = format_diff_rich(existing, new_content)
+    if not markup:
+        return []
+
+    lines = markup.split("\n")
+    if len(lines) > 30:
+        lines = lines[:30]
+        lines.append("[dim]  … (truncated)[/dim]")
+    markup = "\n".join(lines)
+
+    from ..tui.render import render_rich as _render_rich
+    ansi = _render_rich(markup, width=76)
+
+    from prompt_toolkit.formatted_text import ANSI as _ANSI, to_formatted_text as _to_ft
+    return list(_to_ft(_ANSI(ansi + "\n")))
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
@@ -503,6 +551,41 @@ _SILENT_TOOLS: frozenset[str] = frozenset({"todo_write", "todo_read"})
 _EDIT_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
 
 
+class _RenderBuffer:
+    """Captures renderer calls during parallel tool execution for sequential replay.
+
+    Passed as _slot_renderer to execute_async. After all parallel tasks complete,
+    call flush_to(renderer) for each buffer in order to write to the scrollback.
+    """
+
+    def __init__(self) -> None:
+        self._ops: list = []
+
+    def on_tool_call(self, name: str, inputs: dict, *, dry_run: bool = False,
+                     agent_label: Optional[str] = None, mode_badge: Optional[str] = None) -> None:
+        self._ops.append(lambda r: r.on_tool_call(name, inputs, dry_run=dry_run,
+                                                   agent_label=agent_label, mode_badge=mode_badge))
+
+    def on_diff_preview(self, detail: str, *, tool_name: str = "") -> None:
+        self._ops.append(lambda r: r.on_diff_preview(detail, tool_name=tool_name))
+
+    def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
+        self._ops.append(lambda r: r.on_tool_result(result, latency_ms=latency_ms))
+
+    def on_tool_error(self, error: str) -> None:
+        self._ops.append(lambda r: r.on_tool_error(error))
+
+    def on_todo_list(self, *, show_if_all_done: bool = False) -> None:
+        self._ops.append(lambda r: r.on_todo_list(show_if_all_done=show_if_all_done))
+
+    def spinner(self, label: str) -> "contextlib.AbstractContextManager":
+        return contextlib.nullcontext()
+
+    def flush_to(self, renderer: "OutputRenderer") -> None:
+        for op in self._ops:
+            op(renderer)
+
+
 class ToolExecutor:
     """Executes tool calls from the agent loop.
 
@@ -606,15 +689,16 @@ class ToolExecutor:
                     if detail:
                         self._renderer.on_diff_preview(detail, tool_name=name)
             else:
-                # Show diff before the confirmation prompt.
+                # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
+                _diff_lns: list = []
                 if self._confirm_callback is None and _agent_cb is None:
-                    _, detail = _confirm_prompt(name, inputs)
-                    if detail:
-                        self._renderer.on_diff_preview(detail, tool_name=name)
+                    from ..tui import is_tui_active as _is_tui_active
+                    if _is_tui_active():
+                        _diff_lns = _diff_lines_for_panel(name, inputs)
                 if self._confirm_callback is not None:
                     confirmed = self._confirm_callback(name, inputs)
                 else:
-                    confirmed = self._confirmation_manager.confirm_sync(name, inputs)
+                    confirmed = self._confirmation_manager.confirm_sync(name, inputs, diff_lines=_diff_lns)
                 if not confirmed:
                     result = "User declined tool execution."
                     if _agent_cb is None:
@@ -668,8 +752,13 @@ class ToolExecutor:
             get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
             return f"Error: {error}"
 
-    async def execute_async(self, tool_block: ToolUseBlock) -> str:
+    async def execute_async(self, tool_block: ToolUseBlock, *,
+                            _slot_renderer: Optional["OutputRenderer"] = None) -> str:
         """Async version of execute(). Runs confirmations and tools without blocking the event loop.
+
+        _slot_renderer: when set (parallel mode), rendering is captured in that buffer
+        instead of going to self._renderer. After all parallel tasks complete the
+        caller flushes each buffer to the real renderer in order.
 
         Confirmation dialogs use asyncio.Lock + asyncio.to_thread so the event loop
         stays responsive while waiting for user input. Tool functions run in a thread
@@ -677,16 +766,35 @@ class ToolExecutor:
         """
         name = tool_block.name
         inputs = tool_block.input
+        _t0 = _time_exec.monotonic()
 
         _mode_badge = _determine_mode_badge(name, inputs, self._approval_mode, self._permission_store)
 
         from ..agents.display import get_agent_display_callback as _get_agent_cb
         _agent_cb = _get_agent_cb()
 
-        if _agent_cb is not None:
+        # Split rendering responsibilities:
+        #   _immediate_r — call header + diff: always shown before confirmation
+        #   _deferred_r  — result/error: buffered in parallel, immediate in single
+        #
+        #   parallel (_slot_renderer set): immediate→real renderer, deferred→buffer
+        #   single   (no _agent_cb):       both → real renderer (same object)
+        #   subagent (_agent_cb, no buf):  both → None (slot shows status instead)
+        if _slot_renderer is not None:
+            _immediate_r = self._renderer
+            _deferred_r  = _slot_renderer
+        elif _agent_cb is None:
+            _immediate_r = self._renderer
+            _deferred_r  = self._renderer
+        else:
+            _immediate_r = None
+            _deferred_r  = None
+
+        if _agent_cb is not None and _slot_renderer is None:
             _agent_cb("tool_call", name=name, inputs=inputs)
-        elif name not in _SILENT_TOOLS:
-            self._renderer.on_tool_call(name, inputs, dry_run=self.dry_run, agent_label=self._agent_label, mode_badge=_mode_badge)
+        if _deferred_r is not None and name not in _SILENT_TOOLS:
+            _deferred_r.on_tool_call(name, inputs, dry_run=self.dry_run,
+                                     agent_label=self._agent_label, mode_badge=_mode_badge)
 
         if self.dry_run:
             return "[dry-run: tool not executed]"
@@ -694,58 +802,57 @@ class ToolExecutor:
         if name == "spawn_agent":
             if self._agent_runner is None:
                 result = "Error: subagents not available (agents disabled or at max depth)."
-                if _agent_cb is None:
-                    self._renderer.on_tool_error(result)
+                if _deferred_r is not None:
+                    _deferred_r.on_tool_error(result)
                 return result
             task = inputs.get("task", "")
             role = inputs.get("role")
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=inputs)
             result = await asyncio.to_thread(self._agent_runner, task, role)
-            if _agent_cb is None:
-                self._renderer.on_tool_result(result)
+            if _deferred_r is not None:
+                _deferred_r.on_tool_result(result, latency_ms=int((_time_exec.monotonic() - _t0) * 1000))
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
             return result
 
         if name == "send_remote_task":
             if self._remote_task_runner is None:
                 result = "Error: no remote A2A agents configured."
-                if _agent_cb is None:
-                    self._renderer.on_tool_error(result)
+                if _deferred_r is not None:
+                    _deferred_r.on_tool_error(result)
                 return result
             agent = inputs.get("agent", "")
             task = inputs.get("task", "")
             get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=inputs)
-            if _agent_cb is not None:
+            _spin_cm = _deferred_r.spinner(f"[muted]waiting for {agent}...[/]") if _deferred_r is not None else contextlib.nullcontext()
+            with _spin_cm:
                 result = await asyncio.to_thread(self._remote_task_runner, agent, task)
-            else:
-                with self._renderer.spinner(f"[muted]waiting for {agent}...[/]"):
-                    result = await asyncio.to_thread(self._remote_task_runner, agent, task)
-            if _agent_cb is None:
-                self._renderer.on_tool_result(result)
+            if _deferred_r is not None:
+                _deferred_r.on_tool_result(result, latency_ms=int((_time_exec.monotonic() - _t0) * 1000))
             get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
             return result
 
         if name in DANGEROUS_TOOLS:
             if _mode_badge is not None:
-                # Auto-approved: show the diff preview but skip the confirmation prompt.
-                if self._confirm_callback is None and _agent_cb is None:
+                # Auto-approved: show diff immediately (before execution).
+                if self._confirm_callback is None and _immediate_r is not None:
                     _, detail = _confirm_prompt(name, inputs)
                     if detail:
-                        self._renderer.on_diff_preview(detail, tool_name=name)
+                        _immediate_r.on_diff_preview(detail, tool_name=name)
             else:
-                # Show diff before the confirmation prompt.
-                if self._confirm_callback is None and _agent_cb is None:
-                    _, detail = _confirm_prompt(name, inputs)
-                    if detail:
-                        self._renderer.on_diff_preview(detail, tool_name=name)
+                # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
+                _diff_lns: list = []
+                if self._confirm_callback is None:
+                    from ..tui import is_tui_active as _is_tui_active
+                    if _is_tui_active():
+                        _diff_lns = _diff_lines_for_panel(name, inputs)
                 if self._confirm_callback is not None:
                     confirmed = await asyncio.to_thread(self._confirm_callback, name, inputs)
                 else:
-                    confirmed = await self._confirmation_manager.confirm_async(name, inputs)
+                    confirmed = await self._confirmation_manager.confirm_async(name, inputs, diff_lines=_diff_lns)
                 if not confirmed:
                     result = "User declined tool execution."
-                    if _agent_cb is None:
-                        self._renderer.on_tool_result(result)
+                    if _deferred_r is not None:
+                        _deferred_r.on_tool_result(result)
                     return result
 
         # ── Pre-tool hook ──────────────────────────────────────────────────
@@ -761,8 +868,8 @@ class ToolExecutor:
             _block = await self._hook_runner.fire_pre_tool(_pre_event)
             if _block is not None:
                 _reason = _block.reason or f"Hook blocked {name}."
-                if _agent_cb is None:
-                    self._renderer.on_tool_error(_reason)
+                if _deferred_r is not None:
+                    _deferred_r.on_tool_error(_reason)
                 return f"Error: {_reason}"
 
         fn = _DISPATCH.get(name)
@@ -775,15 +882,15 @@ class ToolExecutor:
                         confirmed = await self._confirmation_manager.confirm_async(name, {})
                     if not confirmed:
                         result = "User declined tool execution."
-                        if _agent_cb is None:
-                            self._renderer.on_tool_result(result)
+                        if _deferred_r is not None:
+                            _deferred_r.on_tool_result(result)
                         return result
                 try:
                     result = await self._mcp_manager.call_tool(name, inputs)
                 except Exception as e:
                     result = f"Error: {e}"
-                if _agent_cb is None:
-                    self._renderer.on_tool_result(result)
+                if _deferred_r is not None:
+                    _deferred_r.on_tool_result(result, latency_ms=int((_time_exec.monotonic() - _t0) * 1000))
                 # ── Post-tool hook (MCP) ───────────────────────────────────
                 if self._hook_runner is not None:
                     from ..hooks.events import PostToolUseEvent
@@ -797,20 +904,20 @@ class ToolExecutor:
                     ))
                 return result
             error = f"Unknown tool: '{name}'"
-            if _agent_cb is None:
-                self._renderer.on_tool_error(error)
+            if _deferred_r is not None:
+                _deferred_r.on_tool_error(error)
             return f"Error: {error}"
 
         get_tracer().emit("tool_call", tool_name=name, inputs=inputs)
         try:
             spinner_label = TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
-            _spin_cm = contextlib.nullcontext() if _agent_cb is not None else self._renderer.spinner(spinner_label)
+            _spin_cm = _deferred_r.spinner(spinner_label) if _deferred_r is not None else contextlib.nullcontext()
             with _spin_cm:
                 result = await asyncio.to_thread(fn, **inputs)
-            if _agent_cb is None and name not in _SILENT_TOOLS:
-                self._renderer.on_tool_result(result)
-            if _agent_cb is None and name == "todo_write":
-                self._renderer.on_todo_list(show_if_all_done=True)
+            if _deferred_r is not None and name not in _SILENT_TOOLS:
+                _deferred_r.on_tool_result(result, latency_ms=int((_time_exec.monotonic() - _t0) * 1000))
+            if _deferred_r is not None and name == "todo_write":
+                _deferred_r.on_todo_list(show_if_all_done=True)
             get_tracer().emit("tool_result", tool_name=name, output=result, success=True)
             # ── Post-tool hook (native, success) ───────────────────────────
             if self._hook_runner is not None:
@@ -826,8 +933,8 @@ class ToolExecutor:
             return result
         except Exception as e:
             error = str(e)
-            if _agent_cb is None:
-                self._renderer.on_tool_error(error)
+            if _deferred_r is not None:
+                _deferred_r.on_tool_error(error)
             get_tracer().emit("tool_result", tool_name=name, output=error, success=False)
             # ── Post-tool hook (native, error) ─────────────────────────────
             if self._hook_runner is not None:

@@ -13,6 +13,8 @@ from typing import Callable, ClassVar, Optional
 
 from prompt_toolkit.formatted_text import FormattedText
 
+from ..theme import _TOOL_NAME_COLORS
+
 YELLOW = "#FFD700"
 BLUE   = "#1E90FF"
 GREEN  = "#4CAF50"
@@ -137,7 +139,7 @@ class SlotsManager:
 
     @property
     def is_visible(self) -> bool:
-        """True if any slots are registered (show the slots zone)."""
+        """True if any slots are registered."""
         with self._lock:
             return bool(self._states)
 
@@ -201,8 +203,10 @@ class SlotsManager:
 
             else:
                 # ── Generic tool slot — 3-line format ────────────────────────
+                _name_color = _TOOL_NAME_COLORS.get(tool_name, "")
+                _name_style = f"bold {_name_color}".strip()
                 fragments.append(("class:slot-icon", "⚙  "))
-                fragments.append(("class:slot-label", tool_name))
+                fragments.append((_name_style, tool_name))
                 skip = self._SLOT_SKIP_KEYS.get(tool_name, set())
                 for k, v in inputs.items():
                     if k in skip:
@@ -216,21 +220,21 @@ class SlotsManager:
                     fragments.append(("", v_disp))
 
                 if status == "pending":
-                    fragments.append(("class:slot-running", "\n  ·  waiting…"))
+                    fragments.append(("class:slot-running", "\n   ○  waiting…"))
                     fragments.append(("", "\n"))
                 elif status == "running":
-                    fragments.append(("class:slot-running", "\n  ⚙  running…"))
+                    fragments.append(("class:slot-running", "\n   ○  running…"))
                     last = state.get("last_activity", "")
                     last_line = last.replace("\n", " ").replace("\r", "")[:90]
-                    fragments.append(("class:slot-detail", f"\n     {last_line}"))
+                    fragments.append(("class:slot-detail", f"\n   {last_line}"))
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    fragments.append(("class:slot-done", f"\n  ✓  done ({latency:.1f}s)"))
+                    fragments.append(("class:slot-done", f"\n   ✓  done ({latency:.1f}s)"))
                     preview = state.get("preview", "")
-                    fragments.append(("class:slot-detail", f"\n     └─  {preview[:100]}"))
+                    fragments.append(("class:slot-detail", f"\n   └─  {preview[:100]}"))
                 elif status == "error":
                     error = state.get("error", "")
-                    fragments.append(("class:slot-error", f"\n  ✗  error: {error[:60]}"))
+                    fragments.append(("class:slot-error", f"\n   ✗  error: {error[:60]}"))
                     fragments.append(("", "\n"))
 
         return FormattedText(fragments)

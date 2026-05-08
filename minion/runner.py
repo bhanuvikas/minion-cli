@@ -34,7 +34,7 @@ from .theme import (
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
-from .tools.executor import ToolExecutor, TOOL_SPINNER_LABELS
+from .tools.executor import ToolExecutor, TOOL_SPINNER_LABELS, _RenderBuffer
 from .tracing import get_tracer
 
 MAX_ITERATIONS = 20
@@ -971,13 +971,17 @@ async def _execute_parallel_tools_async(
 
     display.pre_register(slots)
 
+    _buffers: dict[str, _RenderBuffer] = {}
+
     async def _run_tb_async(tb: ToolUseBlock) -> str:
+        _buf = _RenderBuffer()
+        _buffers[tb.id] = _buf
         slot_cb = callbacks[tb.id]
         set_agent_display_callback(slot_cb)
         set_active_live_display(display)
         start = _time.monotonic()
         try:
-            result = await executor.execute_async(tb)
+            result = await executor.execute_async(tb, _slot_renderer=_buf)
             latency_ms = int((_time.monotonic() - start) * 1000)
             first_line = result.split("\n")[0][:100]
             if result.startswith("Error:"):
@@ -986,8 +990,10 @@ async def _execute_parallel_tools_async(
                 slot_cb("complete", latency_ms=latency_ms, preview=first_line)
             return result
         except Exception as exc:
-            slot_cb("error", error=str(exc))
+            slot_cb("error", error=str(exc)[:80])
             return f"Error: {exc}"
+        finally:
+            set_agent_display_callback(None)
 
     tasks_map: dict[str, asyncio.Task] = {}
     # Pre-mark ALL slots "running" before any task can pause for confirmation.
@@ -1003,23 +1009,14 @@ async def _execute_parallel_tools_async(
     for tb in tool_blocks:
         conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
 
-    # Commit completed slots to the scrollback and clear the live zone.
-    # Without this, prompt_toolkit burns the live slots zone into the terminal
-    # on the next run_in_terminal() call, placing the tool output after the
-    # assistant response rather than before it.
+    # Flush each tool's render buffer to the scrollback in order, then clear
+    # the live slots zone. execute_async already rendered everything correctly
+    # (call header, diff, result) into the per-tool buffer — no reconstruction.
     if _parallel is not None and renderer is not None:
         from .tui.slots import SlotsManager as _SlotsManager
         if isinstance(_parallel, _SlotsManager):
-            states = _parallel.slot_results()
-            for tb, state in zip(tool_blocks, states):
-                result = tasks_map[tb.id].result()
-                renderer.on_tool_call(tb.name, tb.input)
-                if result.startswith("Error:"):
-                    renderer.on_tool_error(state.get("error", result))
-                else:
-                    latency = state.get("latency_ms", 0) / 1000
-                    renderer.on_info(f"  [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
-                    renderer.on_tool_result(result)
+            for tb in tool_blocks:
+                _buffers.get(tb.id, _RenderBuffer()).flush_to(renderer)
             _parallel.clear()
 
 

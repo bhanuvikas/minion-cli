@@ -114,7 +114,7 @@ class ConsoleRenderer(OutputRenderer):
         from ..theme import print_tool_call
         print_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge)
 
-    def on_tool_result(self, result: str) -> None:
+    def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
         from ..theme import print_tool_result
         print_tool_result(result)
 

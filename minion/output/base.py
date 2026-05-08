@@ -73,7 +73,7 @@ class OutputRenderer(ABC):
         """A tool call is about to be executed — show the call."""
 
     @abstractmethod
-    def on_tool_result(self, result: str) -> None:
+    def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
         """A tool call completed successfully — show the result."""
 
     @abstractmethod

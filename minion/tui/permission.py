@@ -32,11 +32,12 @@ _SCOPE_VALUES = ["once", "session", "project", "no"]
 
 @dataclass
 class PermissionRequest:
-    name:   str
-    inputs: dict
-    event:  asyncio.Event = field(default_factory=asyncio.Event)
-    result: bool = False
-    scope:  str  = "no"    # set when user confirms
+    name:       str
+    inputs:     dict
+    diff_lines: list = field(default_factory=list)  # (style, text) pairs for diff preview
+    event:      asyncio.Event = field(default_factory=asyncio.Event)
+    result:     bool = False
+    scope:      str  = "no"    # set when user confirms
 
 
 class PermissionPanel:
@@ -49,13 +50,13 @@ class PermissionPanel:
 
     # ── Request API (called from TUI event loop via run_coroutine_threadsafe) ─
 
-    async def request(self, name: str, inputs: dict) -> bool:
+    async def request(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
         """Show the permission panel and wait for user response.
 
         Runs in the TUI event loop. The calling agent thread blocks on
         future.result() until this coroutine resolves.
         """
-        req = PermissionRequest(name=name, inputs=inputs)
+        req = PermissionRequest(name=name, inputs=inputs, diff_lines=diff_lines)
         self._pending = req
         self._cursor  = 0
         self._app.invalidate()
@@ -104,14 +105,17 @@ class PermissionPanel:
         req   = self._pending
         frags: list[tuple[str, str]] = []
 
-        # Tool name header
+        # Tool name + path/command header
         frags.append(("class:perm-tool", f"  {req.name}"))
-
-        # Detail line (path / command)
         detail = _permission_detail(req.name, req.inputs)
         if detail:
             frags.append(("class:perm-detail", f"  {detail}"))
         frags.append(("", "\n"))
+
+        # Diff preview (if available)
+        if req.diff_lines:
+            for style, text in req.diff_lines:
+                frags.append((style, text))
 
         # Scope options — one per line
         for i, label in enumerate(_SCOPE_LABELS):

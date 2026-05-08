@@ -203,9 +203,11 @@ class MinionApp:
         # When idle, get_streaming_formatted_text() returns a single blank line
         # so the window stays at height=1 and the bottom strip never shifts.
         def _streaming_content():
-            # Suppress while the permission panel is visible so it gets
-            # full attention; slots are below this zone so they don't conflict.
-            if self.permission.is_visible:
+            # Suppress while the permission panel is visible, or while parallel
+            # tools are running (slots visible).  Between two consecutive tool
+            # confirmations the permission panel briefly clears; without this
+            # guard the thinking animation would flash for one frame in that gap.
+            if self.permission.is_visible or self.slots.is_visible:
                 return FormattedText([("", " ")])
             return self.conversation.get_streaming_formatted_text()
 
@@ -432,13 +434,14 @@ class MinionApp:
             self._pending_flush = None
         self._flush_pending_output()
 
-    async def flush_and_exit(self) -> None:
-        """Drain pending scrollback writes then tear down the application.
+    async def flush_writes_async(self) -> None:
+        """Drain pending scrollback writes using the awaitable run_in_terminal.
 
-        The sync _flush_writes() path uses the sync run_in_terminal() which
-        may not execute when called from an async context right before exit.
-        This async version uses the awaitable form so the write is guaranteed
-        to land in the terminal before the TUI tears down.
+        Unlike _flush_writes() (which schedules a Future but returns before it
+        executes), this coroutine awaits the actual terminal write so the
+        scrollback content is visible before the next TUI redraw.  Used before
+        clearing the slots zone so tool results land in the scrollback before
+        slots disappear.
         """
         if self._pending_flush is not None:
             self._pending_flush.cancel()
@@ -450,6 +453,10 @@ class MinionApp:
             await run_in_terminal(
                 lambda: (sys.stdout.write(combined), sys.stdout.flush())
             )
+
+    async def flush_and_exit(self) -> None:
+        """Drain pending scrollback writes then tear down the application."""
+        await self.flush_writes_async()
         if self._app is not None:
             self._app.exit()
 
