@@ -963,12 +963,19 @@ async def _execute_parallel_tools_async(
     _parallel = renderer.parallel_display if renderer is not None else None
     display = _parallel if _parallel is not None else AgentLiveDisplay()
 
-    # Write tool call lines to scrollback BEFORE pre_register so that the
-    # run_in_terminal() flush fires while the slots zone is not yet visible.
-    # Writing after pre_register burns the slots zone into the scrollback.
+    # Write tool call lines to scrollback and AWAIT the flush before pre_register.
+    # run_in_terminal() always returns ensure_future() (deferred), so the sync
+    # on_tool_call() path fires after we yield — by which time pre_register has
+    # already made the slots zone visible, burning it into the scrollback.
+    # pre_write_tool_calls() uses await run_in_terminal() so the write lands
+    # on screen before the slots zone appears.
     if renderer is not None:
-        for tb in tool_blocks:
-            renderer.on_tool_call(tb.name, tb.input)
+        from .output.tui import TuiRenderer as _TuiRenderer
+        if isinstance(renderer, _TuiRenderer):
+            await renderer.pre_write_tool_calls(tool_blocks)
+        else:
+            for tb in tool_blocks:
+                renderer.on_tool_call(tb.name, tb.input)
 
     callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
     slots = [

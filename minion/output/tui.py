@@ -158,6 +158,22 @@ class TuiRenderer(OutputRenderer):
         )
         self._app.invalidate()
 
+    async def pre_write_tool_calls(self, tool_blocks: list) -> None:
+        """Write tool call lines to scrollback and await the flush.
+
+        Called before pre_register() in parallel-tool execution so the
+        run_in_terminal() write lands on screen before the slots zone
+        becomes visible. Using the sync on_tool_call() path here would
+        schedule ensure_future() without awaiting, causing the write to
+        fire after pre_register with the slots zone already active.
+        """
+        from ..tools.executor import _tool_call_markup
+        for tb in tool_blocks:
+            markup = _tool_call_markup(tb.name, tb.input, False, None, None)
+            self._app.conversation.append_system(markup)
+        await self._app.flush_pending_async()
+        self._app.invalidate()
+
     # ── Parallel display ──────────────────────────────────────────────────────
 
     @property

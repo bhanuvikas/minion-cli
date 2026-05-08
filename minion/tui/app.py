@@ -432,6 +432,25 @@ class MinionApp:
             self._pending_flush = None
         self._flush_pending_output()
 
+    async def flush_pending_async(self) -> None:
+        """Drain pending scrollback writes, awaiting run_in_terminal to complete.
+
+        The sync _flush_writes() path returns ensure_future() without awaiting,
+        so the terminal write is deferred to the next event-loop iteration.
+        Call this before operations that change TUI layout (e.g. pre_register)
+        so the writes land on screen before the layout changes.
+        """
+        if self._pending_flush is not None:
+            self._pending_flush.cancel()
+            self._pending_flush = None
+        if self._pending_output and self._app is not None and self._app.is_running:
+            combined = "".join(self._pending_output)
+            self._pending_output.clear()
+            from prompt_toolkit.application import run_in_terminal
+            await run_in_terminal(
+                lambda: (sys.stdout.write(combined), sys.stdout.flush())
+            )
+
     async def flush_and_exit(self) -> None:
         """Drain pending scrollback writes then tear down the application.
 
