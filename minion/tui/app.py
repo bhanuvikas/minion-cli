@@ -487,9 +487,11 @@ class MinionApp:
         self.status.set_thinking(thinking)
         if thinking:
             if self._thinking_task is None or self._thinking_task.done():
-                self._thinking_task = asyncio.get_event_loop().create_task(
-                    self._animate_thinking()
-                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    self._thinking_task = loop.create_task(self._animate_thinking())
+                except RuntimeError:
+                    pass  # no running loop — called from non-async context, skip task
         else:
             if self._thinking_task and not self._thinking_task.done():
                 self._thinking_task.cancel()

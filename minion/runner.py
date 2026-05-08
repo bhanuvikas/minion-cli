@@ -968,6 +968,7 @@ async def _execute_parallel_tools_async(
         SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
         for tb in tool_blocks
     ]
+
     display.pre_register(slots)
 
     async def _run_tb_async(tb: ToolUseBlock) -> str:

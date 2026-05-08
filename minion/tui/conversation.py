@@ -27,7 +27,7 @@ from typing import Callable, Optional
 
 # ── Thinking animation frames — uncomment one to try it ──────────────────────
 # Color is driven by class:minion-prefix (blue #1E90FF) so pick a frame style,
-# not a colour. All render inline as:  <frame>  thinking
+# not a colour. All render inline as:  <frame>  <phrase>
 
 # Two eyes — both animate in sync (open → look up → focus → open)
 # _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ◠", "◉ ◉", "◠ ◠", "○ ○"]
@@ -55,6 +55,36 @@ _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○
 
 # Block pulse: light shading → dark → full → contract (signal level meter feel)
 # _THINK_FRAMES = ["░", "▒", "▓", "█", "▓", "▒"]
+
+# Phrases rotate every ~2 s — multilingual "thinking" + Minionese
+_THINK_PHRASES = [
+    "thinking",           # English
+    "pensando",           # Spanish
+    "bee do bee do",      # Minionese
+    "réfléchissant",      # French
+    "考え中",              # Japanese
+    "bello!",             # Minionese
+    "nachdenken",         # German
+    "సోచిస్తున్నా",        # Telugu
+    "думаю",              # Russian
+    "tulaliloo",          # Minionese
+    "सोच रहा हूँ",        # Hindi
+    "σκέφτομαι",          # Greek
+    "gelato!",            # Minionese
+    " யோசிக்கிறேன்",      # Tamil
+    "يفكر",               # Arabic
+    "생각 중",             # Korean
+    "para tú",            # Minionese
+    "ਸੋਚ ਰਿਹਾ ਹਾਂ",      # Punjabi
+    "思考中",              # Mandarin
+    "ভাবছি",              # Bengali
+    "suy nghĩ",           # Vietnamese
+    "düşünüyorum",        # Turkish
+    "ninafikiri",         # Swahili
+    "sto pensando",       # Italian
+    "ajattelen",          # Finnish
+    "mă gândesc",         # Romanian
+]
 
 from prompt_toolkit.formatted_text import FormattedText
 
@@ -191,8 +221,11 @@ class ConversationBuffer:
     def finalize_turn(self) -> None:
         """Commit the complete assistant response to the scrollback.
 
-        The blank line before the response was already emitted and flushed
-        by start_assistant_turn(), so no prefix is added here.
+        Flushes immediately (bypassing the 16ms write buffer) so the text
+        lands in the terminal scrollback before the runner calls pre_register()
+        for parallel agents.  Without the flush, run_in_terminal() fires 16ms
+        later, briefly suspending the TUI — that suspension is visible as a
+        gap with no thinking animation before the slot zone appears.
         """
         with self._lock:
             text = self._streaming_text
@@ -200,6 +233,8 @@ class ConversationBuffer:
             self._streaming_text = ""
         if text:
             self._emit(_r.assistant_turn(text, self._width))
+            if self._flush_fn:
+                self._flush_fn()
         with self._lock:
             self._last_was_assistant = True
         self._invalidate()
@@ -312,12 +347,14 @@ class ConversationBuffer:
         if not is_thinking and not is_streaming:
             return FormattedText([("", " ")])
 
-        # Pre-token thinking phase: two-eyes animation in minion blue
+        # Pre-token thinking phase: two-eyes animation + rotating phrase
         if is_thinking and not is_streaming:
-            frame = _THINK_FRAMES[int(_time.monotonic() * 4) % len(_THINK_FRAMES)]
+            t = _time.monotonic()
+            frame  = _THINK_FRAMES[int(t * 4) % len(_THINK_FRAMES)]
+            phrase = _THINK_PHRASES[int(t * 0.5) % len(_THINK_PHRASES)]
             return FormattedText([
                 ("class:minion-prefix", frame),
-                ("class:thinking-text", "  thinking"),
+                ("class:thinking-text", f"  {phrase}"),
             ])
 
         # Normal streaming phase
