@@ -23,7 +23,7 @@ SEP_STYLE    = "#888888"      # › separator
 RULE_STYLE   = "#333333"      # dim separator rule before user turns
 ACCENT_STYLE  = "#FFD700"      # ▌ left accent bar on user message line
 ACCENT_BLUE   = "#1E90FF"      # ▌ left accent bar on minion response
-ACCENT_TOOL   = "#444444"      # │ continuous left rail through tool blocks
+ACCENT_TOOL   = "#888888"      # ▌ continuous left bar through tool blocks
 TOOL_ICON     = "#C0C0C0"
 TOOL_DETAIL  = "#666666"
 TOOL_OK      = "#4CAF50"
@@ -106,24 +106,24 @@ def assistant_turn(text: str, width: int = 120) -> str:
 def tool_call_line(name: str, key_arg: str = "", width: int = 120) -> str:
     """Render the grey-railed "│ ⚙  name  arg" pending line."""
     detail = f"  {key_arg}" if key_arg else ""
-    markup = f"[{ACCENT_TOOL}]│[/] [{TOOL_ICON}]⚙[/]  [bold]{name}[/][{TOOL_DETAIL}]{detail}[/]"
+    markup = f"[{ACCENT_TOOL}]▌[/] [{TOOL_ICON}]⚙[/]  [bold]{name}[/][{TOOL_DETAIL}]{detail}[/]"
     try:
         return render_rich(markup, width)
     except Exception:
-        return f"│ ⚙  {name}{detail}"
+        return f"▌ ⚙  {name}{detail}"
 
 
 def tool_result_line(success: bool, summary: str = "", width: int = 120) -> str:
     """Render the grey-railed "│   └─ ✓/✗  summary" result line."""
     icon   = "✓" if success else "✗"
     color  = TOOL_OK if success else TOOL_ERR
-    markup = f"[{ACCENT_TOOL}]│[/]   └─ [{color}]{icon}[/]"
+    markup = f"[{ACCENT_TOOL}]▌[/]   └─ [{color}]{icon}[/]"
     if summary:
         markup += f"  [{TOOL_DETAIL}]{summary}[/]"
     try:
         return render_rich(markup, width)
     except Exception:
-        return f"│   └─ {icon} {summary}"
+        return f"▌   └─ {icon} {summary}"
 
 
 def system_message(rich_markup: str, width: int = 120) -> str:
