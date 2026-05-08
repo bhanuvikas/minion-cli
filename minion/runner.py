@@ -984,15 +984,29 @@ async def _execute_parallel_tools_async(
                 slot_cb("error", error=first_line.removeprefix("Error: "))
             else:
                 slot_cb("complete", latency_ms=latency_ms, preview=first_line)
+            # Stream result to scrollback as soon as this tool finishes.
+            if renderer is not None:
+                if not result.startswith("Error:"):
+                    latency = latency_ms / 1000
+                    renderer.on_info(f"[#888888]▌[/]   [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
+                renderer.on_tool_result(result)
             return result
         except Exception as exc:
             slot_cb("error", error=str(exc))
+            if renderer is not None:
+                renderer.on_tool_result(f"Error: {exc}")
             return f"Error: {exc}"
 
     tasks_map: dict[str, asyncio.Task] = {}
     # Pre-mark ALL slots "running" before any task can pause for confirmation.
     for tb in tool_blocks:
         callbacks[tb.id]("running")
+
+    # Write all tool call lines to scrollback immediately so the ▌ bars appear
+    # as execution starts rather than after all tools finish.
+    if renderer is not None:
+        for tb in tool_blocks:
+            renderer.on_tool_call(tb.name, tb.input)
 
     with display:
         display.render_now()
@@ -1003,23 +1017,10 @@ async def _execute_parallel_tools_async(
     for tb in tool_blocks:
         conversation.add_tool_result(tb.id, tasks_map[tb.id].result())
 
-    # Commit completed slots to the scrollback and clear the live zone.
-    # Without this, prompt_toolkit burns the live slots zone into the terminal
-    # on the next run_in_terminal() call, placing the tool output after the
-    # assistant response rather than before it.
-    if _parallel is not None and renderer is not None:
+    # Clear the slots zone now that results are already in the scrollback.
+    if _parallel is not None:
         from .tui.slots import SlotsManager as _SlotsManager
         if isinstance(_parallel, _SlotsManager):
-            states = _parallel.slot_results()
-            for tb, state in zip(tool_blocks, states):
-                result = tasks_map[tb.id].result()
-                renderer.on_tool_call(tb.name, tb.input)
-                if result.startswith("Error:"):
-                    renderer.on_tool_error(state.get("error", result))
-                else:
-                    latency = state.get("latency_ms", 0) / 1000
-                    renderer.on_info(f"  [bold #4CAF50]✓  done ({latency:.1f}s)[/]")
-                    renderer.on_tool_result(result)
             _parallel.clear()
 
 
