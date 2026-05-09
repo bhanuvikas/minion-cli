@@ -17,9 +17,8 @@ from .llm import get_client
 from .repl import run_repl, run_repl_async
 from .theme import YELLOW, console, print_error
 
-load_dotenv(Path.home() / ".minion" / ".env")             # user-level defaults
-load_dotenv(Path.cwd() / ".env", override=True)           # project root .env (backward compat)
-load_dotenv(Path.cwd() / ".minion" / ".env", override=True)  # project minion config (highest priority)
+load_dotenv(Path.home() / ".minion" / ".env")                 # user-level defaults
+load_dotenv(Path.cwd() / ".minion" / ".env", override=True)  # project-level overrides
 
 from .config import load_config as _load_config  # noqa: E402 — after dotenv
 
