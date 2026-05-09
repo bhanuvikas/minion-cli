@@ -19,6 +19,7 @@ from __future__ import annotations
 from prompt_toolkit.formatted_text import FormattedText
 
 from .agent_registry import SubagentRegistry, SubagentState
+from ..display_utils import _trunc, format_tool_args
 from ..theme import _TOOL_NAME_COLORS
 
 _STATUS_ICON = {"pending": "○", "running": "●", "complete": "✓", "error": "✗"}
@@ -32,10 +33,6 @@ _STATUS_STYLE = {
 # Fallback dimensions when the app is not yet running
 _DEFAULT_WIDTH  = 120
 _DEFAULT_HEIGHT = 40
-
-
-def _trunc(text: str, n: int) -> str:
-    return text if len(text) <= n else text[:n - 1] + "…"
 
 
 def _frags_len(frags: list[tuple[str, str]]) -> int:
@@ -250,7 +247,7 @@ class InspectorPanel:
                             _line(("", ""))  # blank after text, before tools
                     elif blk["type"] == "tool_use":
                         name       = blk.get("name", "")
-                        args       = _format_tool_args(blk.get("input", {}), self._expanded)
+                        args       = format_tool_args(blk.get("input", {}), expanded=self._expanded)
                         name_color = _TOOL_NAME_COLORS.get(name, "")
                         name_style = f"bold {name_color}".strip()
                         _line(
@@ -278,19 +275,3 @@ class InspectorPanel:
         return lines
 
 
-def _format_tool_args(inputs: dict, expanded: bool = False) -> str:
-    if not inputs:
-        return ""
-    parts = []
-    skip  = {"content", "old_string", "new_string"}
-    for k, v in inputs.items():
-        if k in skip and not expanded:
-            continue
-        if isinstance(v, str):
-            v_clean = v.replace("\n", "↵")
-            limit   = 200 if expanded else 45
-            v_disp  = f"'{_trunc(v_clean, limit)}'"
-        else:
-            v_disp = repr(v)[:40]
-        parts.append(f"{k}={v_disp}")
-    return "  ".join(parts[:3])

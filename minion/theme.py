@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 # ─── Minion Colour Palette ────────────────────────────────────────────────────
 YELLOW = "#FFD700"
 BLUE = "#1E90FF"
+GREEN = "#4CAF50"
 DENIM = "#2F4F8F"
 GREY = "#888888"
 SILVER = "#C0C0C0"

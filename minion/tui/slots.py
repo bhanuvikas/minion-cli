@@ -13,22 +13,8 @@ from typing import Callable, ClassVar, Optional
 
 from prompt_toolkit.formatted_text import FormattedText
 
+from ..display_utils import format_tool_args
 from ..theme import _TOOL_NAME_COLORS
-
-YELLOW = "#FFD700"
-BLUE   = "#1E90FF"
-GREEN  = "#4CAF50"
-
-
-def _format_tool_args(inputs: dict) -> str:
-    """Same helper as in display.py — brief key='value' snippet."""
-    if not inputs:
-        return ""
-    for k, v in inputs.items():
-        if isinstance(v, str):
-            return f"{k}='{v[:40]}'"
-        return f"{k}={str(v)[:40]}"
-    return ""
 
 
 class SlotsManager:
@@ -93,7 +79,7 @@ class SlotsManager:
                 elif event == "tool_call":
                     name   = data.get("name", "")
                     inputs = data.get("inputs", {})
-                    state["last_activity"] = f"↳ {name}  {_format_tool_args(inputs)}"
+                    state["last_activity"] = f"↳ {name}  {format_tool_args(inputs)}"
                 elif event == "text":
                     buf = state.get("_text_buf", "") + data.get("text", "")
                     state["_text_buf"] = buf[-200:]
@@ -104,7 +90,7 @@ class SlotsManager:
                     state["sub_activities"] = [
                         {
                             "key":  t["key"],
-                            "text": f"↳ {t['name']}  {_format_tool_args(t['inputs'])}",
+                            "text": f"↳ {t['name']}  {format_tool_args(t['inputs'])}",
                             "done": False,
                         }
                         for t in data.get("tools", [])

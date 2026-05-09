@@ -17,20 +17,8 @@ from typing import Callable, ClassVar, NamedTuple, Optional
 from rich.live import Live
 from rich.text import Text
 
-YELLOW = "#FFD700"
-BLUE = "#1E90FF"
-GREEN = "#4CAF50"
-
-
-def _format_tool_args(inputs: dict) -> str:
-    """Return a brief key='value' snippet from tool inputs for the slot detail line."""
-    if not inputs:
-        return ""
-    for k, v in inputs.items():
-        if isinstance(v, str):
-            return f"{k}='{v[:40]}'"
-        return f"{k}={str(v)[:40]}"
-    return ""
+from ..display_utils import format_tool_args
+from ..theme import BLUE, GREEN, YELLOW
 
 # ─── Context-variable callback registry ───────────────────────────────────────
 # Using ContextVar instead of threading.local so that the callback is correctly
@@ -211,7 +199,7 @@ class AgentLiveDisplay:
                 elif event == "tool_call":
                     name = data.get("name", "")
                     inputs = data.get("inputs", {})
-                    state["last_activity"] = f"↳ {name}  {_format_tool_args(inputs)}"
+                    state["last_activity"] = f"↳ {name}  {format_tool_args(inputs)}"
                 elif event == "text":
                     buf = state.get("_text_buf", "") + data.get("text", "")
                     state["_text_buf"] = buf[-200:]
@@ -224,7 +212,7 @@ class AgentLiveDisplay:
                     state["sub_activities"] = [
                         {
                             "key": t["key"],
-                            "text": f"↳ {t['name']}  {_format_tool_args(t['inputs'])}",
+                            "text": f"↳ {t['name']}  {format_tool_args(t['inputs'])}",
                             "done": False,
                         }
                         for t in data.get("tools", [])
