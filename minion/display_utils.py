@@ -74,6 +74,21 @@ def _trunc(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def tool_name_style(tool_name: str) -> str:
+    """Return the bold + optional-colour style string for a tool name.
+
+    Works in both prompt_toolkit FormattedText and Rich markup — hex colors
+    are accepted by both rendering systems. Returns plain "bold" when the
+    tool has no special colour in _TOOL_NAME_COLORS.
+
+    Used by render_message_blocks (inspector), tool_slot_header_frags (slots),
+    and format_tool_call (formatter) so the name style is consistent.
+    """
+    from .theme import _TOOL_NAME_COLORS
+    color = _TOOL_NAME_COLORS.get(tool_name, "")
+    return f"bold {color}".strip()
+
+
 def tool_slot_header_frags(tool_name: str, inputs: dict) -> list[tuple[str, str]]:
     """Format-neutral (style, text) fragment list for a live tool-slot header.
 
@@ -88,14 +103,11 @@ def tool_slot_header_frags(tool_name: str, inputs: dict) -> list[tuple[str, str]
     Suppresses write_file 'content' and edit_file 'old_string'/'new_string'
     because the diff preview already shows that information.
     """
-    from .theme import BLUE, YELLOW, _TOOL_NAME_COLORS  # lazy to avoid circular at init
-
-    _name_color = _TOOL_NAME_COLORS.get(tool_name, "")
-    _name_style = f"bold {_name_color}".strip()
+    from .theme import BLUE, YELLOW  # lazy to avoid circular at init
 
     frags: list[tuple[str, str]] = [
         (f"bold {YELLOW}", "⚙  "),
-        (_name_style, tool_name),
+        (tool_name_style(tool_name), tool_name),
     ]
     for k, v in inputs.items():
         if k in _SKIP_KEYS:

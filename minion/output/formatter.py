@@ -31,18 +31,20 @@ def format_tool_call(
 
     mode_badge: None=normal  "edits"=yellow»  "yolo"=⚡  "trusted"=green~
     """
-    from ..theme import BLUE, YELLOW, _TOOL_NAME_COLORS
+    from ..display_utils import tool_name_style as _tns
+    from ..theme import BLUE, YELLOW
 
     label        = "[muted][dry-run][/] " if dry_run else ""
     agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
-    name_color   = _TOOL_NAME_COLORS.get(name, "")
-    name_style   = f"bold {name_color}".strip()  # "bold" when no color entry
+    name_style   = _tns(name)
 
     badge_str = ""
     if mode_badge == "edits":
         badge_str = f" [{YELLOW}]»[/]"
     elif mode_badge == "yolo":
-        badge_str = f" [{name_color or YELLOW}]⚡[/]"
+        from ..theme import _TOOL_NAME_COLORS as _tnc
+        _yolo_color = _tnc.get(name, "") or YELLOW
+        badge_str = f" [{_yolo_color}]⚡[/]"
     elif mode_badge == "trusted":
         badge_str = " [green]~[/]"
 

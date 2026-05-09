@@ -146,18 +146,26 @@ class TestUserBlockMessages:
             "blocks": [{"type": "tool_result", "content": content}],
         }
 
-    def test_produces_two_rows(self):
+    def test_produces_three_rows(self):
         lines = render_message_blocks([self._result_msg("ok output")], "coder")
-        assert len(lines) == 2  # result row + blank
+        assert len(lines) == 3  # ✓ done row + └─ preview row + blank
 
-    def test_result_row_has_checkmark(self):
+    def test_done_row_has_checkmark(self):
         lines = render_message_blocks([self._result_msg("ok")], "coder")
         styles = _styles(lines)[0]
         assert "class:tool-ok" in styles
 
-    def test_result_content_present(self):
+    def test_done_row_contains_done_text(self):
+        lines = render_message_blocks([self._result_msg("ok")], "coder")
+        assert "done" in _flat_text(lines)
+
+    def test_preview_row_contains_content(self):
         lines = render_message_blocks([self._result_msg("my result")], "coder")
         assert "my result" in _flat_text(lines)
+
+    def test_preview_row_has_branch(self):
+        lines = render_message_blocks([self._result_msg("x")], "coder")
+        assert "└─" in _flat_text(lines)
 
     def test_trailing_blank_row(self):
         lines = render_message_blocks([self._result_msg("x")], "coder")

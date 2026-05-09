@@ -150,8 +150,7 @@ def render_message_blocks(
       - role=asst   / type=blocks → text blocks + tool_use blocks (⚙ icon)
       - role=user   / type=blocks → tool_result blocks (✓ icon)
     """
-    from ..display_utils import _trunc, format_tool_args
-    from ..theme import _TOOL_NAME_COLORS
+    from ..display_utils import _trunc, format_tool_args, tool_name_style
 
     lines: list[list[tuple[str, str]]] = []
 
@@ -182,26 +181,27 @@ def render_message_blocks(
                         )
                         _line(("", ""))
                 elif blk["type"] == "tool_use":
-                    name       = blk.get("name", "")
-                    args       = format_tool_args(blk.get("input", {}), expanded=expanded)
-                    name_color = _TOOL_NAME_COLORS.get(name, "")
-                    name_style = f"bold {name_color}".strip()
+                    name = blk.get("name", "")
+                    args = format_tool_args(blk.get("input", {}), expanded=expanded)
                     _line(
                         ("class:slot-detail", " "),
                         ("class:tool-icon",   "⚙  "),
-                        (name_style,          name),
+                        (tool_name_style(name), name),
                         ("class:tool-detail", f"  {args}" if args else ""),
                     )
 
         elif role == "user" and msg.get("type") == "blocks":
             for blk in msg.get("blocks", []):
                 if blk["type"] == "tool_result":
-                    content = blk.get("content", "").replace("\n", " ").strip()
-                    limit   = 400 if expanded else 87
+                    content    = blk.get("content", "")
+                    first_line = content.split("\n")[0].strip()
+                    limit      = 400 if expanded else 87
+                    # Match scrollback structure: ✓ done line + └─ preview line.
+                    # Timing is not stored in message blocks, so we omit it.
+                    _line(("class:tool-ok", "   ✓  done"))
                     _line(
-                        ("class:slot-detail", "    "),
-                        ("class:tool-ok",     "✓  "),
-                        ("class:slot-detail", _trunc(content, limit)),
+                        ("class:slot-detail", "   └─  "),
+                        ("class:slot-detail", _trunc(first_line, limit)),
                     )
             _line(("", ""))
 

@@ -5,7 +5,7 @@ No API calls. No filesystem operations. Pure unit tests.
 
 import pytest
 
-from minion.display_utils import _trunc, apply_slot_event, format_tool_args, tool_slot_header_frags
+from minion.display_utils import _trunc, apply_slot_event, format_tool_args, tool_name_style, tool_slot_header_frags
 
 
 # ─── _trunc ──────────────────────────────────────────────────────────────────
@@ -219,7 +219,6 @@ class TestToolSlotHeaderFrags:
 
     def test_key_label_uses_silver_style(self):
         frags = tool_slot_header_frags("read_file", {"path": "foo.py"})
-        # key label frag is second-to-last
         key_style = frags[-2][0]
         assert "#C0C0C0" in key_style
 
@@ -254,10 +253,37 @@ class TestToolSlotHeaderFrags:
         assert frags[1][1] == "todo_read"
 
     def test_portable_styles_no_class_names(self):
-        """All styles must be hex/bold modifiers — never prompt_toolkit class names."""
         frags = tool_slot_header_frags("write_file", {"path": "f.py"})
         for style, _ in frags:
             assert not style.startswith("class:"), f"Found class: style {style!r}"
+
+
+# ─── tool_name_style ──────────────────────────────────────────────────────────
+
+class TestToolNameStyle:
+    def test_returns_bold_for_unknown_tool(self):
+        assert tool_name_style("unknown_tool") == "bold"
+
+    def test_write_file_is_bold_yellow(self):
+        style = tool_name_style("write_file")
+        assert "bold" in style
+        assert "#FFD700" in style
+
+    def test_edit_file_is_bold_yellow(self):
+        style = tool_name_style("edit_file")
+        assert "#FFD700" in style
+
+    def test_run_shell_is_bold_red(self):
+        style = tool_name_style("run_shell")
+        assert "red" in style
+
+    def test_web_fetch_is_bold_red(self):
+        style = tool_name_style("web_fetch")
+        assert "red" in style
+
+    def test_no_trailing_space_for_unknown(self):
+        style = tool_name_style("read_file")
+        assert not style.endswith(" ")
 
 
 # ─── apply_slot_event ─────────────────────────────────────────────────────────
