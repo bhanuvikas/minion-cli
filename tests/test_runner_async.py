@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from minion.conversation import Conversation
+from minion.llm.conversation import Conversation
 from minion.llm.base import LLMResponse, Message, StreamComplete, TextChunk, ToolUseBlock
 from minion.runner import (
     _IterationResult,

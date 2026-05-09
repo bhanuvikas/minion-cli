@@ -36,7 +36,7 @@ from prompt_toolkit.styles import Style
 from .config import MINION_STYLE, run_model_config
 from .llm.reflection import ReflectionConfig
 from .context import ProjectContext, build_project_context
-from .conversation import Conversation
+from .llm.conversation import Conversation
 from .llm.base import ContentTextBlock, LLMClient
 from .memory.config import MemoryConfig
 from .memory.embedder import build_embedder

@@ -16,7 +16,7 @@ import asyncio
 import time
 from typing import Optional
 
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..theme import console
 from ..tools.definitions import TOOL_DEFINITIONS
 from ..tracing import get_tracer

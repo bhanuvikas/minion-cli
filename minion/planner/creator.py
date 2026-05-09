@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import (
     ContentTextBlock, ContentToolUseBlock, LLMClient,
     StreamComplete, TextChunk, ToolUseBlock,

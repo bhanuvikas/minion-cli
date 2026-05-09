@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .llm.base import ContentBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
+from .base import ContentBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
 
 
 def _is_tool_result_message(msg: Message) -> bool:

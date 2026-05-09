@@ -10,7 +10,7 @@ from .output.diff import format_diff_rich
 from .llm.base import LLMResponse
 
 if TYPE_CHECKING:
-    from .conversation import ContextSnapshot
+    from .llm.conversation import ContextSnapshot
 
 # ─── Minion Colour Palette ────────────────────────────────────────────────────
 YELLOW = "#FFD700"

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import (
     ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError,
     LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart,

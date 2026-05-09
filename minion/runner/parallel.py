@@ -18,7 +18,7 @@ import asyncio
 import time as _time
 from typing import Optional
 
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import ToolUseBlock
 from ..output import OutputRenderer
 from ..output.base import SlotSpec

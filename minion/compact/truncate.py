@@ -1,7 +1,7 @@
 """Truncation compaction: keep the last N turns, drop everything older."""
 
 from .base import CompactionResult, CompactionStrategy
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import ContentBlock, LLMClient
 
 
@@ -44,7 +44,7 @@ class TruncateStrategy(CompactionStrategy):
         if len(conversation.messages) > keep:
             conversation.messages = conversation.messages[-keep:]
             # Drop orphaned tool_result messages that now appear at the front.
-            from ..conversation import _is_tool_result_message
+            from ..llm.conversation import _is_tool_result_message
             while conversation.messages and _is_tool_result_message(conversation.messages[0]):
                 conversation.messages.pop(0)
             conversation._snapshot = None

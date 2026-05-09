@@ -156,7 +156,7 @@ class TestExecutePlanFlow:
     def test_execute_plan_injects_plan_into_system_prompt(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         from minion.planner.creator import execute_plan
-        from minion.conversation import Conversation
+        from minion.llm.conversation import Conversation
         from minion.repl import ReplState
 
         plan_text = "## Steps\n1. Do this important step\n2. Do another step"
@@ -181,7 +181,7 @@ class TestExecutePlanFlow:
         """End-to-end: create plan → save to disk → execute → plan in prompt."""
         monkeypatch.chdir(tmp_path)
         from minion.planner.creator import create_plan, execute_plan
-        from minion.conversation import Conversation
+        from minion.llm.conversation import Conversation
         from minion.repl import ReplState
 
         unique_text = "## Key Step\nDo the unique thing XYZ-9999."

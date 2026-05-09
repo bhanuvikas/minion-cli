@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import patch
 from pathlib import Path
 
-from minion.conversation import Conversation
+from minion.llm.conversation import Conversation
 from minion.llm.base import (
     ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock, Message,
 )

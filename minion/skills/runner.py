@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import LLMClient
 from ..llm.reflection import ReflectionConfig
 from ..runner import run_prompt

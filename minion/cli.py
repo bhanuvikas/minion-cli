@@ -292,7 +292,7 @@ def a2a_serve(
     """
     from .a2a.server import A2AServer
     from .context import build_project_context
-    from .conversation import Conversation
+    from .llm.conversation import Conversation
     from .context.prompts import build_system_prompt
     from .runner import run_prompt
 
@@ -476,7 +476,7 @@ def _run_one_shot(prompt: str, raw_argv: list) -> None:
     from .context.prompts import build_system_prompt
     from .runner import run_prompt_async
     from .llm.reflection import ReflectionConfig
-    from .conversation import Conversation
+    from .llm.conversation import Conversation
     from .tools.permissions import PermissionStore
 
     import os as _os

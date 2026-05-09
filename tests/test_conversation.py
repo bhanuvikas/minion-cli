@@ -4,7 +4,7 @@ No network calls, no API keys needed.
 """
 
 import pytest
-from minion.conversation import Conversation, ContextSnapshot, _context_limit, DEFAULT_LIMIT
+from minion.llm.conversation import Conversation, ContextSnapshot, _context_limit, DEFAULT_LIMIT
 from minion.llm.base import ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock, LLMResponse, Message
 
 
@@ -223,14 +223,14 @@ class TestTruncation:
         c.truncate_if_needed(last_input_tokens=12_000, last_output_tokens=3_000)
 
         # After truncation, the first message must NEVER be a tool_result
-        from minion.conversation import _is_tool_result_message
+        from minion.llm.conversation import _is_tool_result_message
         assert not _is_tool_result_message(c.messages[0]), (
             "First message after truncation is an orphaned tool_result — "
             "this would cause a 400 API error"
         )
 
     def test_tool_result_detection(self):
-        from minion.conversation import _is_tool_result_message
+        from minion.llm.conversation import _is_tool_result_message
         regular = Message(role="user", content="hello")
         tool_result = Message(role="user", content=[
             ContentToolResultBlock(tool_use_id="t1", content="result")

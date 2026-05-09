@@ -11,7 +11,7 @@ from minion.compact import DEFAULT_STRATEGY, STRATEGIES, get_strategy
 from minion.compact.base import CompactionResult
 from minion.compact.summary import SummaryStrategy, _conversation_to_text
 from minion.compact.truncate import TruncateStrategy, _estimate_tokens
-from minion.conversation import Conversation
+from minion.llm.conversation import Conversation
 from minion.llm.base import (
     ContentTextBlock,
     ContentToolResultBlock,

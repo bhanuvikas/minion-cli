@@ -1,7 +1,7 @@
 """Summary compaction: LLM summarizes the conversation into a compact stub."""
 
 from .base import CompactionResult, CompactionStrategy
-from ..conversation import Conversation
+from ..llm.conversation import Conversation
 from ..llm.base import (
     ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
     LLMClient, Message,

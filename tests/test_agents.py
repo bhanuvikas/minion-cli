@@ -22,7 +22,7 @@ import pytest
 
 from minion.agents.manifest import AgentRoleManifest, load_manifest
 from minion.agents.registry import AgentRegistry, load_agent_registry
-from minion.conversation import Conversation
+from minion.llm.conversation import Conversation
 from minion.llm.base import ToolUseBlock
 from minion.tools.definitions import TOOL_DEFINITIONS
 from minion.tools.executor import ToolExecutor, _CONFIRM_LOCK

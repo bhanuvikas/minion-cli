@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from minion.conversation import Conversation
+from minion.llm.conversation import Conversation
 from minion.memory.config import MemoryConfig
 from minion.memory.record import MemoryRecord
 from minion.memory.store import MemoryStore

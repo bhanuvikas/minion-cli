@@ -306,7 +306,7 @@ class TestRunPromptToolsParam:
     @pytest.mark.asyncio
     async def test_defaults_to_all_tools(self):
         from minion.runner import run_prompt_async
-        from minion.conversation import Conversation
+        from minion.llm.conversation import Conversation
         client = self._make_async_client()
         with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), "sys")
@@ -318,7 +318,7 @@ class TestRunPromptToolsParam:
     @pytest.mark.asyncio
     async def test_custom_subset_passed(self):
         from minion.runner import run_prompt_async
-        from minion.conversation import Conversation
+        from minion.llm.conversation import Conversation
         single_tool = [TOOL_DEFINITIONS[0]]
         client = self._make_async_client()
         with patch("minion.runner.loop.console"):
@@ -329,7 +329,7 @@ class TestRunPromptToolsParam:
     @pytest.mark.asyncio
     async def test_empty_tools_passes_empty_list(self):
         from minion.runner import run_prompt_async
-        from minion.conversation import Conversation
+        from minion.llm.conversation import Conversation
         client = self._make_async_client()
         with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), "sys", tools=[])

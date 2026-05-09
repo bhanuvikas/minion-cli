@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..conversation import Conversation
+    from ..llm.conversation import Conversation
     from ..llm.base import LLMClient
 
 
