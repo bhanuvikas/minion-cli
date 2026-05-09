@@ -56,13 +56,13 @@ class OpenAIClient(LLMClient):
     def complete(self, messages: list[Message], system: str = "") -> LLMResponse:
         response = self._client.chat.completions.create(
             model=self._model,
-            messages=self._build_messages(messages, system),
+            messages=self._build_messages(messages, system),  # type: ignore[arg-type]
             max_tokens=8192,
         )
         return LLMResponse(
             content=response.choices[0].message.content or "",
-            input_tokens=response.usage.prompt_tokens,
-            output_tokens=response.usage.completion_tokens,
+            input_tokens=response.usage.prompt_tokens if response.usage else 0,  # type: ignore[union-attr]
+            output_tokens=response.usage.completion_tokens if response.usage else 0,  # type: ignore[union-attr]
             model=response.model,
         )
 
@@ -79,9 +79,9 @@ class OpenAIClient(LLMClient):
         # OpenAI streaming gives no usage info at all.
         from .base import StreamComplete, TextChunk
         full_system = system + system_dynamic
-        response = self._client.chat.completions.create(
+        response = self._client.chat.completions.create(  # type: ignore[call-overload]
             model=self._model,
-            messages=self._build_messages(messages, full_system),
+            messages=self._build_messages(messages, full_system),  # type: ignore[arg-type]
             max_tokens=8192,
             stream=True,
             stream_options={"include_usage": True},

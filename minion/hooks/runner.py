@@ -48,7 +48,7 @@ class HookRunner:
                     hook_event=event.event_name,
                     tool_name=getattr(event, "tool_name", ""),
                     handler_type="shell" if _is_shell else f"builtin:{type(handler).__name__}",
-                    command=handler._defn.command if _is_shell else "",
+                    command=handler._defn.command if _is_shell else "",  # type: ignore[union-attr]
                     action=result.action,
                     tip=result.tip,
                     blocked=result.action == "block",
@@ -109,7 +109,7 @@ class HookRunner:
                     "detail": defn.command,
                 })
             elif hasattr(h, "hook_describe"):
-                rows.append(h.hook_describe())
+                rows.append(h.hook_describe())  # type: ignore[union-attr]
             else:
                 rows.append({"type": "builtin", "event": "—", "tool": "—",
                              "detail": type(h).__name__})

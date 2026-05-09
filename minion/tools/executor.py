@@ -27,7 +27,12 @@ import sys
 import threading
 import time as _time_exec
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional
+
+if TYPE_CHECKING:
+    from .confirmation import ConfirmationManager
+    from ..hooks.runner import HookRunner
+    from ..mcp.manager import MCPManager
 
 import questionary
 
@@ -169,7 +174,7 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
     ansi = _render_rich(markup, width=76)
 
     from prompt_toolkit.formatted_text import ANSI as _ANSI, to_formatted_text as _to_ft
-    return list(_to_ft(_ANSI(ansi + "\n")))
+    return list(_to_ft(_ANSI(ansi + "\n")))  # type: ignore[return-value]
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
@@ -540,16 +545,16 @@ class ToolExecutor:
         self.dry_run = dry_run
         self._mcp_manager = mcp_manager          # type: MCPManager | None
         self._agent_runner = agent_runner        # type: Callable[[str, str | None], str] | None
-        self._agent_label = agent_label          # type: str | None — shown as prefix on tool calls
+        self._agent_label = agent_label          # type: str | None
         self._remote_task_runner = remote_task_runner  # type: Callable[[str, str], str] | None
-        self._confirm_callback = confirm_callback  # type: Callable[[str], bool] | None
+        self._confirm_callback = confirm_callback  # type: Callable[[str, dict], bool] | None
         self._approval_mode = approval_mode  # "off" | "edits" | "yolo"
         self._permission_store = permission_store
         self._hook_runner = hook_runner          # type: HookRunner | None
         if confirmation_manager is None and confirm_callback is None:
             from .confirmation import ConfirmationManager
             confirmation_manager = ConfirmationManager(permission_store)
-        self._confirmation_manager = confirmation_manager
+        self._confirmation_manager: "ConfirmationManager | None" = confirmation_manager
         # Auto-detect renderer if not provided
         if renderer is None:
             from ..tui import get_tui_app as _detect_tui
@@ -631,6 +636,7 @@ class ToolExecutor:
                 if self._confirm_callback is not None:
                     confirmed = self._confirm_callback(name, inputs)
                 else:
+                    assert self._confirmation_manager is not None
                     confirmed = self._confirmation_manager.confirm_sync(name, inputs, diff_lines=_diff_lns)
                 if not confirmed:
                     result = "User declined tool execution."
@@ -646,6 +652,7 @@ class ToolExecutor:
                     if self._confirm_callback is not None:
                         confirmed = self._confirm_callback(name, {})
                     else:
+                        assert self._confirmation_manager is not None
                         confirmed = self._confirmation_manager.confirm_sync(name, {})
                     if not confirmed:
                         result = "User declined tool execution."
@@ -781,6 +788,7 @@ class ToolExecutor:
                 if self._confirm_callback is not None:
                     confirmed = await asyncio.to_thread(self._confirm_callback, name, inputs)
                 else:
+                    assert self._confirmation_manager is not None
                     confirmed = await self._confirmation_manager.confirm_async(name, inputs, diff_lines=_diff_lns)
                 if not confirmed:
                     result = "User declined tool execution."
@@ -812,6 +820,7 @@ class ToolExecutor:
                     if self._confirm_callback is not None:
                         confirmed = await asyncio.to_thread(self._confirm_callback, name, {})
                     else:
+                        assert self._confirmation_manager is not None
                         confirmed = await self._confirmation_manager.confirm_async(name, {})
                     if not confirmed:
                         result = "User declined tool execution."

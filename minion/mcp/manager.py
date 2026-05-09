@@ -243,13 +243,13 @@ async def _sampling_callback(
     messages: list[Message] = []
     for m in params.messages:
         content = m.content
-        text = content.text if hasattr(content, "text") else str(content)
+        text = content.text if hasattr(content, "text") else str(content)  # type: ignore[union-attr]
         messages.append(Message(role=str(m.role), content=text))
 
     system = params.systemPrompt or ""
 
     try:
-        response = await state.llm_client.async_complete(messages, system=system)
+        response = await state.llm_client.async_complete(messages, system=system)  # type: ignore[union-attr]
         get_tracer().emit("mcp_notification", server_name=state.name,
                           method="sampling/createMessage",
                           model=response.model, tokens=response.output_tokens)
@@ -267,7 +267,7 @@ async def _roots_callback(context: object) -> mcp_types.ListRootsResult:
     """Handle roots/list — return current working directory as the exposed root."""
     cwd = Path.cwd()
     return mcp_types.ListRootsResult(
-        roots=[mcp_types.Root(uri=cwd.as_uri(), name=cwd.name)]
+        roots=[mcp_types.Root(uri=cwd.as_uri(), name=cwd.name)]  # type: ignore[arg-type]
     )
 
 
@@ -284,9 +284,9 @@ async def _elicitation_callback(
     console.print(f"\n[bold yellow][{state.name}] Input required:[/] {message}")
 
     # URL elicitation: open browser, wait for user to confirm
-    if hasattr(params, "url") and params.url:
+    if hasattr(params, "url") and params.url:  # type: ignore[union-attr]
         import webbrowser
-        url = str(params.url)
+        url = str(params.url)  # type: ignore[union-attr]
         console.print(f"[muted]Opening: {url}[/]")
         webbrowser.open(url)
         confirmed = await asyncio.to_thread(
@@ -369,10 +369,10 @@ async def _run_server(state: _ServerState) -> None:
             async with ClientSession(
                 r, w,
                 logging_callback=lambda params: _logging_callback(state, params),
-                message_handler=lambda msg: _message_handler(state, msg),
-                sampling_callback=lambda ctx, params: _sampling_callback(state, ctx, params),
-                list_roots_callback=lambda ctx: _roots_callback(ctx),
-                elicitation_callback=lambda ctx, params: _elicitation_callback(state, ctx, params),
+                message_handler=lambda msg: _message_handler(state, msg),  # type: ignore[arg-type]
+                sampling_callback=lambda ctx, params: _sampling_callback(state, ctx, params),  # type: ignore[arg-type]
+                list_roots_callback=lambda ctx: _roots_callback(ctx),  # type: ignore[arg-type]
+                elicitation_callback=lambda ctx, params: _elicitation_callback(state, ctx, params),  # type: ignore[arg-type]
             ) as session:
                 await session.initialize()
 
@@ -614,7 +614,7 @@ class MCPManager:
             parts_text = []
             for item in result_obj.content:
                 if hasattr(item, "text"):
-                    parts_text.append(item.text)
+                    parts_text.append(item.text)  # type: ignore[union-attr]
                 else:
                     parts_text.append(str(item))
             result = "\n".join(parts_text) if parts_text else "(no output)"
@@ -656,7 +656,7 @@ class MCPManager:
                 parts_text = []
                 for item in result_obj.contents:
                     if hasattr(item, "text"):
-                        parts_text.append(item.text)
+                        parts_text.append(item.text)  # type: ignore[union-attr]
                     else:
                         parts_text.append(str(item))
                 result = "\n".join(parts_text) if parts_text else "(empty resource)"
@@ -688,9 +688,9 @@ class MCPManager:
             result_obj = await state.session.get_prompt(prompt_name, arguments)
             messages = []
             for msg in result_obj.messages:
-                role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
+                role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)  # type: ignore[union-attr]
                 if hasattr(msg.content, "text"):
-                    content = {"type": "text", "text": msg.content.text}
+                    content = {"type": "text", "text": msg.content.text}  # type: ignore[union-attr]
                 else:
                     content = {"type": "text", "text": str(msg.content)}
                 messages.append({"role": role, "content": content})

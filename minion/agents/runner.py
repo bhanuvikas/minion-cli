@@ -16,6 +16,7 @@ import asyncio
 import time
 from typing import Optional
 
+from ..llm.base import ToolDefinition
 from ..llm.conversation import Conversation
 from ..theme import console
 from ..tools.definitions import TOOL_DEFINITIONS
@@ -34,7 +35,7 @@ Report your findings clearly. Do not ask clarifying questions — work with what
 """
 
 
-def _resolve_tools(tool_names: Optional[list[str]]) -> Optional[list[dict]]:
+def _resolve_tools(tool_names: Optional[list[str]]) -> Optional[list[ToolDefinition]]:
     """Translate a role's tool name list to TOOL_DEFINITIONS dicts.
 
     Returns:

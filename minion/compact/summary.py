@@ -57,11 +57,11 @@ def _estimate_tokens(conversation: Conversation) -> int:
             total += len(m.content) // 4
         elif isinstance(m.content, list):
             for block in m.content:
-                if hasattr(block, "text"):
+                if isinstance(block, ContentTextBlock):
                     total += len(block.text) // 4
-                elif hasattr(block, "content"):
+                elif isinstance(block, ContentToolResultBlock):
                     total += len(str(block.content)) // 4
-                elif hasattr(block, "input"):
+                elif isinstance(block, ContentToolUseBlock):
                     total += len(str(block.input)) // 4
     return total
 

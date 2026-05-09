@@ -67,7 +67,7 @@ async def _execute_parallel_agents_async(
     _reg = _get_agent_registry()
     _reg.clear()
     for tb, slot in zip(tool_blocks, slots):
-        _reg.register(tb.id, label=slot.label, task=tb.input.get("task", ""), role=tb.input.get("role", ""))
+        _reg.register(tb.id, label=slot.label or "", task=tb.input.get("task", ""), role=tb.input.get("role", ""))
 
     def _make_registry_cb(tb_id: str, display_cb):
         def _cb(event: str, **data) -> None:
@@ -85,7 +85,7 @@ async def _execute_parallel_agents_async(
         role = tb.input.get("role") or "researcher"
         callback = _callbacks[tb.id]
         set_agent_display_callback(callback)
-        set_active_live_display(display)
+        set_active_live_display(display)  # type: ignore[arg-type]
 
         # Confirmation: ConfirmationManager.confirm_sync() serializes via its own
         # lock and pauses/resumes the display automatically (uses get_active_live_display()).
@@ -97,12 +97,12 @@ async def _execute_parallel_agents_async(
                 _dlns = _dlp(name, inputs) if _ita() else []
                 return _cm.confirm_sync(name, inputs, diff_lines=_dlns)
         else:
-            _confirm_cb = executor._confirm_callback
+            _confirm_cb = executor._confirm_callback  # type: ignore[assignment]
 
         _start = _time.monotonic()
         try:
             get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
-            result = await asyncio.to_thread(executor._agent_runner, task, role, _confirm_cb)
+            result = await asyncio.to_thread(executor._agent_runner, task, role, _confirm_cb)  # type: ignore[arg-type]
             latency_ms = int((_time.monotonic() - _start) * 1000)
             get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
             # Skip empty lines and markdown headers to find the first meaningful line.
@@ -251,10 +251,10 @@ async def _execute_parallel_tools_async(
         _buffers[tb.id] = _buf
         slot_cb = callbacks[tb.id]
         set_agent_display_callback(slot_cb)
-        set_active_live_display(display)
+        set_active_live_display(display)  # type: ignore[arg-type]
         start = _time.monotonic()
         try:
-            result = await executor.execute_async(tb, _slot_renderer=_buf)
+            result = await executor.execute_async(tb, _slot_renderer=_buf)  # type: ignore[arg-type]
             latency_ms = int((_time.monotonic() - start) * 1000)
             first_line = result.split("\n")[0][:100]
             if result.startswith("Error:"):

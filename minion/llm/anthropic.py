@@ -148,6 +148,7 @@ class AnthropicClient(LLMClient):
                     _rate_limit_wait()
                 else:
                     raise
+        raise RuntimeError("unreachable")
 
     def stream(
         self,
@@ -186,19 +187,19 @@ class AnthropicClient(LLMClient):
                         event_type = event.type
 
                         if event_type == "content_block_start":
-                            block = event.content_block
+                            block = event.content_block  # type: ignore[union-attr]
                             if block.type == "tool_use":
                                 current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
                                 # Fire early so the runner can show a spinner before JSON input arrives.
                                 yield ToolAccumulationStart(name=block.name)
 
                         elif event_type == "content_block_delta":
-                            delta = event.delta
-                            if delta.type == "text_delta":
-                                yield TextChunk(text=delta.text)
-                            elif delta.type == "input_json_delta" and current_tool is not None:
+                            delta = event.delta  # type: ignore[union-attr]
+                            if delta.type == "text_delta":  # type: ignore[union-attr]
+                                yield TextChunk(text=delta.text)  # type: ignore[union-attr]
+                            elif delta.type == "input_json_delta" and current_tool is not None:  # type: ignore[union-attr]
                                 # JSON arrives as partial fragments; buffer until content_block_stop.
-                                current_tool["json_buf"] += delta.partial_json
+                                current_tool["json_buf"] += delta.partial_json  # type: ignore[union-attr]
 
                         elif event_type == "content_block_stop":
                             if current_tool is not None:
@@ -224,7 +225,7 @@ class AnthropicClient(LLMClient):
                         cache_creation_tokens=_cache_creation,
                     )
                     yield StreamComplete(
-                        stop_reason=final.stop_reason,
+                        stop_reason=final.stop_reason or "end_turn",
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,
@@ -269,6 +270,7 @@ class AnthropicClient(LLMClient):
                     await _rate_limit_wait_async()
                 else:
                     raise
+        raise RuntimeError("unreachable")
 
     async def async_stream(
         self,
@@ -303,19 +305,19 @@ class AnthropicClient(LLMClient):
                         event_type = event.type
 
                         if event_type == "content_block_start":
-                            block = event.content_block
+                            block = event.content_block  # type: ignore[union-attr]
                             if block.type == "tool_use":
                                 current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
                                 # Fire early so the runner can show a spinner before JSON input arrives.
                                 yield ToolAccumulationStart(name=block.name)
 
                         elif event_type == "content_block_delta":
-                            delta = event.delta
-                            if delta.type == "text_delta":
-                                yield TextChunk(text=delta.text)
-                            elif delta.type == "input_json_delta" and current_tool is not None:
+                            delta = event.delta  # type: ignore[union-attr]
+                            if delta.type == "text_delta":  # type: ignore[union-attr]
+                                yield TextChunk(text=delta.text)  # type: ignore[union-attr]
+                            elif delta.type == "input_json_delta" and current_tool is not None:  # type: ignore[union-attr]
                                 # JSON arrives as partial fragments; buffer until content_block_stop.
-                                current_tool["json_buf"] += delta.partial_json
+                                current_tool["json_buf"] += delta.partial_json  # type: ignore[union-attr]
 
                         elif event_type == "content_block_stop":
                             if current_tool is not None:
@@ -341,7 +343,7 @@ class AnthropicClient(LLMClient):
                         cache_creation_tokens=_cache_creation,
                     )
                     yield StreamComplete(
-                        stop_reason=final.stop_reason,
+                        stop_reason=final.stop_reason or "end_turn",
                         input_tokens=final.usage.input_tokens,
                         output_tokens=final.usage.output_tokens,
                         model=final.model,

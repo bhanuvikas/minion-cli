@@ -27,7 +27,7 @@ class A2AManager:
     def __init__(
         self,
         clients: dict[str, A2AClient],
-        cards: dict[str, Optional[AgentCard]] = None,
+        cards: Optional[dict[str, Optional[AgentCard]]] = None,
     ) -> None:
         self._clients = clients
         self._cards: dict[str, Optional[AgentCard]] = cards or {}

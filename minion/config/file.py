@@ -221,8 +221,8 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
 
     return MinionConfig(
         llm=LLMConfig(
-            provider=_str(llm_raw.get("provider"), None) if "provider" in llm_raw else None,
-            model=_str(llm_raw.get("model"), None) if "model" in llm_raw else None,
+            provider=_str(llm_raw.get("provider"), None) if "provider" in llm_raw else None,  # type: ignore[arg-type]
+            model=_str(llm_raw.get("model"), None) if "model" in llm_raw else None,  # type: ignore[arg-type]
         ),
         agent=AgentConfig(
             reflect_depth=_int(agent_raw.get("reflect_depth"), 0),

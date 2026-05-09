@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from .a2a.manager import A2AManager
     from .mcp.manager import MCPManager
     from .skills.registry import SkillRegistry
 

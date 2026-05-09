@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ..llm.conversation import Conversation
-from ..llm.base import LLMClient
+from ..llm.base import LLMClient, ToolDefinition
 from ..llm.reflection import ReflectionConfig
 from ..runner import run_prompt
 from ..theme import console
@@ -115,7 +115,7 @@ def execute_skill(
     get_tracer().emit("skill_complete", skill_name=skill.name, arg=arg)
 
 
-def _resolve_tools(tool_names: Optional[list[str]]) -> Optional[list[dict]]:
+def _resolve_tools(tool_names: Optional[list[str]]) -> Optional[list[ToolDefinition]]:
     """Translate a skill's tool name list to TOOL_DEFINITIONS dicts.
 
     Returns:

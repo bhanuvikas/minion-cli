@@ -438,7 +438,7 @@ class MarkdownStreamer:
             vertical_overflow="visible",
             transient=False,
         )
-        self._live.__enter__()
+        self._live.__enter__()  # type: ignore[union-attr]
         self._entered = True
         return self
 

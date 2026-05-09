@@ -376,7 +376,7 @@ class ConversationBuffer:
         # expects, shifting the input-buffer cursor up into that gap.
         visible = "\n".join(text.split("\n")[-12:])
         try:
-            frags.extend(ANSI(_r.render_markdown(visible, width).rstrip("\n")).__pt_formatted_text__())
+            frags.extend(ANSI(_r.render_markdown(visible, width).rstrip("\n")).__pt_formatted_text__())  # type: ignore[arg-type]
         except Exception:
             frags.append(("", visible))
 

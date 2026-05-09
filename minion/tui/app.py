@@ -98,7 +98,7 @@ class MinionApp:
         # single run_in_terminal() call so the TUI erases and redraws only
         # once per batch instead of once per individual emit.
         self._pending_output: list[str] = []
-        self._pending_flush: Optional[object] = None  # asyncio.TimerHandle
+        self._pending_flush: Optional[asyncio.TimerHandle] = None
 
         # The Application — built lazily so the event loop is available
         self._app: Optional[Application] = None

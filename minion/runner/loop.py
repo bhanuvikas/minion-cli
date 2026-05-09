@@ -25,7 +25,7 @@ from typing import Optional
 
 from ..llm.conversation import Conversation
 from ..llm.base import (
-    ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError,
+    ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock, InputTokenRateLimitError,
     LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart,
     ToolDefinition, ToolUseBlock,
 )
@@ -70,7 +70,7 @@ def _complete_cancelled_tools(tool_blocks: list[ToolUseBlock], conversation: Con
             break
         if isinstance(msg.content, list):
             for block in msg.content:
-                if hasattr(block, "tool_use_id"):
+                if isinstance(block, ContentToolResultBlock):
                     completed_ids.add(block.tool_use_id)
     for tb in tool_blocks:
         if tb.id not in completed_ids:

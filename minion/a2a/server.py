@@ -357,7 +357,7 @@ class _A2AHandler(BaseHTTPRequestHandler):
 
     @classmethod
     def _run_task(cls, task_id: str, message: str, done_event: threading.Event,
-                  confirm_cb: Callable[[str], bool],
+                  confirm_cb: Callable[[str, str], bool],
                   context_id: Optional[str] = None) -> None:
         """Execute the agent for a task and update task state when done.
 
