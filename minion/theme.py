@@ -542,7 +542,7 @@ def print_critique(score: int, response_type: str, critique_text: str) -> None:
 
     Only called when verbose=True.
     """
-    from .reflection import SCORE_THRESHOLD
+    from .llm.reflection import SCORE_THRESHOLD
     from rich.markup import escape
 
     if score >= SCORE_THRESHOLD:
