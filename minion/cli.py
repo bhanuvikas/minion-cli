@@ -17,8 +17,9 @@ from .llm import get_client
 from .repl import run_repl, run_repl_async
 from .theme import YELLOW, console, print_error
 
-load_dotenv()  # project-level .env (cwd) — takes precedence
-load_dotenv(Path.home() / ".minion" / ".env")  # user-level fallback
+load_dotenv(Path.home() / ".minion" / ".env")             # user-level defaults
+load_dotenv(Path.cwd() / ".env", override=True)           # project root .env (backward compat)
+load_dotenv(Path.cwd() / ".minion" / ".env", override=True)  # project minion config (highest priority)
 
 from .config import load_config as _load_config  # noqa: E402 — after dotenv
 
@@ -34,7 +35,7 @@ app = typer.Typer(
 
 # Subcommand names that typer registers — used by _entry() to distinguish
 # "minion doctor" (subcommand) from "minion 'fix the bug'" (one-shot prompt).
-_KNOWN_SUBCOMMANDS = frozenset({"doctor", "skills", "mcp", "agent", "a2a", "setup"})
+_KNOWN_SUBCOMMANDS = frozenset({"doctor", "skills", "mcp", "agents", "remote", "setup", "config", "model", "memory"})
 # Options that consume the next token as their value.
 _OPTS_WITH_VALUE = frozenset({
     "-p", "--provider",
@@ -203,10 +204,10 @@ def _list_mcp() -> None:
     manager.shutdown()
 
 
-# ─── `minion agent` subcommand ────────────────────────────────────────────────
+# ─── `minion agents` subcommand ───────────────────────────────────────────────
 
-_agent_app = typer.Typer(name="agent", help="Manage and run agent roles.", add_completion=False)
-app.add_typer(_agent_app, name="agent")
+_agent_app = typer.Typer(name="agents", help="Manage and run agent roles.", add_completion=False)
+app.add_typer(_agent_app, name="agents")
 
 
 @_agent_app.callback(invoke_without_command=True)
@@ -259,10 +260,10 @@ def _list_agents() -> None:
         )
 
 
-# ─── `minion a2a` subcommand ──────────────────────────────────────────────────
+# ─── `minion remote` subcommand ───────────────────────────────────────────────
 
-_a2a_app = typer.Typer(name="a2a", help="A2A agent protocol — serve and connect to remote agents.", add_completion=False)
-app.add_typer(_a2a_app, name="a2a")
+_a2a_app = typer.Typer(name="remote", help="Remote agents — list configured agents or serve minion as one.", add_completion=False)
+app.add_typer(_a2a_app, name="remote")
 
 
 @_a2a_app.callback(invoke_without_command=True)
@@ -340,6 +341,132 @@ def _list_a2a() -> None:
         )
         if entry["card_description"]:
             console.print(f"  {'':16}  [muted]{entry['card_description']}[/]")
+
+
+# ─── `minion config` subcommand ───────────────────────────────────────────────
+
+@app.command("config")
+def config_cmd() -> None:
+    """Show effective configuration (config.toml + env + CLI flags)."""
+    from .config import format_config, load_config
+    cfg = load_config(cwd=Path.cwd())
+    console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + env):[/]\n")
+    console.print(format_config(cfg))
+    console.print()
+
+
+# ─── `minion model` subcommand ────────────────────────────────────────────────
+
+@app.command("model")
+def model_cmd(
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+    model: Optional[str] = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Interactively configure provider, model ID, and API keys."""
+    from .config import run_model_config
+    try:
+        client = get_client(provider, model)
+    except ValueError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1)
+    run_model_config(client)
+
+
+# ─── `minion memory` subcommand ───────────────────────────────────────────────
+
+_memory_app = typer.Typer(name="memory", help="Browse and manage persistent memory.", add_completion=False)
+app.add_typer(_memory_app, name="memory")
+
+
+@_memory_app.callback(invoke_without_command=True)
+def _memory_main(ctx: typer.Context) -> None:
+    """List all memories. Run without subcommand to show all stored memories."""
+    if ctx.invoked_subcommand is None:
+        _memory_recall(query=None)
+
+
+@_memory_app.command("recall")
+def memory_recall(
+    query: Optional[str] = typer.Argument(None, help="Optional search query"),
+) -> None:
+    """Show stored memories, optionally filtered by a search query."""
+    _memory_recall(query)
+
+
+@_memory_app.command("add")
+def memory_add(
+    text: str = typer.Argument(..., help="Text to remember"),
+    global_scope: bool = typer.Option(False, "--global", "-g", help="Store globally (not project-scoped)"),
+    category: str = typer.Option("project", "--category", "-c",
+                                  help="Category: identity, preference, project, event"),
+) -> None:
+    """Store a new memory."""
+    import uuid
+    from datetime import datetime, timezone
+    from .memory.config import MemoryConfig
+    from .memory.record import MemoryRecord
+    from .memory.store import MemoryStore
+
+    if category not in ("identity", "preference", "project", "event"):
+        print_error("--category must be one of: identity, preference, project, event")
+        raise typer.Exit(code=1)
+
+    scope = "global" if global_scope else "project"
+    project_path: Optional[str] = None if global_scope else str(Path.cwd())
+    store = MemoryStore(config=MemoryConfig(), project_cwd=Path.cwd())
+    record = MemoryRecord(
+        id=str(uuid.uuid4()),
+        content=text.strip("\"'"),
+        type="semantic",
+        scope=scope,
+        project_path=project_path,
+        tags=[],
+        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        superseded_by=None,
+        category=category,
+    )
+    store.store(record)
+    console.print(f"[bold {YELLOW}]Remembered[/] [muted]({scope}·{category}):[/] {text}")
+
+
+@_memory_app.command("forget")
+def memory_forget(
+    query: str = typer.Argument(..., help="Memory ID (first 8 chars) or substring of the content"),
+) -> None:
+    """Delete memories matching an ID or content substring."""
+    from .memory.config import MemoryConfig
+    from .memory.store import MemoryStore
+
+    store = MemoryStore(config=MemoryConfig(), project_cwd=Path.cwd())
+    count = store.delete(query.strip("\"'"))
+    if count:
+        console.print(f"[bold {YELLOW}]Forgotten.[/] [muted]({count} memory removed)[/]")
+    else:
+        console.print("[muted]No matching memory found.[/]")
+
+
+def _memory_recall(query: Optional[str]) -> None:
+    from .memory.config import MemoryConfig
+    from .memory.store import MemoryStore
+
+    store = MemoryStore(config=MemoryConfig(), project_cwd=Path.cwd())
+    memories = store.list_all(query=query or None)
+    if not memories:
+        console.print("[muted]No memories stored yet.[/]")
+        return
+    for m in memories:
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(m.created_at)
+            delta = datetime.now(timezone.utc) - dt
+            days = delta.days
+            age = f"{days}d ago" if days > 0 else "today"
+        except Exception:
+            age = m.created_at
+        console.print(
+            f"  [{YELLOW}]{m.id[:8]}[/] [{m.category}·{m.scope}] "
+            f"{m.content} [muted]({age})[/]"
+        )
 
 
 # ─── First-run detection ──────────────────────────────────────────────────────

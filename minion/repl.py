@@ -101,7 +101,7 @@ REPL_COMMANDS = {
     "/markdown": "Markdown rendering: /markdown | /markdown on | /markdown off",
     "/agents":  "Subagents: /agents | /agents on | /agents off",
     "/agent":   "Run a role directly: /agent <role> <task>",
-    "/a2a":     "Remote agents: /a2a | /a2a list | /a2a run <agent> <task>",
+    "/remote":  "Remote agents: /remote | /remote list | /remote run <agent> <task>",
     "/config":  "Show effective configuration (config.toml + CLI flags)",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
@@ -116,7 +116,7 @@ class _SlashCompleter(Completer):
     When registries are provided, also completes second-argument values for:
         /agent <role>       — role names from agent_registry
         /skill <name>       — skill names from skill_registry
-        /a2a run <agent>    — agent names from a2a_manager
+        /remote run <agent> — agent names from a2a_manager
     """
 
     def __init__(self, agent_registry=None, skill_registry=None, a2a_manager=None) -> None:
@@ -130,7 +130,7 @@ class _SlashCompleter(Completer):
             return
 
         parts = text.split()
-        # Second-arg completion: "/agent <partial>" or "/skill <partial>" or "/a2a run <partial>"
+        # Second-arg completion: "/agent <partial>" or "/skill <partial>" or "/remote run <partial>"
         if len(parts) >= 2 or (len(parts) == 1 and text.endswith(" ")):
             cmd = parts[0].lower()
             prefix = parts[1] if len(parts) >= 2 else ""
@@ -147,8 +147,8 @@ class _SlashCompleter(Completer):
                         yield Completion(name[len(prefix):], display=f"/{name}")
                 return
 
-            if cmd == "/a2a" and len(parts) >= 2 and parts[1] == "run":
-                # "/a2a run <partial>"
+            if cmd == "/remote" and len(parts) >= 2 and parts[1] == "run":
+                # "/remote run <partial>"
                 agent_prefix = parts[2] if len(parts) >= 3 else ""
                 if self._a2a_manager is not None:
                     for name in sorted(self._a2a_manager.agent_names()):
@@ -1038,25 +1038,25 @@ def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
     run_agent(task, role_name, agent_registry, client, parent_depth=0)
 
 
-# ─── /a2a command handler ────────────────────────────────────────────────────
+# ─── /remote command handler ──────────────────────────────────────────────────
 
-def _handle_a2a_command(raw: str, a2a_manager: "A2AManager | None") -> None:
-    """Handle the /a2a slash command family.
+def _handle_remote_command(raw: str, a2a_manager: "A2AManager | None") -> None:
+    """Handle the /remote slash command family.
 
     Subcommands:
-        /a2a [list]          — list configured remote agents + their capabilities
-        /a2a run <agent> <task> — send a task to a named remote agent directly
+        /remote [list]          — list configured remote agents + their capabilities
+        /remote run <agent> <task> — send a task to a named remote agent directly
     """
     from .theme import BLUE, YELLOW, console, print_error
 
     parts = raw.strip().split(None, 3)
-    # parts[0] = "/a2a", parts[1] = subcommand (optional), rest = args
+    # parts[0] = "/remote", parts[1] = subcommand (optional), rest = args
     sub = parts[1].lower() if len(parts) > 1 else ""
 
     if sub in ("", "list", "status"):
         if a2a_manager is None or not a2a_manager.has_agents():
             console.print(
-                "[muted]No remote A2A agents configured. "
+                "[muted]No remote agents configured. "
                 "Add agents to ~/.minion/a2a.json or .minion/a2a.json[/]"
             )
             return
@@ -1072,12 +1072,12 @@ def _handle_a2a_command(raw: str, a2a_manager: "A2AManager | None") -> None:
         return
 
     if sub == "run":
-        # /a2a run <agent> <task>
+        # /remote run <agent> <task>
         if len(parts) < 4:
             if len(parts) == 3:
-                print_error(f"Usage: /a2a run <agent> <task>  (missing task for agent '{parts[2]}')")
+                print_error(f"Usage: /remote run <agent> <task>  (missing task for agent '{parts[2]}')")
             else:
-                print_error("Usage: /a2a run <agent> <task>")
+                print_error("Usage: /remote run <agent> <task>")
             return
         agent_name = parts[2]
         task = parts[3].strip()
@@ -1085,14 +1085,14 @@ def _handle_a2a_command(raw: str, a2a_manager: "A2AManager | None") -> None:
             print_error("Task cannot be empty.")
             return
         if a2a_manager is None or not a2a_manager.has_agents():
-            print_error("No remote A2A agents configured.")
+            print_error("No remote agents configured.")
             return
         with console.status(f"[muted]  ⚙  [{agent_name}] running...[/]", spinner="dots"):
             result = a2a_manager.send_task(agent_name, task)
         console.print(result)
         return
 
-    print_error(f"Unknown /a2a subcommand '{sub}'. Usage: /a2a [list | run <agent> <task>]")
+    print_error(f"Unknown /remote subcommand '{sub}'. Usage: /remote [list | run <agent> <task>]")
 
 
 # ─── /mcp command handler ────────────────────────────────────────────────────
@@ -1301,10 +1301,19 @@ async def _run_repl_tui(
     dry_run, _file_cfg,
     _hook_session_id: str,
     project_cwd,
-) -> None:
-    """TUI REPL loop — called when stdout is a TTY and MINION_NO_TUI is unset."""
+) -> bool:
+    """TUI REPL loop — called when stdout is a TTY and MINION_NO_TUI is unset.
+
+    Returns True if the loop exited to run /model (caller should restart the TUI
+    with a refreshed client), False for a normal user-initiated quit.
+    """
     from .tui import set_tui_app
     _renderer = TuiRenderer(tui_app)
+
+    # /model is handled after TUI exit (see bottom of this function) because
+    # questionary spawns a nested prompt_toolkit app that sends its own CPR
+    # escape sequences, creating Futures that conflict with the TUI's main loop.
+    _post_exit_model_config: list[bool] = [False]
 
     # on_submit is an async callback registered with MinionApp.run_async().
     # The TUI calls it on each Enter keystroke; it runs the full prompt pipeline
@@ -1351,8 +1360,8 @@ async def _run_repl_tui(
             tui_app.set_thinking(False)
             return
 
-        if user_input.startswith("/a2a"):
-            _handle_a2a_command(user_input, a2a_manager)
+        if user_input.startswith("/remote"):
+            _handle_remote_command(user_input, a2a_manager)
             tui_app.set_thinking(False)
             return
 
@@ -1360,6 +1369,14 @@ async def _run_repl_tui(
         # suspended and the thread has no running event loop (questionary calls
         # asyncio.run() internally, which fails if a loop is already running).
         # Console output is captured via _CaptureBuf and replayed into the TUI zone.
+        if user_input.startswith("/") and user_input.strip() == "/model":
+            # /model can't run inside the TUI: questionary's nested prompt_toolkit
+            # app sends its own CPR sequences whose Futures conflict with the TUI
+            # main loop. Exit the TUI first; model config runs after run_async() returns.
+            _post_exit_model_config[0] = True
+            await tui_app.flush_and_exit()
+            return
+
         if user_input.startswith("/"):
             from prompt_toolkit.application import run_in_terminal
             _buf = _CaptureBuf()
@@ -1474,15 +1491,23 @@ async def _run_repl_tui(
         tui_app.invalidate()
 
     async def on_quit() -> None:
-        from .hooks.events import SessionEndEvent
-        await hook_runner.fire(SessionEndEvent(
-            session_id=_hook_session_id, cwd=project_cwd
-        ))
-        mcp_manager.shutdown()
-        get_tracer().finalize()
+        if not _post_exit_model_config[0]:
+            # Normal quit: tear down services for good.
+            from .hooks.events import SessionEndEvent
+            await hook_runner.fire(SessionEndEvent(
+                session_id=_hook_session_id, cwd=project_cwd
+            ))
+            mcp_manager.shutdown()
+            get_tracer().finalize()
         set_tui_app(None)
 
     await tui_app.run_async(on_submit=on_submit, on_quit=on_quit)
+
+    if _post_exit_model_config[0]:
+        # Run in a thread so questionary's asyncio.run() sees no running event loop.
+        await asyncio.to_thread(run_model_config, client)
+
+    return _post_exit_model_config[0]
 
 
 # ─── Async REPL entry point (Phase 12) ───────────────────────────────────────
@@ -1632,40 +1657,54 @@ async def run_repl_async(
     )
     if _use_tui:
         from .tui import MinionApp, set_tui_app
-        tui_app = MinionApp(
-            model_name=client.model_id,
-            completer=_SlashCompleter(
-                agent_registry=agent_registry,
-                skill_registry=skill_registry,
-                a2a_manager=a2a_manager,
-            ),
-        )
         from minion import __version__ as _minion_ver
-        tui_app.update_session(
-            model=client.model_id,
-            provider=getattr(client, "provider_name", ""),
-            project=project_context.label if project_context and project_context.label else "",
-            cwd=str(project_cwd),
-            memory=state.memory_enabled,
-            agents=len(agent_registry) if agent_registry else 0,
-            version=_minion_ver,
-        )
         loop = asyncio.get_event_loop()
-        confirmation_manager.set_tui(tui_app, loop)
-        set_tui_app(tui_app)
-        await _run_repl_tui(
-            tui_app=tui_app,
-            client=client, conversation=conversation, state=state,
-            project_context=project_context,
-            memory_store=memory_store, permission_store=permission_store,
-            hook_runner=hook_runner, agent_registry=agent_registry,
-            skill_registry=skill_registry, a2a_manager=a2a_manager,
-            mcp_manager=mcp_manager, base_system_prompt=base_system_prompt,
-            confirmation_manager=confirmation_manager,
-            dry_run=dry_run, _file_cfg=_file_cfg,
-            _hook_session_id=_hook_session_id,
-            project_cwd=project_cwd,
-        )
+
+        while True:
+            tui_app = MinionApp(
+                model_name=client.model_id,
+                completer=_SlashCompleter(
+                    agent_registry=agent_registry,
+                    skill_registry=skill_registry,
+                    a2a_manager=a2a_manager,
+                ),
+            )
+            tui_app.update_session(
+                model=client.model_id,
+                provider=getattr(client, "provider_name", ""),
+                project=project_context.label if project_context and project_context.label else "",
+                cwd=str(project_cwd),
+                memory=state.memory_enabled,
+                agents=len(agent_registry) if agent_registry else 0,
+                version=_minion_ver,
+            )
+            confirmation_manager.set_tui(tui_app, loop)
+            set_tui_app(tui_app)
+            model_config_ran = await _run_repl_tui(
+                tui_app=tui_app,
+                client=client, conversation=conversation, state=state,
+                project_context=project_context,
+                memory_store=memory_store, permission_store=permission_store,
+                hook_runner=hook_runner, agent_registry=agent_registry,
+                skill_registry=skill_registry, a2a_manager=a2a_manager,
+                mcp_manager=mcp_manager, base_system_prompt=base_system_prompt,
+                confirmation_manager=confirmation_manager,
+                dry_run=dry_run, _file_cfg=_file_cfg,
+                _hook_session_id=_hook_session_id,
+                project_cwd=project_cwd,
+            )
+            if not model_config_ran:
+                break
+            # Reload .env and recreate client so the new model takes effect in
+            # the restarted TUI without requiring a full process restart.
+            from dotenv import load_dotenv
+            load_dotenv(Path.home() / ".minion" / ".env", override=True)
+            load_dotenv(Path.cwd() / ".env", override=True)
+            try:
+                from .llm.factory import get_client as _get_client
+                client = _get_client()
+            except ValueError:
+                pass  # keep old client if new config is invalid
         return
 
     # ── Non-TUI path: existing PromptSession loop ─────────────────────────────
@@ -1735,8 +1774,8 @@ async def run_repl_async(
             console.print()
             continue
 
-        if user_input.startswith("/a2a"):
-            _handle_a2a_command(user_input, a2a_manager)
+        if user_input.startswith("/remote"):
+            _handle_remote_command(user_input, a2a_manager)
             console.print()
             continue
 

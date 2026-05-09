@@ -51,7 +51,7 @@ class MemoryStore:
         self,
         config: MemoryConfig,
         project_cwd: Path,
-        client: LLMClient,
+        client: Optional[LLMClient] = None,
         embedder: Optional[Embedder] = None,
     ) -> None:
         self._config = config
@@ -149,6 +149,7 @@ class MemoryStore:
             get_tracer().emit("memory_skip", reason="trigger_not_met")
             return []
 
+        assert self._client is not None, "LLM client required for memory extraction"
         project_path = str(self._project_dir.parent.parent)  # <cwd>
         existing = [r for r in self._all_records() if r.superseded_by is None]
         extracted = self._extractor.extract(prompt, response, self._client, project_path, existing)
@@ -377,6 +378,7 @@ class MemoryStore:
                 if sim < self._config.consolidation_threshold:
                     continue
 
+                assert self._client is not None, "LLM client required for memory consolidation"
                 result = self._extractor.consolidate(a, b, self._client)
                 if result.action == "supersede_a":
                     self._mark_superseded(a, b.id)

@@ -6,7 +6,6 @@ files manually.
 """
 
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -42,15 +41,11 @@ PROVIDERS = list(PROVIDER_KEY_MAP.keys())
 # ─── .env file read / write ───────────────────────────────────────────────────
 
 def _find_env_file() -> Path:
-    """Return the path to the .env file, creating it from .env.example if absent."""
-    env_path = Path(".env")
+    """Return the project-level minion .env path (.minion/.env), creating it if absent."""
+    env_path = Path(".minion") / ".env"
+    env_path.parent.mkdir(exist_ok=True)
     if not env_path.exists():
-        example = Path(".env.example")
-        if example.exists():
-            shutil.copy(example, env_path)
-            console.print("[muted].env created from .env.example[/]")
-        else:
-            env_path.touch()
+        env_path.touch()
     return env_path
 
 

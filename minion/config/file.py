@@ -256,10 +256,13 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
 
 def format_config(cfg: MinionConfig) -> str:
     """Return a human-readable summary of the effective config."""
+    import os as _os
+    env_provider = _os.getenv("MINION_PROVIDER") or cfg.llm.provider
+    env_model = _os.getenv("MINION_MODEL") or cfg.llm.model
     lines = [
         "[llm]",
-        f"  provider = {cfg.llm.provider or '(auto)'}",
-        f"  model    = {cfg.llm.model or '(provider default)'}",
+        f"  provider = {env_provider or '(auto)'}",
+        f"  model    = {env_model or '(provider default)'}",
         "",
         "[agent]",
         f"  reflect_depth      = {cfg.agent.reflect_depth}",
