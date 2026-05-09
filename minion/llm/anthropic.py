@@ -17,13 +17,23 @@ DEFAULT_MODEL = "claude-sonnet-4-5"
 
 _MAX_RETRY = 3
 _RETRY_WAIT_SECONDS = 60
+_RATE_LIMIT_STATUS = "[yellow]⚠ Rate limited — retrying in {}s...[/]"
+
+
+def _is_input_token_rate_limit(error: anthropic.RateLimitError) -> bool:
+    """Return True when the 429 is caused by input-token-per-minute exhaustion.
+
+    These errors cannot be resolved by waiting — the context is the same size
+    after 60 s. The caller should compact the conversation instead of retrying.
+    """
+    return "input tokens" in str(error).lower()
 
 
 def _rate_limit_wait() -> None:
     from ..theme import console as _console
     with _console.status("", spinner="dots") as status:
         for remaining in range(_RETRY_WAIT_SECONDS, 0, -1):
-            status.update(f"[yellow]⚠ Rate limited — retrying in {remaining}s...[/]")
+            status.update(_RATE_LIMIT_STATUS.format(remaining))
             time.sleep(1)
 
 
@@ -31,7 +41,7 @@ async def _rate_limit_wait_async() -> None:
     from ..theme import console as _console
     with _console.status("", spinner="dots") as status:
         for remaining in range(_RETRY_WAIT_SECONDS, 0, -1):
-            status.update(f"[yellow]⚠ Rate limited — retrying in {remaining}s...[/]")
+            status.update(_RATE_LIMIT_STATUS.format(remaining))
             await asyncio.sleep(1)
 
 # Per-model output token ceilings (Anthropic API limits).
@@ -117,7 +127,7 @@ class AnthropicClient(LLMClient):
                     model=response.model,
                 )
             except anthropic.RateLimitError as e:
-                if "input tokens" in str(e).lower():
+                if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     _rate_limit_wait()
@@ -203,7 +213,7 @@ class AnthropicClient(LLMClient):
                     )
                 return  # success
             except anthropic.RateLimitError as e:
-                if "input tokens" in str(e).lower():
+                if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     _rate_limit_wait()
@@ -233,7 +243,7 @@ class AnthropicClient(LLMClient):
                     model=response.model,
                 )
             except anthropic.RateLimitError as e:
-                if "input tokens" in str(e).lower():
+                if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     await _rate_limit_wait_async()
@@ -317,7 +327,7 @@ class AnthropicClient(LLMClient):
                     )
                 return  # success
             except anthropic.RateLimitError as e:
-                if "input tokens" in str(e).lower():
+                if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e
                 if attempt < _MAX_RETRY - 1:
                     await _rate_limit_wait_async()
