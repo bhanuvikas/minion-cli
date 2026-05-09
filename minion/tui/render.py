@@ -132,3 +132,77 @@ def system_message(rich_markup: str, width: int = 120) -> str:
         return render_rich(rich_markup, width)
     except Exception:
         return rich_markup
+
+
+# ── Inspector transcript rendering ────────────────────────────────────────────
+
+def render_message_blocks(
+    messages: list[dict],
+    label: str,
+    *,
+    expanded: bool = False,
+) -> list[list[tuple[str, str]]]:
+    """Render a conversation message list into prompt_toolkit fragment rows.
+
+    Each row is a list of (style, text) tuples; the caller pads and box-wraps.
+    Handles three message shapes:
+      - role=user   / type=text   → minion prompt prefix + text
+      - role=asst   / type=blocks → text blocks + tool_use blocks (⚙ icon)
+      - role=user   / type=blocks → tool_result blocks (✓ icon)
+    """
+    from ..display_utils import _trunc, format_tool_args
+    from ..theme import _TOOL_NAME_COLORS
+
+    lines: list[list[tuple[str, str]]] = []
+
+    def _line(*frags: tuple[str, str]) -> None:
+        lines.append(list(frags))
+
+    for msg in messages:
+        role = msg.get("role", "")
+
+        if role == "user" and msg.get("type") == "text":
+            text  = msg["text"].replace("\n", " ").strip()
+            limit = 400 if expanded else 90
+            _line(
+                ("class:minion-prefix", " minion ›  "),
+                ("class:conv-text",    _trunc(text, limit)),
+            )
+            _line(("", ""))
+
+        elif role == "assistant" and msg.get("type") == "blocks":
+            for blk in msg.get("blocks", []):
+                if blk["type"] == "text":
+                    txt = blk.get("text", "").replace("\n", " ").strip()
+                    if txt:
+                        limit = 400 if expanded else 93
+                        _line(
+                            ("class:inspector-agent", f" {label} ›  "),
+                            ("",                      _trunc(txt, limit)),
+                        )
+                        _line(("", ""))
+                elif blk["type"] == "tool_use":
+                    name       = blk.get("name", "")
+                    args       = format_tool_args(blk.get("input", {}), expanded=expanded)
+                    name_color = _TOOL_NAME_COLORS.get(name, "")
+                    name_style = f"bold {name_color}".strip()
+                    _line(
+                        ("class:slot-detail", " "),
+                        ("class:tool-icon",   "⚙  "),
+                        (name_style,          name),
+                        ("class:tool-detail", f"  {args}" if args else ""),
+                    )
+
+        elif role == "user" and msg.get("type") == "blocks":
+            for blk in msg.get("blocks", []):
+                if blk["type"] == "tool_result":
+                    content = blk.get("content", "").replace("\n", " ").strip()
+                    limit   = 400 if expanded else 87
+                    _line(
+                        ("class:slot-detail", "    "),
+                        ("class:tool-ok",     "✓  "),
+                        ("class:slot-detail", _trunc(content, limit)),
+                    )
+            _line(("", ""))
+
+    return lines

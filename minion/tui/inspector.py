@@ -19,8 +19,7 @@ from __future__ import annotations
 from prompt_toolkit.formatted_text import FormattedText
 
 from .agent_registry import SubagentRegistry, SubagentState
-from ..display_utils import _trunc, format_tool_args
-from ..theme import _TOOL_NAME_COLORS
+from .render import render_message_blocks
 
 _STATUS_ICON = {"pending": "○", "running": "●", "complete": "✓", "error": "✗"}
 _STATUS_STYLE = {
@@ -208,69 +207,19 @@ class InspectorPanel:
     def _render_transcript(
         self, state: SubagentState
     ) -> list[list[tuple[str, str]]]:
-        lines: list[list[tuple[str, str]]] = []
-
-        def _line(*frags: tuple[str, str]) -> None:
-            lines.append(list(frags))
-
         if not state.messages:
             if state.status in ("pending", "running"):
-                _line(("class:slot-running", " running…"))
-            elif state.status == "error":
-                _line(("class:slot-error", f" Error: {state.error}"))
-            return lines
+                return [[("class:slot-running", " running…")]]
+            if state.status == "error":
+                return [[("class:slot-error", f" Error: {state.error}")]]
+            return []
 
-        label = state.label  # e.g. "coder"
-
-        for msg in state.messages:
-            role = msg.get("role", "")
-
-            if role == "user" and msg.get("type") == "text":
-                text  = msg["text"].replace("\n", " ").strip()
-                limit = 400 if self._expanded else 90
-                _line(
-                    ("class:minion-prefix", " minion ›  "),
-                    ("class:conv-text",    _trunc(text, limit)),
-                )
-                _line(("", ""))
-
-            elif role == "assistant" and msg.get("type") == "blocks":
-                for blk in msg.get("blocks", []):
-                    if blk["type"] == "text":
-                        txt = blk.get("text", "").replace("\n", " ").strip()
-                        if txt:
-                            limit = 400 if self._expanded else 93
-                            _line(
-                                ("class:inspector-agent", f" {label} ›  "),
-                                ("",                      _trunc(txt, limit)),
-                            )
-                            _line(("", ""))  # blank after text, before tools
-                    elif blk["type"] == "tool_use":
-                        name       = blk.get("name", "")
-                        args       = format_tool_args(blk.get("input", {}), expanded=self._expanded)
-                        name_color = _TOOL_NAME_COLORS.get(name, "")
-                        name_style = f"bold {name_color}".strip()
-                        _line(
-                            ("class:slot-detail", " "),
-                            ("class:tool-icon",   "⚙  "),
-                            (name_style,          name),
-                            ("class:tool-detail", f"  {args}" if args else ""),
-                        )
-
-            elif role == "user" and msg.get("type") == "blocks":
-                for blk in msg.get("blocks", []):
-                    if blk["type"] == "tool_result":
-                        content = blk.get("content", "").replace("\n", " ").strip()
-                        limit   = 400 if self._expanded else 87
-                        _line(
-                            ("class:slot-detail", "    "),
-                            ("class:tool-ok",     "✓  "),
-                            ("class:slot-detail", _trunc(content, limit)),
-                        )
-                _line(("", ""))  # blank after results, before next coder response
+        lines = render_message_blocks(
+            state.messages, state.label, expanded=self._expanded
+        )
 
         if state.status == "error" and state.error:
-            _line(("class:slot-error", f" ✗  Error: {state.error}"))
+            lines.append([("class:slot-error", f" ✗  Error: {state.error}")])
 
         return lines
 
