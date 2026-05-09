@@ -33,6 +33,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.client.stdio import stdio_client
 import mcp.types as mcp_types
 
+from ..llm.base import ToolDefinition
 from ..theme import console
 from ..tracing import get_tracer
 from .config import MCPServerConfig, load_mcp_config
@@ -531,16 +532,16 @@ class MCPManager:
     def has_prompts(self) -> bool:
         return any(s.prompts for s in self._states.values())
 
-    def get_tool_definitions(self) -> list[dict]:
-        """Return merged list of Anthropic-format tool definitions from all servers."""
-        defs: list[dict] = []
+    def get_tool_definitions(self) -> list[ToolDefinition]:
+        """Return merged list of tool definitions from all MCP servers."""
+        defs: list[ToolDefinition] = []
         for name, state in self._states.items():
             for t in state.tools:
-                defs.append({
-                    "name": f"{name}__{t.name}",
-                    "description": t.description,
-                    "input_schema": t.input_schema or {"type": "object", "properties": {}},
-                })
+                defs.append(ToolDefinition(
+                    name=f"{name}__{t.name}",
+                    description=t.description,
+                    parameters=t.input_schema or {"type": "object", "properties": {}},
+                ))
         return defs
 
     def is_dangerous(self, namespaced_name: str) -> bool:

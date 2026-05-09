@@ -34,10 +34,10 @@ def _make_tool_use_block(name: str, tool_id: str = "t1", inputs: dict | None = N
     return ToolUseBlock(id=tool_id, name=name, input=inputs or {})
 
 
-def _has_spawn_agent(tools: list[dict] | None) -> bool:
+def _has_spawn_agent(tools) -> bool:
     if tools is None:
-        return any(t["name"] == "spawn_agent" for t in TOOL_DEFINITIONS)
-    return any(t["name"] == "spawn_agent" for t in tools)
+        return any(t.name == "spawn_agent" for t in TOOL_DEFINITIONS)
+    return any(t.name == "spawn_agent" for t in tools)
 
 
 # ─── TestAgentManifest ────────────────────────────────────────────────────────

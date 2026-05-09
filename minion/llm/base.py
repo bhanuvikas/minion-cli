@@ -3,6 +3,21 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Iterator, Optional, Union
 
 
+# ─── Tool definition (provider-neutral) ──────────────────────────────────────
+
+@dataclass
+class ToolDefinition:
+    """Provider-neutral tool schema.
+
+    ``parameters`` holds a JSON Schema object dict (same structure as Anthropic's
+    ``input_schema`` or OpenAI's ``parameters``). Each LLM adapter converts this
+    to its own wire format internally — callers never build provider-specific dicts.
+    """
+    name: str
+    description: str
+    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
+
+
 # ─── Rate-limit exceptions ────────────────────────────────────────────────────
 
 class InputTokenRateLimitError(Exception):
@@ -134,7 +149,7 @@ class LLMClient(ABC):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list["ToolDefinition"]] = None,
     ) -> Iterator[StreamEvent]:
         """Streaming call. Yields typed StreamEvent objects.
 
@@ -151,7 +166,7 @@ class LLMClient(ABC):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list["ToolDefinition"]] = None,
     ) -> AsyncIterator[StreamEvent]:
         """Async streaming call. Yields typed StreamEvent objects.
 

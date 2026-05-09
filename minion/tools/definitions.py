@@ -8,17 +8,19 @@ Intentionally separate from implementations.py: the LLM-facing schema and the
 Python execution are two distinct concerns.
 """
 
-TOOL_DEFINITIONS: list[dict] = [
-    {
-        "name": "get_file_outline",
-        "description": (
+from ..llm.base import ToolDefinition
+
+TOOL_DEFINITIONS: list[ToolDefinition] = [
+    ToolDefinition(
+        name="get_file_outline",
+        description=(
             "Return the structure of a source file: class names, function names, and method "
             "names with their line numbers. Use this BEFORE read_file on any file longer than "
             "a few dozen lines — it lets you identify exactly which lines to read rather than "
             "loading the whole file. Supports Python (.py) and JavaScript/TypeScript (.js, .ts, "
             ".jsx, .tsx)."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "path": {
@@ -28,16 +30,16 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["path"],
         },
-    },
-    {
-        "name": "search_file",
-        "description": (
+    ),
+    ToolDefinition(
+        name="search_file",
+        description=(
             "Search for a text pattern or regex across files. Use this to locate "
             "a function definition, a class, a variable, a config value, or any text "
             "without knowing which file it lives in. Returns filename:line_number:matched_line "
             "for each match. Prefer this over listing directories and reading files one by one."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "pattern": {
@@ -61,17 +63,17 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["pattern"],
         },
-    },
-    {
-        "name": "read_file",
-        "description": (
+    ),
+    ToolDefinition(
+        name="read_file",
+        description=(
             "Read the contents of a file with line numbers. "
             "Use start_line and end_line to read a specific range — ideal after "
             "get_file_outline tells you which lines a function spans. "
             "Without a range, files over 300 lines are truncated with a hint; "
             "use get_file_outline first to find the right range."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "path": {
@@ -89,10 +91,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["path"],
         },
-    },
-    {
-        "name": "write_file",
-        "description": (
+    ),
+    ToolDefinition(
+        name="write_file",
+        description=(
             "Write content to a file. Use ONLY for:\n"
             "• Creating a new file (file does not exist yet).\n"
             "• Intentional full rewrites (e.g. generated boilerplate, config files).\n"
@@ -100,7 +102,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "cheaper, and cannot corrupt untouched parts of the file.\n"
             "Requires user confirmation before executing."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "path": {
@@ -114,10 +116,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["path", "content"],
         },
-    },
-    {
-        "name": "edit_file",
-        "description": (
+    ),
+    ToolDefinition(
+        name="edit_file",
+        description=(
             "Edit an existing file by replacing a specific block of text.\n"
             "Provide old_string (the exact text to find) and new_string (the replacement).\n"
             "Rules for old_string:\n"
@@ -128,7 +130,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "Do NOT use this tool to create new files — use write_file for that.\n"
             "Requires user confirmation before executing."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "path": {
@@ -150,16 +152,16 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["path", "old_string", "new_string"],
         },
-    },
-    {
-        "name": "list_directory",
-        "description": (
+    ),
+    ToolDefinition(
+        name="list_directory",
+        description=(
             "List the files and subdirectories at a single directory path. Use this to "
             "inspect a specific directory's immediate contents. "
             "To find files by name pattern across the whole project, use glob instead. "
             "To find where a function or value is defined, use search_file instead."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "path": {
@@ -169,10 +171,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": [],
         },
-    },
-    {
-        "name": "glob",
-        "description": (
+    ),
+    ToolDefinition(
+        name="glob",
+        description=(
             "Find files whose paths match a glob pattern. Use this to locate files by name "
             "or extension without knowing exactly where they are. "
             "Supports ** for recursive matching across subdirectories. "
@@ -181,7 +183,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "Returns file paths relative to the search root. "
             "For searching file contents (not names), use search_file instead."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "pattern": {
@@ -198,17 +200,17 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["pattern"],
         },
-    },
-    {
-        "name": "web_fetch",
-        "description": (
+    ),
+    ToolDefinition(
+        name="web_fetch",
+        description=(
             "Fetch the content of a URL and return it as plain text. "
             "Use this to read documentation, README files, API references, changelogs, or "
             "any web resource needed to complete a task. HTML is stripped to readable text. "
             "Responses are truncated at 50,000 characters. "
             "Requires user confirmation before executing."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "url": {
@@ -218,15 +220,15 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["url"],
         },
-    },
-    {
-        "name": "run_shell",
-        "description": (
+    ),
+    ToolDefinition(
+        name="run_shell",
+        description=(
             "Execute a shell command and return its combined stdout and stderr output. "
             "Use this to run tests, check git status, install packages, build projects, "
             "or perform any terminal operation. Requires user confirmation before executing."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "command": {
@@ -240,10 +242,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["command"],
         },
-    },
-    {
-        "name": "send_remote_task",
-        "description": (
+    ),
+    ToolDefinition(
+        name="send_remote_task",
+        description=(
             "Delegate a task to a named remote A2A agent running on an external system. "
             "The agent runs its own reasoning loop independently and returns the result "
             "as text when done. "
@@ -251,7 +253,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "infrastructure. Available agents are listed in the system prompt. "
             "Do NOT use for tasks your local tools or local subagents can handle directly."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "agent": {
@@ -272,10 +274,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["agent", "task"],
         },
-    },
-    {
-        "name": "spawn_agent",
-        "description": (
+    ),
+    ToolDefinition(
+        name="spawn_agent",
+        description=(
             "Spawn a specialized subagent to handle a focused subtask in isolation. "
             "The subagent runs its own ReAct loop with a dedicated context window and "
             "a tool subset matched to its role. Returns the subagent's complete response "
@@ -285,7 +287,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "Use when subtasks are genuinely independent and benefit from specialization or "
             "parallel execution. Do NOT use for simple questions you can answer directly."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "task": {
@@ -306,17 +308,17 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["task"],
         },
-    },
-    {
-        "name": "todo_write",
-        "description": (
+    ),
+    ToolDefinition(
+        name="todo_write",
+        description=(
             "Set or update the todo list for the current task. Replaces the entire list.\n"
             "Use at the start of any multi-step task (3+ steps) to set your plan, then call "
             "again to update statuses as you complete each step.\n"
             "Call todo_write(items=[]) to clear the list when the task is fully complete.\n"
             "statuses: 'pending' | 'in_progress' | 'done'"
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "items": {
@@ -334,14 +336,12 @@ TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["items"],
         },
-    },
-    {
-        "name": "todo_read",
-        "description": (
-            "Return the current todo list. Use to check your plan before starting a new step."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
+    ),
+    ToolDefinition(
+        name="todo_read",
+        description="Return the current todo list. Use to check your plan before starting a new step.",
+        parameters={"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 # Tools that modify state or execute arbitrary code — require user confirmation.

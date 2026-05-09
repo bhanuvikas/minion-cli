@@ -140,7 +140,7 @@ class TestMCPManagerConnect:
             assert manager2.has_tools()
             defs = manager2.get_tool_definitions()
             assert len(defs) == 2
-            names = {d["name"] for d in defs}
+            names = {d.name for d in defs}
             assert "test_server__search" in names
             assert "test_server__write" in names
             manager2.shutdown()
@@ -189,7 +189,7 @@ class TestMCPManagerConnect:
                 "http_server": http_config,
             })
             defs = manager.get_tool_definitions()
-            names = {d["name"] for d in defs}
+            names = {d.name for d in defs}
             assert "test_server__tool_a" in names
             assert "http_server__tool_b" in names
             manager.shutdown()

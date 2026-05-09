@@ -32,6 +32,7 @@ from .theme import (
     print_reflection_header,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
+from .llm.base import ToolDefinition
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS
 from .tools.executor import ToolExecutor, TOOL_SPINNER_LABELS, _RenderBuffer
 from .tracing import get_tracer
@@ -241,7 +242,7 @@ def run_prompt(
     verbose: bool = False,
     memory_tokens: int = 0,
     max_iterations: Optional[int] = None,
-    tools: Optional[list] = None,
+    tools: Optional[list[ToolDefinition]] = None,
     render_markdown: bool = False,
     markdown_title: str = "",
     spinner_label: Optional[str] = None,
@@ -288,7 +289,7 @@ async def _stream_one_iteration_async(
     conversation: Conversation,
     system_prompt: str,
     system_dynamic: str = "",
-    tools: Optional[list] = None,
+    tools: Optional[list[ToolDefinition]] = None,
     silent: bool = False,
     flush_narration: bool = True,
     spinner_label: Optional[str] = None,
@@ -305,7 +306,7 @@ async def _stream_one_iteration_async(
         messages=_serialize_messages(conversation.messages),
         system=system_prompt,
         tools=effective_tools,
-        tool_names=[t["name"] for t in effective_tools],
+        tool_names=[t.name for t in effective_tools],
         model=getattr(client, "model_id", "unknown"),
         estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
     )
@@ -733,7 +734,7 @@ async def run_prompt_async(
     verbose: bool = False,
     memory_tokens: int = 0,
     max_iterations: Optional[int] = None,
-    tools: Optional[list] = None,
+    tools: Optional[list[ToolDefinition]] = None,
     render_markdown: bool = False,
     markdown_title: str = "",
     spinner_label: Optional[str] = None,
@@ -773,7 +774,7 @@ async def run_prompt_async(
     limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
 
     if tools is None and mcp_manager is not None and mcp_manager.has_tools():
-        effective_tools: Optional[list] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
+        effective_tools: Optional[list[ToolDefinition]] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
     else:
         effective_tools = tools
 
@@ -781,7 +782,7 @@ async def run_prompt_async(
     _exclude_spawn = not enable_agents or agent_depth >= MAX_AGENT_DEPTH
     if _exclude_spawn:
         base = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
-        effective_tools = [t for t in base if t["name"] != "spawn_agent"]
+        effective_tools = [t for t in base if t.name != "spawn_agent"]
 
     _subagent_tokens: list[int] = []
     if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
@@ -808,7 +809,7 @@ async def run_prompt_async(
 
     if _remote_task_runner is None:
         base_et = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
-        effective_tools = [t for t in base_et if t["name"] != "send_remote_task"]
+        effective_tools = [t for t in base_et if t.name != "send_remote_task"]
 
     executor = ToolExecutor(
         dry_run=dry_run, mcp_manager=mcp_manager,

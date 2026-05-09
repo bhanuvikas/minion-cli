@@ -845,27 +845,27 @@ class TestSendRemoteTaskTool(unittest.TestCase):
         """send_remote_task should be filtered from tool list when a2a_manager is None."""
         from minion.tools.definitions import TOOL_DEFINITIONS
 
-        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        tool_names = {t.name for t in TOOL_DEFINITIONS}
         self.assertIn("send_remote_task", tool_names)
 
         # Simulate filtering (mirrors runner.py logic)
-        effective = [t for t in TOOL_DEFINITIONS if t["name"] != "send_remote_task"]
-        names_after = {t["name"] for t in effective}
+        effective = [t for t in TOOL_DEFINITIONS if t.name != "send_remote_task"]
+        names_after = {t.name for t in effective}
         self.assertNotIn("send_remote_task", names_after)
         self.assertIn("read_file", names_after)  # other tools still present
 
     def test_send_remote_task_in_tool_definitions(self):
         from minion.tools.definitions import TOOL_DEFINITIONS
 
-        names = [t["name"] for t in TOOL_DEFINITIONS]
+        names = [t.name for t in TOOL_DEFINITIONS]
         self.assertIn("send_remote_task", names)
 
-        defn = next(t for t in TOOL_DEFINITIONS if t["name"] == "send_remote_task")
-        schema = defn["input_schema"]["properties"]
+        defn = next(t for t in TOOL_DEFINITIONS if t.name == "send_remote_task")
+        schema = defn.parameters["properties"]
         self.assertIn("agent", schema)
         self.assertIn("task", schema)
-        self.assertIn("agent", defn["input_schema"]["required"])
-        self.assertIn("task", defn["input_schema"]["required"])
+        self.assertIn("agent", defn.parameters["required"])
+        self.assertIn("task", defn.parameters["required"])
 
     def test_delegation_tools_includes_send_remote_task(self):
         from minion.tools.definitions import DELEGATION_TOOLS

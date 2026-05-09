@@ -191,17 +191,17 @@ class TestResolveTools:
         result = _resolve_tools(["read_file"])
         assert isinstance(result, list)
         assert len(result) == 1
-        assert result[0]["name"] == "read_file"
+        assert result[0].name == "read_file"
 
     def test_multiple_tools_filtered(self):
         result = _resolve_tools(["read_file", "run_shell"])
-        names = {t["name"] for t in result}
+        names = {t.name for t in result}
         assert names == {"read_file", "run_shell"}
 
     def test_unknown_tool_name_excluded(self):
         result = _resolve_tools(["read_file", "nonexistent_tool"])
         assert len(result) == 1
-        assert result[0]["name"] == "read_file"
+        assert result[0].name == "read_file"
 
 
 # ─── TestExecuteSkill ─────────────────────────────────────────────────────────
@@ -258,7 +258,7 @@ class TestExecuteSkill:
             execute_skill(skill, "", MagicMock(), MagicMock(), "BASE", self._make_registry())
         assert captured["tools"] is not None
         assert len(captured["tools"]) == 1
-        assert captured["tools"][0]["name"] == "read_file"
+        assert captured["tools"][0].name == "read_file"
 
     def test_no_tools_in_manifest_passes_none(self):
         skill = self._make_skill(tools=None)
@@ -312,7 +312,7 @@ class TestRunPromptToolsParam:
             await run_prompt_async("hello", client, Conversation(), "sys")
         _, call_kwargs = client.async_stream.call_args
         # send_remote_task is filtered out when no a2a_manager is provided
-        expected = [t for t in TOOL_DEFINITIONS if t["name"] != "send_remote_task"]
+        expected = [t for t in TOOL_DEFINITIONS if t.name != "send_remote_task"]
         assert call_kwargs["tools"] == expected
 
     @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from .base import (
     ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
     InputTokenRateLimitError,
     LLMClient, LLMResponse, Message, StreamComplete, StreamEvent, TextChunk,
-    ToolAccumulationStart, ToolUseBlock,
+    ToolAccumulationStart, ToolDefinition, ToolUseBlock,
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -86,6 +86,21 @@ class AnthropicClient(LLMClient):
     def last_usage(self) -> Optional[LLMResponse]:
         return self._last_usage
 
+    @staticmethod
+    def _to_provider_format(tools: list[ToolDefinition]) -> list[dict]:
+        """Convert ToolDefinition list to Anthropic wire format with prompt caching.
+
+        Adds cache_control to the last entry so the tool list is cached across
+        consecutive calls that share the same tool set.
+        """
+        result = [
+            {"name": t.name, "description": t.description, "input_schema": t.parameters}
+            for t in tools
+        ]
+        if result:
+            result[-1] = {**result[-1], "cache_control": {"type": "ephemeral"}}
+        return result
+
     def _format_messages(self, messages: list[Message]) -> list[dict]:
         """Translate application-level Messages to Anthropic wire format.
 
@@ -139,7 +154,7 @@ class AnthropicClient(LLMClient):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list[ToolDefinition]] = None,
     ) -> Iterator[StreamEvent]:
         kwargs: dict = {
             "model": self._model,
@@ -156,9 +171,7 @@ class AnthropicClient(LLMClient):
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
             ]
         if tools:
-            tools_cached = [dict(t) for t in tools]
-            tools_cached[-1] = {**tools_cached[-1], "cache_control": {"type": "ephemeral"}}
-            kwargs["tools"] = tools_cached
+            kwargs["tools"] = self._to_provider_format(tools)
 
         for attempt in range(_MAX_RETRY):
             # current_tool accumulates state for the tool_use content block being
@@ -255,7 +268,7 @@ class AnthropicClient(LLMClient):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list[ToolDefinition]] = None,
     ) -> AsyncIterator[StreamEvent]:
         kwargs: dict = {
             "model": self._model,
@@ -272,9 +285,7 @@ class AnthropicClient(LLMClient):
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
             ]
         if tools:
-            tools_cached = [dict(t) for t in tools]
-            tools_cached[-1] = {**tools_cached[-1], "cache_control": {"type": "ephemeral"}}
-            kwargs["tools"] = tools_cached
+            kwargs["tools"] = self._to_provider_format(tools)
 
         for attempt in range(_MAX_RETRY):
             current_tool: Optional[dict] = None

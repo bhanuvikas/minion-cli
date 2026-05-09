@@ -3,7 +3,7 @@ from typing import AsyncIterator, Iterator, Optional
 
 from openai import OpenAI
 
-from .base import LLMClient, LLMResponse, Message, StreamEvent
+from .base import LLMClient, LLMResponse, Message, StreamEvent, ToolDefinition
 
 OPENAI_DEFAULT_MODEL = "gpt-4o"
 OPENROUTER_DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
@@ -71,7 +71,7 @@ class OpenAIClient(LLMClient):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list[ToolDefinition]] = None,
     ) -> Iterator:
         # tools parameter accepted but ignored — OpenAI tool use deferred to a later phase.
         # stream_options={"include_usage": True} makes the final chunk carry
@@ -119,7 +119,7 @@ class OpenAIClient(LLMClient):
         messages: list[Message],
         system: str = "",
         system_dynamic: str = "",
-        tools: Optional[list] = None,
+        tools: Optional[list[ToolDefinition]] = None,
     ) -> AsyncIterator[StreamEvent]:
         raise NotImplementedError("OpenAI async support is deferred to Phase 13")
         yield  # type: ignore[misc]

@@ -6,8 +6,120 @@ No API calls — purely structural tests.
 
 from minion.llm.base import (
     ContentTextBlock, ContentToolResultBlock, ContentToolUseBlock,
-    LLMClient, LLMResponse, Message,
+    LLMClient, LLMResponse, Message, ToolDefinition,
 )
+
+
+# ─── ToolDefinition ───────────────────────────────────────────────────────────
+
+class TestToolDefinition:
+    def test_required_fields(self):
+        td = ToolDefinition(name="read_file", description="Read a file")
+        assert td.name == "read_file"
+        assert td.description == "Read a file"
+
+    def test_parameters_defaults_to_empty_object_schema(self):
+        td = ToolDefinition(name="x", description="y")
+        assert td.parameters == {"type": "object", "properties": {}}
+
+    def test_explicit_parameters(self):
+        params = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+        td = ToolDefinition(name="read_file", description="Read a file", parameters=params)
+        assert td.parameters == params
+
+    def test_equality(self):
+        a = ToolDefinition("t", "d", {"type": "object", "properties": {}})
+        b = ToolDefinition("t", "d", {"type": "object", "properties": {}})
+        assert a == b
+
+    def test_inequality_on_name(self):
+        a = ToolDefinition("a", "d")
+        b = ToolDefinition("b", "d")
+        assert a != b
+
+    def test_name_attribute_access(self):
+        td = ToolDefinition(name="run_shell", description="Run a shell command")
+        assert td.name == "run_shell"
+
+    def test_not_subscriptable(self):
+        td = ToolDefinition(name="x", description="y")
+        try:
+            _ = td["name"]
+            assert False, "Should have raised TypeError"
+        except TypeError:
+            pass
+
+
+# ─── AnthropicClient._to_provider_format ─────────────────────────────────────
+
+class TestAnthropicProviderFormat:
+    def _fmt(self, tools):
+        from minion.llm.anthropic import AnthropicClient
+        return AnthropicClient._to_provider_format(tools)
+
+    def test_empty_list_returns_empty(self):
+        assert self._fmt([]) == []
+
+    def test_single_tool_has_cache_control(self):
+        td = ToolDefinition("read_file", "Read a file", {"type": "object", "properties": {}})
+        result = self._fmt([td])
+        assert len(result) == 1
+        assert result[0]["name"] == "read_file"
+        assert result[0]["description"] == "Read a file"
+        assert result[0]["input_schema"] == {"type": "object", "properties": {}}
+        assert result[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_multiple_tools_only_last_has_cache_control(self):
+        tools = [
+            ToolDefinition("read_file", "Read", {"type": "object", "properties": {}}),
+            ToolDefinition("run_shell", "Shell", {"type": "object", "properties": {}}),
+            ToolDefinition("write_file", "Write", {"type": "object", "properties": {}}),
+        ]
+        result = self._fmt(tools)
+        assert len(result) == 3
+        assert "cache_control" not in result[0]
+        assert "cache_control" not in result[1]
+        assert result[2]["cache_control"] == {"type": "ephemeral"}
+
+    def test_parameters_mapped_to_input_schema(self):
+        params = {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+        td = ToolDefinition("run_shell", "Run", params)
+        result = self._fmt([td])
+        assert result[0]["input_schema"] == params
+
+    def test_original_tools_not_mutated(self):
+        td = ToolDefinition("x", "y")
+        original_dict = {"name": "x", "description": "y", "input_schema": td.parameters}
+        result = self._fmt([td])
+        assert "cache_control" in result[0]
+        assert td.parameters == {"type": "object", "properties": {}}
+
+
+# ─── TOOL_DEFINITIONS consistency ─────────────────────────────────────────────
+
+class TestToolDefinitionsConsistency:
+    def test_all_entries_are_tool_definitions(self):
+        from minion.tools.definitions import TOOL_DEFINITIONS
+        for t in TOOL_DEFINITIONS:
+            assert isinstance(t, ToolDefinition), f"{t!r} is not a ToolDefinition"
+
+    def test_names_are_unique(self):
+        from minion.tools.definitions import TOOL_DEFINITIONS
+        names = [t.name for t in TOOL_DEFINITIONS]
+        assert len(names) == len(set(names))
+
+    def test_spawn_agent_present(self):
+        from minion.tools.definitions import TOOL_DEFINITIONS
+        assert any(t.name == "spawn_agent" for t in TOOL_DEFINITIONS)
+
+    def test_send_remote_task_present(self):
+        from minion.tools.definitions import TOOL_DEFINITIONS
+        assert any(t.name == "send_remote_task" for t in TOOL_DEFINITIONS)
+
+    def test_all_have_parameters_with_type(self):
+        from minion.tools.definitions import TOOL_DEFINITIONS
+        for t in TOOL_DEFINITIONS:
+            assert "type" in t.parameters, f"{t.name} missing 'type' in parameters"
 
 
 # ─── ContentBlock types ───────────────────────────────────────────────────────

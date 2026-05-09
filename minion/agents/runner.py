@@ -45,7 +45,7 @@ def _resolve_tools(tool_names: Optional[list[str]]) -> Optional[list[dict]]:
     if tool_names is None:
         return None
     name_set = set(tool_names)
-    return [t for t in TOOL_DEFINITIONS if t["name"] in name_set]
+    return [t for t in TOOL_DEFINITIONS if t.name in name_set]
 
 
 def run_agent(
