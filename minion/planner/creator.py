@@ -161,7 +161,7 @@ def _stream_planner_iteration(
     Returns (full_text, tool_blocks, stop_reason).
     Raises on stream error (let caller handle).
     """
-    effective_spinner = spinner_label or f"[{YELLOW}]🍌  Planning...[/]"
+    effective_spinner = spinner_label or f"[{YELLOW}]Planning...[/]"
     try:
         stream = client.stream(conv.messages, system=PLANNER_SYSTEM_PROMPT, tools=tools)
         with console.status(effective_spinner, spinner="dots"):

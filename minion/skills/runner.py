@@ -93,7 +93,7 @@ def execute_skill(
 
     render_markdown = skill.output_format == "markdown"
     spinner_label = (
-        f"[yellow]🍌  {skill.thinking_label}...[/]"
+        f"[yellow]{skill.thinking_label}...[/]"
         if skill.thinking_label
         else None
     )

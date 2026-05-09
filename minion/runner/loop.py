@@ -44,7 +44,7 @@ from .context import _resolve_mentions, _serialize_messages, _snapshot_messages
 from .parallel import _execute_tools_async
 
 MAX_ITERATIONS = 20
-_SPINNER_LABEL = f"[{YELLOW}]🍌  thinking...[/]"
+_SPINNER_LABEL = f"[{YELLOW}]thinking...[/]"
 
 
 # ─── Result type for a single streaming iteration ─────────────────────────────
