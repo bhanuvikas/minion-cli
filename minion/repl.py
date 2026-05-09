@@ -1695,11 +1695,11 @@ async def run_repl_async(
             )
             if not model_config_ran:
                 break
-            # Reload .env and recreate client so the new model takes effect in
-            # the restarted TUI without requiring a full process restart.
+            # Reload env files and recreate client so the new model takes
+            # effect immediately in the restarted TUI.
             from dotenv import load_dotenv
             load_dotenv(Path.home() / ".minion" / ".env", override=True)
-            load_dotenv(Path.cwd() / ".env", override=True)
+            load_dotenv(Path.cwd() / ".minion" / ".env", override=True)
             try:
                 from .llm.factory import get_client as _get_client
                 client = _get_client()
