@@ -82,7 +82,7 @@ class TestRunPromptArguments:
     @pytest.mark.asyncio
     async def test_sends_user_message_to_stream(self):
         client = _make_async_client()
-        with patch("minion.runner.console"), patch("sys.stdout"):
+        with patch("minion.runner.loop.console"), patch("sys.stdout"):
             await run_prompt_async("what is a closure?", client, Conversation(), _SYSTEM_PROMPT)
         messages = client.async_stream.call_args[0][0]
         assert messages[0] == Message(role="user", content="what is a closure?")
@@ -90,7 +90,7 @@ class TestRunPromptArguments:
     @pytest.mark.asyncio
     async def test_passes_system_prompt_as_kwarg(self):
         client = _make_async_client()
-        with patch("minion.runner.console"), patch("sys.stdout"):
+        with patch("minion.runner.loop.console"), patch("sys.stdout"):
             await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT)
         _, kwargs = client.async_stream.call_args
         assert "system" in kwargs
@@ -99,7 +99,7 @@ class TestRunPromptArguments:
     @pytest.mark.asyncio
     async def test_passes_tools_as_kwarg(self):
         client = _make_async_client()
-        with patch("minion.runner.console"), patch("sys.stdout"):
+        with patch("minion.runner.loop.console"), patch("sys.stdout"):
             await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT)
         _, kwargs = client.async_stream.call_args
         assert "tools" in kwargs
@@ -114,7 +114,7 @@ class TestRunPromptErrorHandling:
     async def test_empty_stream_shows_error(self):
         client = _make_async_client(events=[])
         mock_r = _mock_renderer()
-        with patch("minion.runner.console"):
+        with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
         mock_r.on_error.assert_called_once()
         assert "empty" in mock_r.on_error.call_args[0][0].lower()
@@ -123,7 +123,7 @@ class TestRunPromptErrorHandling:
     async def test_exception_during_stream_shows_error(self):
         client = _make_async_client(exception=ValueError("ANTHROPIC_API_KEY not set"))
         mock_r = _mock_renderer()
-        with patch("minion.runner.console"):
+        with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
         mock_r.on_error.assert_called_once_with("ANTHROPIC_API_KEY not set")
 
@@ -136,8 +136,8 @@ class TestRunPromptErrorHandling:
         def _capture_emit(event_type, **kwargs):
             emitted.append({"type": event_type, **kwargs})
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.get_tracer") as mock_tracer:
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.get_tracer") as mock_tracer:
             mock_tracer.return_value.emit.side_effect = _capture_emit
             await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT)
 
@@ -154,7 +154,7 @@ class TestRunPromptOutput:
     @pytest.mark.asyncio
     async def test_text_chunks_written_to_stdout(self, capsys):
         client = _make_async_client(events=_text_stream("Bello", " from", " Minion"))
-        with patch("minion.runner.console") as mc:
+        with patch("minion.runner.loop.console") as mc:
             mc.print = MagicMock()
             await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT)
         captured = capsys.readouterr()
@@ -166,7 +166,7 @@ class TestRunPromptOutput:
     async def test_print_usage_called_after_stream(self):
         client = _make_async_client()
         mock_r = _mock_renderer()
-        with patch("minion.runner.console"), patch("sys.stdout"):
+        with patch("minion.runner.loop.console"), patch("sys.stdout"):
             await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT, renderer=mock_r)
         mock_r.on_session_summary.assert_called_once()
 
@@ -189,8 +189,8 @@ class TestAgentLoop:
         ]
         client = _make_multi_call_client(tool_stream, final_stream)
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.ToolExecutor") as MockExecutor, \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
             mock_exec = MockExecutor.return_value
             mock_exec.execute_async = AsyncMock(return_value="file contents here")
@@ -203,8 +203,8 @@ class TestAgentLoop:
     async def test_dry_run_passed_to_executor(self):
         client = _make_async_client()
         mock_r = _mock_renderer()
-        with patch("minion.runner.console"), \
-             patch("minion.runner.ToolExecutor") as MockExecutor, \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
             await run_prompt_async("hi", client, Conversation(), _SYSTEM_PROMPT,
                                    dry_run=True, renderer=mock_r)
@@ -230,8 +230,8 @@ class TestAgentLoop:
         client.async_stream = _always_tool
         mock_r = _mock_renderer()
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.ToolExecutor") as MockExecutor, \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.ToolExecutor") as MockExecutor, \
              patch("sys.stdout"):
             MockExecutor.return_value.execute_async = AsyncMock(return_value="result")
             await run_prompt_async("loop forever", client, Conversation(), _SYSTEM_PROMPT,
@@ -274,27 +274,27 @@ class TestRunPromptReflection:
     async def _run(self, reflect_config=None, verbose=False):
         client = _make_async_client()
         conv = Conversation()
-        with patch("minion.runner.console"), patch("sys.stdout"):
+        with patch("minion.runner.loop.console"), patch("sys.stdout"):
             await run_prompt_async("hi", client, conv, _SYSTEM_PROMPT_REFL,
                                    reflect_config=reflect_config, verbose=verbose)
         return conv
 
     @pytest.mark.asyncio
     async def test_reflection_not_called_when_config_is_none(self):
-        with patch("minion.runner.reflect") as mock_reflect:
+        with patch("minion.runner.loop.reflect") as mock_reflect:
             await self._run(reflect_config=None)
         mock_reflect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reflection_not_called_when_depth_zero(self):
-        with patch("minion.runner.reflect") as mock_reflect:
+        with patch("minion.runner.loop.reflect") as mock_reflect:
             await self._run(reflect_config=ReflectionConfig(depth=0))
         mock_reflect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reflection_called_after_end_turn(self):
         result = _make_passing_reflection_result()
-        with patch("minion.runner.reflect", return_value=result) as mock_reflect:
+        with patch("minion.runner.loop.reflect", return_value=result) as mock_reflect:
             await self._run(reflect_config=ReflectionConfig(depth=1))
         mock_reflect.assert_called_once()
 
@@ -307,9 +307,9 @@ class TestRunPromptReflection:
         client = _make_multi_call_client(tool_stream, final_stream)
         reflect_result = _make_passing_reflection_result("Done.")
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.ToolExecutor") as MockExec, \
-             patch("minion.runner.reflect", return_value=reflect_result) as mock_reflect, \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.ToolExecutor") as MockExec, \
+             patch("minion.runner.loop.reflect", return_value=reflect_result) as mock_reflect, \
              patch("sys.stdout"):
             MockExec.return_value.execute_async = AsyncMock(return_value="file contents")
             await run_prompt_async("read x.py", client, Conversation(), _SYSTEM_PROMPT_REFL,
@@ -328,8 +328,8 @@ class TestRunPromptReflection:
         conv = Conversation()
         client = _make_async_client(events=_text_stream("def foo(): pass"))
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.reflect", return_value=refined_result), \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.reflect", return_value=refined_result), \
              patch("sys.stdout"):
             await run_prompt_async("write foo", client, conv, _SYSTEM_PROMPT_REFL,
                                    reflect_config=ReflectionConfig(depth=1))
@@ -344,8 +344,8 @@ class TestRunPromptReflection:
         conv = Conversation()
         client = _make_async_client(events=_text_stream("Hello world"))
 
-        with patch("minion.runner.console"), \
-             patch("minion.runner.reflect", return_value=passing_result), \
+        with patch("minion.runner.loop.console"), \
+             patch("minion.runner.loop.reflect", return_value=passing_result), \
              patch("sys.stdout"):
             await run_prompt_async("hi", client, conv, _SYSTEM_PROMPT_REFL,
                                    reflect_config=ReflectionConfig(depth=1))
@@ -356,15 +356,15 @@ class TestRunPromptReflection:
     @pytest.mark.asyncio
     async def test_verbose_false_suppresses_print_critique(self):
         result = _make_passing_reflection_result()
-        with patch("minion.runner.reflect", return_value=result), \
-             patch("minion.runner.print_critique") as mock_pc:
+        with patch("minion.runner.loop.reflect", return_value=result), \
+             patch("minion.runner.loop.print_critique") as mock_pc:
             await self._run(reflect_config=ReflectionConfig(depth=1), verbose=False)
         mock_pc.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_verbose_true_calls_print_critique(self):
         result = _make_passing_reflection_result()
-        with patch("minion.runner.reflect", return_value=result), \
-             patch("minion.runner.print_critique") as mock_pc:
+        with patch("minion.runner.loop.reflect", return_value=result), \
+             patch("minion.runner.loop.print_critique") as mock_pc:
             await self._run(reflect_config=ReflectionConfig(depth=1), verbose=True)
         mock_pc.assert_called_once()

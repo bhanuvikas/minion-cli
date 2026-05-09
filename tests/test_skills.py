@@ -308,7 +308,7 @@ class TestRunPromptToolsParam:
         from minion.runner import run_prompt_async
         from minion.conversation import Conversation
         client = self._make_async_client()
-        with patch("minion.runner.console"):
+        with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), "sys")
         _, call_kwargs = client.async_stream.call_args
         # send_remote_task is filtered out when no a2a_manager is provided
@@ -321,7 +321,7 @@ class TestRunPromptToolsParam:
         from minion.conversation import Conversation
         single_tool = [TOOL_DEFINITIONS[0]]
         client = self._make_async_client()
-        with patch("minion.runner.console"):
+        with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), "sys", tools=single_tool)
         _, call_kwargs = client.async_stream.call_args
         assert call_kwargs["tools"] == single_tool
@@ -331,7 +331,7 @@ class TestRunPromptToolsParam:
         from minion.runner import run_prompt_async
         from minion.conversation import Conversation
         client = self._make_async_client()
-        with patch("minion.runner.console"):
+        with patch("minion.runner.loop.console"):
             await run_prompt_async("hello", client, Conversation(), "sys", tools=[])
         _, call_kwargs = client.async_stream.call_args
         assert call_kwargs["tools"] == []

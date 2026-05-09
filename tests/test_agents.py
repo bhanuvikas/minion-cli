@@ -469,7 +469,7 @@ class TestAgentsToggle:
         client.model_id = "stub"
         conv = Conversation()
 
-        with patch("minion.runner._stream_one_iteration_async", side_effect=fake_stream_one_iteration_async):
+        with patch("minion.runner.loop._stream_one_iteration_async", side_effect=fake_stream_one_iteration_async):
             await run_prompt_async("hi", client, conv, "system", **run_prompt_kwargs)
 
         return captured.get("tools")
