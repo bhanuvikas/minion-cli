@@ -107,8 +107,8 @@ class TestAssistantBlocks:
     def test_tool_use_block_renders_icon(self):
         lines = render_message_blocks([self._msg([self._tool_blk("read_file")])], "coder")
         assert len(lines) == 1
-        styles = _styles(lines)[0]
-        assert "class:tool-icon" in styles
+        icon_text = lines[0][1][1]  # frag [0]=leading space, [1]=icon frag
+        assert "⚙" in icon_text
 
     def test_tool_use_block_shows_name(self):
         lines = render_message_blocks([self._msg([self._tool_blk("read_file")])], "coder")
@@ -122,12 +122,16 @@ class TestAssistantBlocks:
         text = _flat_text(lines)
         assert "/tmp/f.py" in text
 
-    def test_tool_use_no_args_no_detail(self):
+    def test_tool_use_icon_is_silver(self):
+        lines = render_message_blocks([self._msg([self._tool_blk("read_file")])], "coder")
+        icon_style = lines[0][1][0]  # frag [0]=leading space, [1]=icon frag → style
+        assert "#C0C0C0" in icon_style
+
+    def test_tool_use_no_args_no_key_value_frags(self):
         lines = render_message_blocks([self._msg([self._tool_blk("bash")])], "coder")
         row = lines[0]
-        # tool-detail fragment should be empty string when no args
-        detail_texts = [t for s, t in row if s == "class:tool-detail"]
-        assert all(t == "" for t in detail_texts)
+        # no key=value frags when inputs is empty — only icon + name frags
+        assert len(row) == 3  # leading space + icon + name
 
     def test_unknown_block_type_ignored(self):
         lines = render_message_blocks(
@@ -150,10 +154,11 @@ class TestUserBlockMessages:
         lines = render_message_blocks([self._result_msg("ok output")], "coder")
         assert len(lines) == 3  # ✓ done row + └─ preview row + blank
 
-    def test_done_row_has_checkmark(self):
+    def test_done_row_has_bold_green_style(self):
         lines = render_message_blocks([self._result_msg("ok")], "coder")
-        styles = _styles(lines)[0]
-        assert "class:tool-ok" in styles
+        done_style = _styles(lines)[0][0]
+        assert "bold" in done_style
+        assert "#4CAF50" in done_style
 
     def test_done_row_contains_done_text(self):
         lines = render_message_blocks([self._result_msg("ok")], "coder")

@@ -89,38 +89,65 @@ def tool_name_style(tool_name: str) -> str:
     return f"bold {color}".strip()
 
 
-def tool_slot_header_frags(tool_name: str, inputs: dict) -> list[tuple[str, str]]:
+def tool_slot_header_frags(
+    tool_name: str,
+    inputs: dict,
+    *,
+    icon_style: str | None = None,
+    expanded: bool = False,
+) -> list[tuple[str, str]]:
     """Format-neutral (style, text) fragment list for a live tool-slot header.
 
     Portable to both prompt_toolkit FormattedText and Rich Text — all styles
     are hex colors / bold modifiers, never class names or Rich tags.
 
-    Icon:   bold #FFD700  (yellow — these tools are currently running/live)
+    icon_style: override the icon's style. Defaults to #C0C0C0 (silver) across
+                all contexts — live slots, scrollback, and inspector.
+    expanded:   when True, includes keys that are normally skipped (content,
+                old_string, new_string) with a larger value length limit.
+
+    Icon:   #C0C0C0  (silver — consistent across live and historical contexts)
     Name:   bold + optional colour from _TOOL_NAME_COLORS
     Key:    #C0C0C0  (silver/muted)
     Value:  #1E90FF  (blue)
-
-    Suppresses write_file 'content' and edit_file 'old_string'/'new_string'
-    because the diff preview already shows that information.
     """
     from .theme import BLUE, YELLOW  # lazy to avoid circular at init
 
+    _icon_style = icon_style if icon_style is not None else "#C0C0C0"
+    _skip       = frozenset() if expanded else _SKIP_KEYS
+    _max        = 200 if expanded else _SLOT_VALUE_MAX
+
     frags: list[tuple[str, str]] = [
-        (f"bold {YELLOW}", "⚙  "),
+        (_icon_style, "⚙  "),
         (tool_name_style(tool_name), tool_name),
     ]
     for k, v in inputs.items():
-        if k in _SKIP_KEYS:
+        if k in _skip:
             continue
         if isinstance(v, str):
             v_clean = v.replace("\n", "↵").replace("\r", "")
-            v_disp = f'"{v_clean[:_SLOT_VALUE_MAX]}…"' if len(v_clean) > _SLOT_VALUE_MAX else f"'{v_clean}'"
+            v_disp = f'"{v_clean[:_max]}…"' if len(v_clean) > _max else f"'{v_clean}'"
         else:
             v_disp = repr(v)[:40]
         frags.append(("#C0C0C0", f"  {k}="))
         frags.append((BLUE, v_disp))
 
     return frags
+
+
+def frags_to_rich_markup(frags: list[tuple[str, str]]) -> str:
+    """Adapter: convert (style, text) fragment list → Rich markup string.
+
+    Styles must be hex colors / bold modifiers (no class: names).
+    This bridges tool_slot_header_frags() (the canonical semantic layer)
+    to Rich-based renderers such as format_tool_call().
+    Text is escaped so Rich special characters in values don't break markup.
+    """
+    from rich.markup import escape as _e
+    return "".join(
+        f"[{style}]{_e(text)}[/]" if style else _e(text)
+        for style, text in frags
+    )
 
 
 def format_tool_args(inputs: dict, *, expanded: bool = False) -> str:

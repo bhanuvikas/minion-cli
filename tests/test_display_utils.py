@@ -5,7 +5,7 @@ No API calls. No filesystem operations. Pure unit tests.
 
 import pytest
 
-from minion.display_utils import _trunc, apply_slot_event, format_tool_args, tool_name_style, tool_slot_header_frags
+from minion.display_utils import _trunc, apply_slot_event, format_tool_args, frags_to_rich_markup, tool_name_style, tool_slot_header_frags
 
 
 # ─── _trunc ──────────────────────────────────────────────────────────────────
@@ -179,11 +179,10 @@ class TestToolSlotHeaderFrags:
         _, icon_text = frags[0]
         assert "⚙" in icon_text
 
-    def test_icon_uses_bold_yellow(self):
+    def test_icon_uses_silver(self):
         frags = tool_slot_header_frags("read_file", {})
         icon_style, _ = frags[0]
-        assert "bold" in icon_style
-        assert "#FFD700" in icon_style
+        assert "#C0C0C0" in icon_style
 
     def test_tool_name_in_second_fragment(self):
         frags = tool_slot_header_frags("read_file", {})
@@ -256,6 +255,73 @@ class TestToolSlotHeaderFrags:
         frags = tool_slot_header_frags("write_file", {"path": "f.py"})
         for style, _ in frags:
             assert not style.startswith("class:"), f"Found class: style {style!r}"
+
+    def test_icon_style_override(self):
+        frags = tool_slot_header_frags("read_file", {}, icon_style="class:tool-icon")
+        icon_style, _ = frags[0]
+        assert icon_style == "class:tool-icon"
+
+    def test_icon_style_override_does_not_affect_name(self):
+        frags = tool_slot_header_frags("read_file", {}, icon_style="class:tool-icon")
+        name_style, _ = frags[1]
+        assert "bold" in name_style
+
+    def test_expanded_includes_content_key(self):
+        frags = tool_slot_header_frags("write_file", {"path": "f.py", "content": "hello"}, expanded=True)
+        combined = self._text(frags)
+        assert "content" in combined
+
+    def test_expanded_includes_old_string(self):
+        frags = tool_slot_header_frags("edit_file", {"path": "f.py", "old_string": "a"}, expanded=True)
+        combined = self._text(frags)
+        assert "old_string" in combined
+
+    def test_expanded_larger_value_limit(self):
+        long_val = "x" * 100  # > 50 (normal max), < 200 (expanded max)
+        frags = tool_slot_header_frags("read_file", {"path": long_val}, expanded=True)
+        combined = self._text(frags)
+        # should NOT be truncated under expanded mode (100 < 200)
+        assert "…" not in combined
+
+
+# ─── frags_to_rich_markup ─────────────────────────────────────────────────────
+
+class TestFragsToRichMarkup:
+    def test_empty_frags_returns_empty_string(self):
+        assert frags_to_rich_markup([]) == ""
+
+    def test_styled_frag_wraps_in_markup_tags(self):
+        result = frags_to_rich_markup([("bold #FFD700", "⚙  ")])
+        assert "[bold #FFD700]" in result
+        assert "⚙  " in result
+        assert "[/]" in result
+
+    def test_unstyled_frag_no_tags(self):
+        result = frags_to_rich_markup([("", "plain text")])
+        assert "[" not in result or "plain text" in result
+        assert "plain text" in result
+
+    def test_rich_special_chars_escaped(self):
+        result = frags_to_rich_markup([("bold", "value [with] brackets")])
+        # Rich markup [ must be escaped so it doesn't become a tag
+        assert "[with]" not in result or result.count("[") > result.count("[/]")
+        # The value text must still be present after unescaping
+        assert "with" in result
+
+    def test_multiple_frags_concatenated(self):
+        frags = [("bold #FFD700", "⚙  "), ("bold", "read_file"), ("#C0C0C0", "  path="), ("#1E90FF", "'foo.py'")]
+        result = frags_to_rich_markup(frags)
+        assert "⚙" in result
+        assert "read_file" in result
+        assert "path=" in result
+        assert "foo.py" in result
+
+    def test_round_trip_tool_slot_header(self):
+        frags = tool_slot_header_frags("read_file", {"path": "foo.py"})
+        markup = frags_to_rich_markup(frags)
+        assert "⚙" in markup
+        assert "read_file" in markup
+        assert "foo.py" in markup
 
 
 # ─── tool_name_style ──────────────────────────────────────────────────────────

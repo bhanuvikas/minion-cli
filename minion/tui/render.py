@@ -150,7 +150,8 @@ def render_message_blocks(
       - role=asst   / type=blocks → text blocks + tool_use blocks (⚙ icon)
       - role=user   / type=blocks → tool_result blocks (✓ icon)
     """
-    from ..display_utils import _trunc, format_tool_args, tool_name_style
+    from ..display_utils import _trunc, format_tool_args, tool_name_style, tool_slot_header_frags
+    from ..theme import GREEN as _GREEN
 
     lines: list[list[tuple[str, str]]] = []
 
@@ -182,13 +183,11 @@ def render_message_blocks(
                         _line(("", ""))
                 elif blk["type"] == "tool_use":
                     name = blk.get("name", "")
-                    args = format_tool_args(blk.get("input", {}), expanded=expanded)
-                    _line(
-                        ("class:slot-detail", " "),
-                        ("class:tool-icon",   "⚙  "),
-                        (tool_name_style(name), name),
-                        ("class:tool-detail", f"  {args}" if args else ""),
+                    frags = tool_slot_header_frags(
+                        name, blk.get("input", {}),
+                        expanded=expanded,
                     )
+                    _line(("class:slot-detail", " "), *frags)
 
         elif role == "user" and msg.get("type") == "blocks":
             for blk in msg.get("blocks", []):
@@ -198,7 +197,7 @@ def render_message_blocks(
                     limit      = 400 if expanded else 87
                     # Match scrollback structure: ✓ done line + └─ preview line.
                     # Timing is not stored in message blocks, so we omit it.
-                    _line(("class:tool-ok", "   ✓  done"))
+                    _line((f"bold {_GREEN}", "   ✓  done"))
                     _line(
                         ("class:slot-detail", "   └─  "),
                         ("class:slot-detail", _trunc(first_line, limit)),

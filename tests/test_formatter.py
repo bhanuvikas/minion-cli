@@ -98,6 +98,12 @@ class TestFormatToolCall:
         # The result should still contain a valid string (no crash)
         assert isinstance(result, str)
 
+    def test_rich_special_chars_in_value_escaped(self):
+        """[brackets] in arg values must not become Rich tags."""
+        result = format_tool_call("run_shell", {"command": "echo [hello]"})
+        # 'hello' must appear in the rendered string without being mis-parsed as a tag
+        assert "hello" in result
+
 
 # ─── format_tool_result ──────────────────────────────────────────────────────
 

@@ -24,19 +24,18 @@ def format_tool_call(
 ) -> str:
     """Return Rich markup for a tool call header line (and optional block args).
 
-    Scalar / short string values appear inline.
-    Multiline strings are rendered as an indented block below the header.
-    Content keys for write_file/edit_file are suppressed — the diff preview
-    already shows that information.
+    Scalar / short string values appear inline via the shared tool_slot_header_frags()
+    semantic core, converted to Rich markup by frags_to_rich_markup().
+    Multiline strings are rendered as an indented block below the header —
+    a scrollback-specific concern not needed in single-line slot/inspector contexts.
 
     mode_badge: None=normal  "edits"=yellow»  "yolo"=⚡  "trusted"=green~
     """
-    from ..display_utils import tool_name_style as _tns
-    from ..theme import BLUE, YELLOW
+    from ..display_utils import _SKIP_KEYS, frags_to_rich_markup, tool_slot_header_frags
+    from ..theme import YELLOW
 
     label        = "[muted][dry-run][/] " if dry_run else ""
     agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
-    name_style   = _tns(name)
 
     badge_str = ""
     if mode_badge == "edits":
@@ -48,29 +47,34 @@ def format_tool_call(
     elif mode_badge == "trusted":
         badge_str = " [green]~[/]"
 
-    inline_args: list[str] = []
-    block_lines: list[str] = []
+    # Split inputs: multiline strings → block display (scrollback has room for them);
+    # everything else → inline frags via the shared semantic core.
+    # Skip-key filtering (content, old_string, new_string) is handled by tool_slot_header_frags().
+    inline_inputs = {k: v for k, v in inputs.items() if not (isinstance(v, str) and "\n" in v)}
+    block_pairs   = [(k, v) for k, v in inputs.items()
+                     if isinstance(v, str) and "\n" in v and k not in _SKIP_KEYS]
 
-    for k, v in inputs.items():
-        if name == "write_file" and k == "content":
-            continue
-        if name == "edit_file" and k in ("old_string", "new_string"):
-            continue
-        if isinstance(v, str) and "\n" in v:
-            n = v.count("\n") + 1
-            block_lines.append(f"  [muted]{k} ({n} lines):[/]")
-            for line in v.splitlines():
-                block_lines.append(f"  [muted]│[/] {escape(line)}")
-        elif isinstance(v, str) and len(v) > 60:
-            inline_args.append(f"[muted]{k}=[/][{BLUE}]\"{escape(v[:50])}…\"[/]")
-        else:
-            inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
+    # Shared semantic core → Rich markup.
+    # Frags: [0]=icon, [1]=name, [2:]=key/value pairs (each key frag has leading "  ").
+    frags       = tool_slot_header_frags(name, inline_inputs)
+    icon_markup = frags_to_rich_markup(frags[:1])   # "⚙  " (bold yellow)
+    name_markup = frags_to_rich_markup(frags[1:2])  # tool name (bold + colour)
+    args_markup = frags_to_rich_markup(frags[2:])   # "  key=value  key=value" or ""
 
     header = (
-        f"{agent_prefix}[bold {YELLOW}]⚙[/]  "
-        f"{label}[{name_style}]{name}[/]{badge_str}"
-        f"  {'  '.join(inline_args)}"
+        f"{agent_prefix}{icon_markup}"
+        f"{label}{name_markup}{badge_str}"
+        + args_markup
     )
+
+    # Block display for multiline values — scrollback-specific, not used in slots/inspector.
+    block_lines: list[str] = []
+    for k, v in block_pairs:
+        n = v.count("\n") + 1
+        block_lines.append(f"  [muted]{k} ({n} lines):[/]")
+        for line in v.splitlines():
+            block_lines.append(f"  [muted]│[/] {escape(line)}")
+
     if block_lines:
         return header + "\n" + "\n".join(block_lines)
     return header
