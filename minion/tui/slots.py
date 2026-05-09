@@ -18,7 +18,7 @@ from typing import Callable, ClassVar, Optional
 from prompt_toolkit.formatted_text import FormattedText
 
 from ..display_utils import format_tool_args
-from ..theme import _TOOL_NAME_COLORS
+from ..theme import BLUE, YELLOW, _TOOL_NAME_COLORS
 
 
 class SlotsManager:
@@ -206,7 +206,7 @@ class SlotsManager:
                 # ── Generic tool slot — 3-line format ────────────────────────
                 _name_color = _TOOL_NAME_COLORS.get(tool_name, "")
                 _name_style = f"bold {_name_color}".strip()
-                fragments.append(("class:slot-icon", "⚙  "))
+                fragments.append((f"bold {YELLOW}", "⚙  "))
                 fragments.append((_name_style, tool_name))
                 skip = self._SLOT_SKIP_KEYS.get(tool_name, set())
                 for k, v in inputs.items():
@@ -218,7 +218,7 @@ class SlotsManager:
                     else:
                         v_disp = repr(v)[:40]
                     fragments.append(("class:slot-detail", f"  {k}="))
-                    fragments.append(("", v_disp))
+                    fragments.append((BLUE, v_disp))
 
                 if status == "pending":
                     fragments.append(("class:slot-running", "\n   ○  waiting…"))
