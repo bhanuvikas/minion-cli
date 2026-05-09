@@ -9,6 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
+# Type checking (run before committing — catches import errors, wrong signatures, None dereferences)
+pyright minion/                  # full package — must show 0 errors
+pyright minion/runner/loop.py    # single file
+
 # Tests
 pytest tests/                                                                                               # full suite
 pytest tests/test_display_utils.py                                                                          # single file
