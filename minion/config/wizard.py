@@ -3,7 +3,7 @@
 Detects missing API credentials and guides the user through:
   1. Provider selection (Anthropic / OpenAI / OpenRouter)
   2. API key entry
-  3. Writing the key to a .env file in the current directory
+  3. Writing the key to ~/.minion/.env (user-level, shared across all projects)
 
 Designed to run once on first launch and to be re-runnable via `minion setup`.
 """
@@ -42,7 +42,7 @@ async def run_setup_wizard() -> bool:
     """Run the interactive first-run setup wizard.
 
     Returns True if setup completed successfully, False if the user cancelled.
-    Writes the chosen API key to .env in the current working directory.
+    Writes the chosen API key to ~/.minion/.env (user-level, shared across all projects).
     """
     console.print()
     console.print(f"  [bold {YELLOW}]Welcome to minion-cli![/]")
