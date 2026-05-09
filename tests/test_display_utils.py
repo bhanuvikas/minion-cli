@@ -1,11 +1,11 @@
-"""Tests for minion/display_utils.py — format_tool_args and _trunc.
+"""Tests for minion/display_utils.py — format_tool_args, _trunc, tool_slot_header_frags.
 
 No API calls. No filesystem operations. Pure unit tests.
 """
 
 import pytest
 
-from minion.display_utils import _trunc, format_tool_args
+from minion.display_utils import _trunc, format_tool_args, tool_slot_header_frags
 
 
 # ─── _trunc ──────────────────────────────────────────────────────────────────
@@ -156,3 +156,105 @@ class TestFormatToolArgsModes:
     def test_read_file_shows_path(self):
         result = format_tool_args({"path": "src/main.py"})
         assert "path='src/main.py'" == result
+
+
+# ─── tool_slot_header_frags ───────────────────────────────────────────────────
+
+class TestToolSlotHeaderFrags:
+    def _text(self, frags):
+        """Concatenate all text from fragment list."""
+        return "".join(t for _, t in frags)
+
+    def _styles(self, frags):
+        """Return list of styles from fragment list."""
+        return [s for s, _ in frags]
+
+    def test_returns_list_of_tuples(self):
+        frags = tool_slot_header_frags("read_file", {})
+        assert isinstance(frags, list)
+        assert all(isinstance(f, tuple) and len(f) == 2 for f in frags)
+
+    def test_icon_is_first_fragment(self):
+        frags = tool_slot_header_frags("read_file", {})
+        _, icon_text = frags[0]
+        assert "⚙" in icon_text
+
+    def test_icon_uses_bold_yellow(self):
+        frags = tool_slot_header_frags("read_file", {})
+        icon_style, _ = frags[0]
+        assert "bold" in icon_style
+        assert "#FFD700" in icon_style
+
+    def test_tool_name_in_second_fragment(self):
+        frags = tool_slot_header_frags("read_file", {})
+        _, name_text = frags[1]
+        assert name_text == "read_file"
+
+    def test_tool_name_is_bold(self):
+        frags = tool_slot_header_frags("read_file", {})
+        name_style, _ = frags[1]
+        assert "bold" in name_style
+
+    def test_write_file_name_uses_yellow_color(self):
+        frags = tool_slot_header_frags("write_file", {})
+        name_style, _ = frags[1]
+        assert "#FFD700" in name_style
+
+    def test_short_string_value_uses_single_quotes(self):
+        frags = tool_slot_header_frags("read_file", {"path": "foo.py"})
+        combined = self._text(frags)
+        assert "'foo.py'" in combined
+
+    def test_long_string_value_truncated_with_double_quotes(self):
+        long_val = "x" * 60
+        frags = tool_slot_header_frags("read_file", {"path": long_val})
+        combined = self._text(frags)
+        assert "…" in combined
+        assert '"' in combined
+
+    def test_value_uses_blue_style(self):
+        frags = tool_slot_header_frags("read_file", {"path": "foo.py"})
+        value_style = frags[-1][0]
+        assert "#1E90FF" in value_style
+
+    def test_key_label_uses_silver_style(self):
+        frags = tool_slot_header_frags("read_file", {"path": "foo.py"})
+        # key label frag is second-to-last
+        key_style = frags[-2][0]
+        assert "#C0C0C0" in key_style
+
+    def test_content_key_suppressed(self):
+        frags = tool_slot_header_frags("write_file", {"path": "f.py", "content": "big blob"})
+        combined = self._text(frags)
+        assert "content" not in combined
+        assert "f.py" in combined
+
+    def test_old_string_suppressed(self):
+        frags = tool_slot_header_frags("edit_file", {"path": "f.py", "old_string": "a", "new_string": "b"})
+        combined = self._text(frags)
+        assert "old_string" not in combined
+        assert "new_string" not in combined
+        assert "f.py" in combined
+
+    def test_newlines_replaced_in_value(self):
+        frags = tool_slot_header_frags("run_shell", {"command": "line1\nline2"})
+        combined = self._text(frags)
+        assert "\n" not in combined
+        assert "↵" in combined
+
+    def test_integer_value_uses_repr(self):
+        frags = tool_slot_header_frags("run_shell", {"timeout": 30})
+        combined = self._text(frags)
+        assert "30" in combined
+
+    def test_empty_inputs_returns_just_icon_and_name(self):
+        frags = tool_slot_header_frags("todo_read", {})
+        assert len(frags) == 2
+        assert "⚙" in frags[0][1]
+        assert frags[1][1] == "todo_read"
+
+    def test_portable_styles_no_class_names(self):
+        """All styles must be hex/bold modifiers — never prompt_toolkit class names."""
+        frags = tool_slot_header_frags("write_file", {"path": "f.py"})
+        for style, _ in frags:
+            assert not style.startswith("class:"), f"Found class: style {style!r}"

@@ -17,9 +17,9 @@ from typing import Callable, ClassVar, Optional
 from rich.live import Live
 from rich.text import Text
 
-from ..display_utils import format_tool_args
+from ..display_utils import format_tool_args, tool_slot_header_frags
 from ..output.base import SlotSpec
-from ..theme import BLUE, GREEN, YELLOW
+from ..theme import GREEN, YELLOW
 
 # ─── Context-variable callback registry ───────────────────────────────────────
 # Using ContextVar instead of threading.local so that the callback is correctly
@@ -221,29 +221,10 @@ class ParallelDisplay:
                 self._live.update(self._render())
         return callback
 
-    _SLOT_SKIP_KEYS: ClassVar[dict[str, set[str]]] = {
-        "write_file": {"content"},
-        "edit_file": {"old_string", "new_string"},
-    }
-
     def _append_slot_header(self, text: Text, tool_name: str, inputs: dict) -> None:
         """Append the ⚙ tool_name args... header line for a slot (no trailing newline)."""
-        text.append("⚙  ", style=f"bold {YELLOW}")
-        text.append(tool_name, style="bold")
-        skip = self._SLOT_SKIP_KEYS.get(tool_name, set())
-        for k, v in inputs.items():
-            if k in skip:
-                continue
-            if isinstance(v, str):
-                v_clean = v.replace("\n", "↵").replace("\r", "")
-                if len(v_clean) > 50:
-                    v_display = f'"{v_clean[:50]}…"'
-                else:
-                    v_display = f"'{v_clean}'"
-            else:
-                v_display = repr(v)[:40]
-            text.append(f"  {k}=", style="dim")
-            text.append(v_display, style=BLUE)
+        for style, content in tool_slot_header_frags(tool_name, inputs):
+            text.append(content, style=style)
 
     def _render(self) -> Text:
         """Build the current live display as a Rich Text object.

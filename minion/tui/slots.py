@@ -13,12 +13,11 @@ ParallelDisplay (console) does this automatically via Rich Live __exit__.
 """
 
 import threading
-from typing import Callable, ClassVar, Optional
+from typing import Callable, Optional
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from ..display_utils import format_tool_args
-from ..theme import BLUE, YELLOW, _TOOL_NAME_COLORS
+from ..display_utils import format_tool_args, tool_slot_header_frags
 
 
 class SlotsManager:
@@ -30,11 +29,6 @@ class SlotsManager:
     """
 
     needs_scrollback_flush: bool = True
-
-    _SLOT_SKIP_KEYS: ClassVar[dict[str, set[str]]] = {
-        "write_file": {"content"},
-        "edit_file":  {"old_string", "new_string"},
-    }
 
     def __init__(self, invalidate_fn: Callable) -> None:
         self._lock = threading.Lock()
@@ -204,21 +198,7 @@ class SlotsManager:
 
             else:
                 # ── Generic tool slot — 3-line format ────────────────────────
-                _name_color = _TOOL_NAME_COLORS.get(tool_name, "")
-                _name_style = f"bold {_name_color}".strip()
-                fragments.append((f"bold {YELLOW}", "⚙  "))
-                fragments.append((_name_style, tool_name))
-                skip = self._SLOT_SKIP_KEYS.get(tool_name, set())
-                for k, v in inputs.items():
-                    if k in skip:
-                        continue
-                    if isinstance(v, str):
-                        v_clean = v.replace("\n", "↵").replace("\r", "")
-                        v_disp  = f'"{v_clean[:50]}…"' if len(v_clean) > 50 else f"'{v_clean}'"
-                    else:
-                        v_disp = repr(v)[:40]
-                    fragments.append(("class:slot-detail", f"  {k}="))
-                    fragments.append((BLUE, v_disp))
+                fragments.extend(tool_slot_header_frags(tool_name, inputs))
 
                 if status == "pending":
                     fragments.append(("class:slot-running", "\n   ○  waiting…"))
