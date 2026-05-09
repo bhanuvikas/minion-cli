@@ -63,13 +63,14 @@ class TuiRenderer(OutputRenderer):
         agent_label: Optional[str] = None,
         mode_badge: Optional[str] = None,
     ) -> None:
-        from ..tools.executor import _tool_call_markup
-        markup = _tool_call_markup(name, inputs, dry_run, agent_label, mode_badge)
-        self._app.conversation.append_system(markup)
+        from .formatter import format_tool_call
+        self._app.conversation.append_system(
+            format_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge)
+        )
         self._app.invalidate()
 
     def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
-        from ..tools.executor import _tool_result_markup
+        from .formatter import format_tool_result
         is_success = (
             latency_ms > 0
             and not result.startswith("Error:")
@@ -79,12 +80,12 @@ class TuiRenderer(OutputRenderer):
             # ANSI directly so color matches class:slot-done (bold #4CAF50 = RGB 76,175,80)
             done_ansi = f"   \033[1m\033[38;2;76;175;80m✓  done ({latency_ms / 1000:.1f}s)\033[0m\n"
             self._app.conversation.append_ansi(done_ansi)
-        self._app.conversation.append_system(_tool_result_markup(result))
+        self._app.conversation.append_system(format_tool_result(result))
         self._app.invalidate()
 
     def on_tool_error(self, error: str) -> None:
-        from ..tools.executor import _err_markup
-        self._app.conversation.append_system(_err_markup(error))
+        from .formatter import format_tool_error
+        self._app.conversation.append_system(format_tool_error(error))
         self._app.invalidate()
 
     def on_diff_preview(self, detail: str, *, tool_name: str = "") -> None:
@@ -92,8 +93,8 @@ class TuiRenderer(OutputRenderer):
         self._app.invalidate()
 
     def on_todo_list(self, *, show_if_all_done: bool = False) -> None:
-        from ..tools.executor import _todo_list_markup
-        markup = _todo_list_markup(show_if_all_done=show_if_all_done)
+        from .formatter import format_todo_list
+        markup = format_todo_list(show_if_all_done=show_if_all_done)
         if markup:
             self._app.conversation.append_system(markup)
             self._app.invalidate()

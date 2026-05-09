@@ -111,16 +111,19 @@ class ConsoleRenderer(OutputRenderer):
         agent_label: Optional[str] = None,
         mode_badge: Optional[str] = None,
     ) -> None:
-        from ..theme import print_tool_call
-        print_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge)
+        from ..theme import console
+        from .formatter import format_tool_call
+        console.print(format_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge))
 
     def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
-        from ..theme import print_tool_result
-        print_tool_result(result)
+        from ..theme import console
+        from .formatter import format_tool_result
+        console.print(format_tool_result(result))
 
     def on_tool_error(self, error: str) -> None:
-        from ..theme import print_tool_error
-        print_tool_error(error)
+        from ..theme import console
+        from .formatter import format_tool_error
+        console.print(format_tool_error(error))
 
     def on_diff_preview(self, detail: str, *, tool_name: str = "") -> None:
         from ..theme import console
@@ -130,8 +133,11 @@ class ConsoleRenderer(OutputRenderer):
             console.print(f"[muted]{detail}[/]")
 
     def on_todo_list(self, *, show_if_all_done: bool = False) -> None:
-        from ..theme import print_todo_list
-        print_todo_list(show_if_all_done=show_if_all_done)
+        from ..theme import console
+        from .formatter import format_todo_list
+        markup = format_todo_list(show_if_all_done=show_if_all_done)
+        if markup:
+            console.print(markup)
 
     # ── System messages ───────────────────────────────────────────────────────
 
@@ -186,8 +192,11 @@ class ConsoleRenderer(OutputRenderer):
         *,
         approval_mode: Optional[str] = None,
     ) -> None:
-        from ..theme import print_todo_list, print_usage
-        print_todo_list()
+        from ..theme import console, print_usage
+        from .formatter import format_todo_list
+        markup = format_todo_list()
+        if markup:
+            console.print(markup)
         print_usage(snapshot, active_mode=approval_mode if approval_mode != "off" else None)
 
     def on_subagent_tokens(self, count: int, total: int) -> None:

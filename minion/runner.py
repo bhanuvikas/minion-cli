@@ -30,7 +30,7 @@ from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
     print_critique, print_diff, print_error, print_iteration_limit,
-    print_reflection_header, print_tool_call,
+    print_reflection_header,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
 from .tools.definitions import DELEGATION_TOOLS, SIDE_EFFECTING_TOOLS, TOOL_DEFINITIONS

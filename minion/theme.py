@@ -303,30 +303,11 @@ def print_model_info(provider: str, model: str) -> None:
 
 
 def print_todo_list(show_if_all_done: bool = False) -> None:
-    """Print compact task checklist. Called inline after todo_write and at end of turn.
-
-    show_if_all_done=True: show even when all items are done (used for inline display
-    so the user sees the final ✓ state before the model clears the list).
-    show_if_all_done=False (default): auto-hide when all done (end-of-turn display
-    avoids showing a completed list on subsequent turns).
-    """
-    from .tools.implementations import get_todo_list
-    items = get_todo_list()
-    if not items:
-        return
-    if not show_if_all_done and all(i["status"] == "done" for i in items):
-        return
-    console.print()
-    console.print(" [bold dim]Tasks[/]")
-    for item in items:
-        status = item["status"]
-        text   = item["text"]
-        if status == "done":
-            console.print(f"  [green]✓[/]  [dim]{text}[/]")
-        elif status == "in_progress":
-            console.print(f"  [yellow]→[/]  {text}")
-        else:
-            console.print(f"  [dim]○  {text}[/]")
+    """Print compact task checklist."""
+    from .output.formatter import format_todo_list
+    markup = format_todo_list(show_if_all_done=show_if_all_done)
+    if markup:
+        console.print(markup)
 
 
 def print_usage(snapshot: "Optional[ContextSnapshot]", active_mode: "Optional[str]" = None) -> None:  # type: ignore[name-defined]
@@ -507,49 +488,9 @@ def print_mode_toggle(mode: str, enabled: bool) -> None:
 
 
 def print_tool_call(name: str, inputs: dict, dry_run: bool = False, agent_label: str | None = None, mode_badge: str | None = None) -> None:
-    """Display a tool call the agent is about to make.
-
-    Scalar and short string values appear inline. Multiline strings (e.g. the
-    content argument of write_file) are printed as an indented block below the
-    header line so the user can review the full content before confirming.
-
-    mode_badge: None = normal, "edits" = yellow » suffix, "yolo" = color ⚡ suffix
-    """
-    label = f"[muted][dry-run][/] " if dry_run else ""
-    agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
-    name_color = _TOOL_NAME_COLORS.get(name, "bold")
-    badge_str = ""
-    if mode_badge == "edits":
-        badge_str = f" [{YELLOW}]»[/]"
-    elif mode_badge == "yolo":
-        badge_str = f" [{name_color}]⚡[/]"
-    elif mode_badge == "trusted":
-        badge_str = " [green]~[/]"
-
-    inline_args = []
-    block_args = []  # (key, value) pairs that need a separate block
-
-    for k, v in inputs.items():
-        # write_file/edit_file: suppress content fields from inline display —
-        # the confirmation prompt already shows a diff, so this would be redundant.
-        if name == "write_file" and k == "content":
-            continue
-        if name == "edit_file" and k in ("old_string", "new_string"):
-            continue
-        if isinstance(v, str) and "\n" in v:
-            block_args.append((k, v))  # shown below, not inline
-        elif isinstance(v, str) and len(v) > 60:
-            inline_args.append(f"[muted]{k}=[/][{BLUE}]\"{v[:50]}…\"[/]")
-        else:
-            inline_args.append(f"[muted]{k}=[/][{BLUE}]{v!r}[/]")
-
-    console.print(f"{agent_prefix}[bold {YELLOW}]⚙[/]  {label}[{name_color}]{name}[/]{badge_str}  {'  '.join(inline_args)}")
-
-    for k, v in block_args:
-        lines = v.count("\n") + 1
-        console.print(f"  [muted]{k} ({lines} lines):[/]")
-        for line in v.splitlines():
-            console.print(f"  [muted]│[/] {line}")
+    """Display a tool call the agent is about to make."""
+    from .output.formatter import format_tool_call
+    console.print(format_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge))
 
 
 def print_trust_saved(tool: str, patterns: list[str], scope: str) -> None:
@@ -569,17 +510,14 @@ def print_trust_saved(tool: str, patterns: list[str], scope: str) -> None:
 
 def print_tool_result(result: str) -> None:
     """Display a compact summary of the tool result (first line, truncated)."""
-    from rich.markup import escape
-    first_line = result.split("\n")[0]
-    preview = escape(first_line[:100]) + ("…" if len(first_line) > 100 else "")
-    extra_lines = result.count("\n")
-    suffix = f"  [muted]+{extra_lines} more lines[/]" if extra_lines > 0 else ""
-    console.print(f"   [muted]└─[/] {preview}{suffix}")
+    from .output.formatter import format_tool_result
+    console.print(format_tool_result(result))
 
 
 def print_tool_error(error: str) -> None:
     """Display a tool execution error."""
-    console.print(f"   [bold red]└─ Error:[/] {error}")
+    from .output.formatter import format_tool_error
+    console.print(format_tool_error(error))
 
 
 def print_iteration_limit(max_iter: int) -> None:

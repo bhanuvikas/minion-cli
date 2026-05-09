@@ -17,7 +17,7 @@ from ..llm.base import (
     StreamComplete, TextChunk, ToolUseBlock,
 )
 from ..runner import run_prompt
-from ..theme import YELLOW, console, print_error, print_tool_call
+from ..theme import YELLOW, console, print_error
 from ..tools.definitions import TOOL_DEFINITIONS
 from ..tools.executor import ToolExecutor
 from ..tracing import get_tracer
