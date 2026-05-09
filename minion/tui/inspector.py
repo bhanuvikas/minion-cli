@@ -19,6 +19,7 @@ from __future__ import annotations
 from prompt_toolkit.formatted_text import FormattedText
 
 from .agent_registry import SubagentRegistry, SubagentState
+from ..theme import _TOOL_NAME_COLORS
 
 _STATUS_ICON = {"pending": "○", "running": "●", "complete": "✓", "error": "✗"}
 _STATUS_STYLE = {
@@ -222,78 +223,59 @@ class InspectorPanel:
                 _line(("class:slot-error", f" Error: {state.error}"))
             return lines
 
-        turns = self._group_into_turns(state.messages)
-        for turn_idx, turn in enumerate(turns, 1):
-            is_current = (turn_idx == len(turns) and state.status == "running")
-            lbl = f" ── Turn {turn_idx}" + (" (current)" if is_current else "") + " "
-            lbl += "─" * max(0, 56 - len(lbl))
-            _line(("class:slot-detail", lbl))
+        label = state.label  # e.g. "coder"
 
-            for msg in turn:
-                role = msg.get("role", "")
+        for msg in state.messages:
+            role = msg.get("role", "")
 
-                if role == "user" and msg.get("type") == "text" and turn_idx == 1:
-                    text = msg["text"].replace("\n", " ").strip()
-                    limit = 400 if self._expanded else 90
-                    _line(("class:slot-detail", f"   you › {_trunc(text, limit)}"))
+            if role == "user" and msg.get("type") == "text":
+                text  = msg["text"].replace("\n", " ").strip()
+                limit = 400 if self._expanded else 90
+                _line(
+                    ("class:minion-prefix", " minion ›  "),
+                    ("class:conv-text",    _trunc(text, limit)),
+                )
+                _line(("", ""))
 
-                elif role == "assistant" and msg.get("type") == "blocks":
-                    for blk in msg.get("blocks", []):
-                        if blk["type"] == "text" and blk.get("text"):
-                            txt   = blk["text"].replace("\n", " ").strip()
+            elif role == "assistant" and msg.get("type") == "blocks":
+                for blk in msg.get("blocks", []):
+                    if blk["type"] == "text":
+                        txt = blk.get("text", "").replace("\n", " ").strip()
+                        if txt:
                             limit = 400 if self._expanded else 93
-                            _line(("", f"   {_trunc(txt, limit)}"))
-                        elif blk["type"] == "tool_use":
-                            args = _format_tool_args(blk.get("input", {}), self._expanded)
                             _line(
-                                ("class:slot-icon",   "   ⚙  "),
-                                ("bold",              blk.get("name", "")),
-                                ("class:slot-detail", f"  {args}"),
+                                ("class:inspector-agent", f" {label} ›  "),
+                                ("",                      _trunc(txt, limit)),
                             )
+                            _line(("", ""))  # blank after text, before tools
+                    elif blk["type"] == "tool_use":
+                        name       = blk.get("name", "")
+                        args       = _format_tool_args(blk.get("input", {}), self._expanded)
+                        name_color = _TOOL_NAME_COLORS.get(name, "")
+                        name_style = f"bold {name_color}".strip()
+                        _line(
+                            ("class:slot-detail", " "),
+                            ("class:tool-icon",   "⚙  "),
+                            (name_style,          name),
+                            ("class:tool-detail", f"  {args}" if args else ""),
+                        )
 
-                elif role == "user" and msg.get("type") == "blocks":
-                    for blk in msg.get("blocks", []):
-                        if blk["type"] == "tool_result":
-                            content = blk.get("content", "").replace("\n", " ").strip()
-                            limit   = 400 if self._expanded else 87
-                            _line(
-                                ("class:slot-done",   "      ✓  "),
-                                ("class:slot-detail", _trunc(content, limit)),
-                            )
-
-            _line(("", ""))  # blank between turns
+            elif role == "user" and msg.get("type") == "blocks":
+                for blk in msg.get("blocks", []):
+                    if blk["type"] == "tool_result":
+                        content = blk.get("content", "").replace("\n", " ").strip()
+                        limit   = 400 if self._expanded else 87
+                        _line(
+                            ("class:slot-detail", "    "),
+                            ("class:tool-ok",     "✓  "),
+                            ("class:slot-detail", _trunc(content, limit)),
+                        )
+                _line(("", ""))  # blank after results, before next coder response
 
         if state.status == "error" and state.error:
             _line(("class:slot-error", f" ✗  Error: {state.error}"))
 
         return lines
-
-    def _group_into_turns(self, messages: list[dict]) -> list[list[dict]]:
-        turns:   list[list[dict]] = []
-        current: list[dict]       = []
-
-        for msg in messages:
-            role = msg.get("role", "")
-            if role == "assistant":
-                if current:
-                    turns.append(current)
-                current = [msg]
-            elif role == "user" and msg.get("type") == "text":
-                if not turns and not current:
-                    current = [msg]
-                else:
-                    current.append(msg)
-            else:
-                current.append(msg)
-
-        if current:
-            turns.append(current)
-
-        if len(turns) >= 2 and all(m.get("role") == "user" for m in turns[0]):
-            turns[1] = turns[0] + turns[1]
-            turns.pop(0)
-
-        return turns if turns else [[]]
 
 
 def _format_tool_args(inputs: dict, expanded: bool = False) -> str:

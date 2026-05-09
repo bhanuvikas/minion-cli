@@ -65,4 +65,5 @@ TUI_STYLE = Style.from_dict({
     "inspector-tab-sel":    "bg:#2a1f00 fg:#FFD700 bold",  # selected tab — gold pill (minion palette)
     "inspector-tab":        "#555555",                     # unselected tab — dim
     "inspector-hint":       "#444444",                     # bottom key-hint row
+    "inspector-agent":      "bold #E8E8E8",                # subagent label (coder/writer/…)
 })
