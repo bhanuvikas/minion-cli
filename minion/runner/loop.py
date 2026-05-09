@@ -1,4 +1,19 @@
-"""Core ReAct loop — streaming iteration and main run_prompt_async loop."""
+"""Core ReAct loop — streaming iteration and main run_prompt_async loop.
+
+Flow overview:
+  run_prompt_async()
+    │  Assembles the effective tool set (native + MCP tools, filtered by depth/mode)
+    │  Loops up to MAX_ITERATIONS:
+    │    _stream_one_iteration_async()
+    │      │  Opens client.async_stream() → async generator of events
+    │      │  Waits for first event inside a spinner, then processes the rest
+    │      │  Dispatches: TextChunk → display, ToolUseBlock → accumulate, StreamComplete → capture
+    │      └  Returns _IterationResult(full_text, tool_blocks, stop_reason)
+    │    stop_reason == "end_turn"  → commit to conversation, optional reflection, break
+    │    stop_reason == "tool_use"  → _execute_tools_async() → loop for next LLM turn
+    │    rate limit hit             → auto-compact conversation history, retry same iteration
+    └  Prints session summary (token usage, cost estimate)
+"""
 
 import asyncio
 import contextlib
@@ -133,6 +148,8 @@ async def _stream_one_iteration_async(
     _renderer = renderer or ConsoleRenderer()
 
     gen = client.async_stream(conversation.messages, system=system_prompt, system_dynamic=system_dynamic, tools=effective_tools)
+    # Consume the first event inside a spinner so it spins while the server responds.
+    # Skip when a slot display is already active (subagent mode) to avoid nested spinners.
     _in_live = _get_slot_cb() is not None
     _first_cm = contextlib.nullcontext() if _in_live else _renderer.spinner(effective_spinner)
 
@@ -177,6 +194,9 @@ async def _stream_one_iteration_async(
     usage: Optional[LLMResponse] = None
     printed_prefix = False
 
+    # Inline closure: processes each streaming event without thread-hopping.
+    # TextChunk → display text; ToolUseBlock → accumulate for later execution;
+    # StreamComplete → capture stop_reason and token usage.
     def _process(event) -> None:
         nonlocal printed_prefix, stop_reason, usage
         if isinstance(event, TextChunk):
@@ -225,6 +245,9 @@ async def _stream_one_iteration_async(
 
     _cancelled = False
 
+    # silent=True: accumulate text without streaming, then optionally flush it as narration.
+    # Used when render_markdown=True so the full response renders as a panel afterward.
+    # silent=False: stream each TextChunk to the renderer as it arrives (default REPL mode).
     if silent:
         _in_live2 = _get_slot_cb() is not None
         _silent_cm = contextlib.nullcontext() if _in_live2 else _renderer.spinner(effective_spinner)
@@ -366,12 +389,15 @@ async def run_prompt_async(
 
     limit = max_iterations if max_iterations is not None else MAX_ITERATIONS
 
+    # Merge MCP tools into the native set; then strip spawn_agent / send_remote_task
+    # based on depth, agent_enabled flag, and A2A availability.
     if tools is None and mcp_manager is not None and mcp_manager.has_tools():
         effective_tools: Optional[list[ToolDefinition]] = TOOL_DEFINITIONS + mcp_manager.get_tool_definitions()
     else:
         effective_tools = tools
 
     from ..agents.runner import MAX_AGENT_DEPTH
+    # Remove spawn_agent at max recursion depth to prevent runaway subagent chains.
     _exclude_spawn = not enable_agents or agent_depth >= MAX_AGENT_DEPTH
     if _exclude_spawn:
         base = effective_tools if effective_tools is not None else TOOL_DEFINITIONS
@@ -415,12 +441,16 @@ async def run_prompt_async(
         confirmation_manager=confirmation_manager,
         renderer=_renderer,
     )
+    # Expand any @file.py mentions in the prompt by appending their contents.
     prompt = _resolve_mentions(prompt, Path.cwd())
     conversation.add_user(prompt)
     final_usage: Optional[LLMResponse] = None
     side_effects_occurred = False
     _auto_compacted = False  # only auto-compact once per run_prompt call
 
+    # ── ReAct loop: LLM call → tool execution → repeat ───────────────────────
+    # Each iteration calls the LLM and dispatches any tool calls it requests.
+    # Exits when model says end_turn, hits the limit, or is cancelled / rate-limited.
     for _ in range(limit):
         try:
             result = await _stream_one_iteration_async(
@@ -441,6 +471,8 @@ async def run_prompt_async(
             _renderer.on_cancellation()
             return None
         except InputTokenRateLimitError:
+            # Context window full: auto-compact conversation history and retry this iteration.
+            # _auto_compacted guards against infinite retry loops if compaction doesn't help.
             if auto_compact and not _auto_compacted:
                 _auto_compacted = True
                 # Pop the pending user message so compaction summarises only
@@ -486,6 +518,7 @@ async def run_prompt_async(
         if result.usage:
             final_usage = result.usage
 
+        # Dispatch on stop_reason: end_turn → done, tool_use → run tools and loop back.
         if result.stop_reason not in ("end_turn", "tool_use"):
             conversation.add_assistant(result.full_text, result.usage)
             if _get_slot_cb() is None:
@@ -538,6 +571,7 @@ async def run_prompt_async(
                 if tb.name in SIDE_EFFECTING_TOOLS or "__" in tb.name or tb.name in DELEGATION_TOOLS:
                     side_effects_occurred = True
 
+            # Execute all tool calls (potentially in parallel), inject results into conversation.
             try:
                 await _execute_tools_async(result.tool_blocks, executor, conversation, renderer=_renderer)
             except (KeyboardInterrupt, asyncio.CancelledError):

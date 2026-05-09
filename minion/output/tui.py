@@ -31,6 +31,7 @@ class TuiRenderer(OutputRenderer):
         stream_markdown: bool = False,
         silent: bool = False,
     ) -> None:
+        # Opens a streaming turn in the TUI buffer; stream_markdown/silent ignored (TUI handles styling)
         self._app.conversation.start_assistant_turn()
         self._printed_prefix = True
 
@@ -48,6 +49,7 @@ class TuiRenderer(OutputRenderer):
         pass  # text is already in the conversation buffer from streaming
 
     def on_assistant_end(self) -> None:
+        # Guard prevents double-finalize if on_cancellation() already closed the turn
         if self._printed_prefix:
             self._app.conversation.finalize_turn()
             self._printed_prefix = False
@@ -70,6 +72,7 @@ class TuiRenderer(OutputRenderer):
         self._app.invalidate()
 
     def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
+        # Pre-render the ✓ line to ANSI so it lands in the scrollback buffer verbatim
         from .formatter import format_tool_result
         from ..tui.render import render_rich as _render_rich
         from ..theme import GREEN as _GREEN
@@ -125,6 +128,7 @@ class TuiRenderer(OutputRenderer):
     # ── Progress ──────────────────────────────────────────────────────────────
 
     def spinner(self, label: str) -> contextlib.AbstractContextManager:
+        # TUI's own thinking indicator makes a Rich console spinner redundant and disruptive
         return contextlib.nullcontext()  # streaming zone serves this purpose
 
     # ── Rich output ───────────────────────────────────────────────────────────
@@ -169,4 +173,6 @@ class TuiRenderer(OutputRenderer):
 
     @property
     def parallel_display(self) -> Any:
+        # Reuse the shared SlotsManager instead of creating a new Rich Live display;
+        # needs_scrollback_flush=True so caller commits slot results to the conversation buffer
         return self._app.slots  # SlotsManager — no Rich Live needed

@@ -35,6 +35,7 @@ class ConsoleRenderer(OutputRenderer):
         stream_markdown: bool = False,
         silent: bool = False,
     ) -> None:
+        # Opens the streaming zone: either a live MarkdownStreamer or a plain prefix line
         from ..theme import BLUE, console, MarkdownStreamer
         self._silent = silent
         self._stream_markdown = stream_markdown
@@ -50,6 +51,7 @@ class ConsoleRenderer(OutputRenderer):
             console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
 
     def on_assistant_chunk(self, text: str) -> None:
+        # Raw sys.stdout used (not console.print) so chunks appear without Rich buffering
         if self._silent:
             return
         if self._stream_markdown and self._md_streamer is not None:
@@ -111,6 +113,7 @@ class ConsoleRenderer(OutputRenderer):
         agent_label: Optional[str] = None,
         mode_badge: Optional[str] = None,
     ) -> None:
+        # Shows intent before execution; on_tool_result/on_tool_error show the outcome separately
         from ..theme import console
         from .formatter import format_tool_call
         console.print(format_tool_call(name, inputs, dry_run=dry_run, agent_label=agent_label, mode_badge=mode_badge))
@@ -192,6 +195,7 @@ class ConsoleRenderer(OutputRenderer):
         *,
         approval_mode: Optional[str] = None,
     ) -> None:
+        # Not called when run_prompt_async(capture_output=True) — A2A/subagent callers return early
         from ..theme import console, print_usage
         from .formatter import format_todo_list
         markup = format_todo_list()

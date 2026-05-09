@@ -7,6 +7,18 @@ right implementation, and surface the result via theme helpers.
 Keeps UX concerns (confirmation prompts, display) out of implementations.py,
 and keeps business-logic concerns (which tools are dangerous, dispatch table)
 out of runner.py.
+
+Dispatch order in execute() / execute_async():
+  1. spawn_agent        → injected _agent_runner callable (runs run_prompt in thread)
+  2. send_remote_task   → injected _remote_task_runner callable (A2A HTTP call)
+  3. DANGEROUS_TOOLS    → confirmation prompt (unless auto-approved by mode/trust)
+  4. Pre-tool hook      → blocks execution if hook returns a block result
+  5. MCP tool (has '__') → routed to MCPManager.call_tool()
+  6. Native tool        → _DISPATCH table → implementations.py function in thread pool
+
+execute_async() additionally splits rendering into _immediate_r (shown before
+confirmation, typically the real renderer) and _deferred_r (buffered in parallel
+mode via _RenderBuffer, then flushed in order once all parallel tasks complete).
 """
 
 import asyncio
@@ -834,6 +846,7 @@ class ToolExecutor:
             spinner_label = TOOL_SPINNER_LABELS.get(name, f"[muted]{name}...[/]")
             _spin_cm = _deferred_r.spinner(spinner_label) if _deferred_r is not None else contextlib.nullcontext()
             with _spin_cm:
+                # All native tools are synchronous; run in thread pool to keep the event loop responsive.
                 result = await asyncio.to_thread(fn, **inputs)
             if _deferred_r is not None and name not in _SILENT_TOOLS:
                 _deferred_r.on_tool_result(result, latency_ms=int((_time_exec.monotonic() - _t0) * 1000))

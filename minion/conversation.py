@@ -103,6 +103,7 @@ class Conversation:
 
     def __init__(self, model: str = "") -> None:
         self.messages: list[Message] = []
+        # total_tokens survives clear() — it's billing history, not window state.
         self.total_tokens: int = 0      # cumulative (input + output) across all turns
         self._model = model
         self._turn_count: int = 0
@@ -113,6 +114,7 @@ class Conversation:
         self._model = model
 
     def add_user(self, text: str) -> None:
+        # Plain string content — no tool involvement, so no typed ContentBlocks needed.
         self.messages.append(Message(role="user", content=text))
 
     def add_assistant(self, text: str, usage: Optional[LLMResponse]) -> None:
@@ -164,6 +166,7 @@ class Conversation:
         memory_tokens: estimated token count for the injected memory block.
         Both computed by the caller (runner.py) as len(text) // 4.
         """
+        # Snapshot is built once per turn, after add_assistant*() has already updated total_tokens.
         if usage is None:
             return None
         total_input = (usage.input_tokens + usage.cache_read_tokens

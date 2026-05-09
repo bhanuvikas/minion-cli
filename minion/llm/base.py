@@ -61,6 +61,8 @@ ContentBlock = Union[ContentTextBlock, ContentToolUseBlock, ContentToolResultBlo
 @dataclass
 class Message:
     role: str                           # "user" | "assistant"
+    # str when the turn has no tool involvement; list[ContentBlock] when it does.
+    # Adapters must branch on isinstance(content, str) in _format_messages().
     content: Union[str, list[ContentBlock]]  # str for plain turns; list for tool turns
 
 

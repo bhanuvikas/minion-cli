@@ -161,6 +161,9 @@ class AnthropicClient(LLMClient):
             "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
+        # system (static) gets cache_control so Anthropic caches it across turns.
+        # system_dynamic (memory/context injected per turn) is excluded from the cache
+        # because it changes every call and caching it would waste cache write tokens.
         if system and system_dynamic:
             kwargs["system"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
@@ -186,6 +189,7 @@ class AnthropicClient(LLMClient):
                             block = event.content_block
                             if block.type == "tool_use":
                                 current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                                # Fire early so the runner can show a spinner before JSON input arrives.
                                 yield ToolAccumulationStart(name=block.name)
 
                         elif event_type == "content_block_delta":
@@ -193,11 +197,13 @@ class AnthropicClient(LLMClient):
                             if delta.type == "text_delta":
                                 yield TextChunk(text=delta.text)
                             elif delta.type == "input_json_delta" and current_tool is not None:
+                                # JSON arrives as partial fragments; buffer until content_block_stop.
                                 current_tool["json_buf"] += delta.partial_json
 
                         elif event_type == "content_block_stop":
                             if current_tool is not None:
                                 tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
+                                # Full input assembled — emit the ToolUseBlock the runner will execute.
                                 yield ToolUseBlock(
                                     id=current_tool["id"],
                                     name=current_tool["name"],
@@ -206,6 +212,7 @@ class AnthropicClient(LLMClient):
                                 current_tool = None
 
                     final = stream_ctx.get_final_message()
+                    # Cache fields are absent when caching is not enabled; getattr avoids AttributeError.
                     _cache_read = getattr(final.usage, "cache_read_input_tokens", 0) or 0
                     _cache_creation = getattr(final.usage, "cache_creation_input_tokens", 0) or 0
                     self._last_usage = LLMResponse(
@@ -224,7 +231,7 @@ class AnthropicClient(LLMClient):
                         cache_read_tokens=_cache_read,
                         cache_creation_tokens=_cache_creation,
                     )
-                return  # success
+                return  # success — break the retry loop
             except anthropic.RateLimitError as e:
                 if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e
@@ -275,6 +282,7 @@ class AnthropicClient(LLMClient):
             "max_tokens": _max_tokens_for(self._model),
             "messages": self._format_messages(messages),
         }
+        # Same caching split as stream(): system is static (cached), system_dynamic is not.
         if system and system_dynamic:
             kwargs["system"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
@@ -298,6 +306,7 @@ class AnthropicClient(LLMClient):
                             block = event.content_block
                             if block.type == "tool_use":
                                 current_tool = {"id": block.id, "name": block.name, "json_buf": ""}
+                                # Fire early so the runner can show a spinner before JSON input arrives.
                                 yield ToolAccumulationStart(name=block.name)
 
                         elif event_type == "content_block_delta":
@@ -305,11 +314,13 @@ class AnthropicClient(LLMClient):
                             if delta.type == "text_delta":
                                 yield TextChunk(text=delta.text)
                             elif delta.type == "input_json_delta" and current_tool is not None:
+                                # JSON arrives as partial fragments; buffer until content_block_stop.
                                 current_tool["json_buf"] += delta.partial_json
 
                         elif event_type == "content_block_stop":
                             if current_tool is not None:
                                 tool_input = json.loads(current_tool["json_buf"]) if current_tool["json_buf"] else {}
+                                # Full input assembled — emit the ToolUseBlock the runner will execute.
                                 yield ToolUseBlock(
                                     id=current_tool["id"],
                                     name=current_tool["name"],
@@ -318,6 +329,7 @@ class AnthropicClient(LLMClient):
                                 current_tool = None
 
                     final = await stream_ctx.get_final_message()
+                    # Cache fields are absent when caching is not enabled; getattr avoids AttributeError.
                     _cache_read = getattr(final.usage, "cache_read_input_tokens", 0) or 0
                     _cache_creation = getattr(final.usage, "cache_creation_input_tokens", 0) or 0
                     self._last_usage = LLMResponse(
@@ -336,7 +348,7 @@ class AnthropicClient(LLMClient):
                         cache_read_tokens=_cache_read,
                         cache_creation_tokens=_cache_creation,
                     )
-                return  # success
+                return  # success — break the retry loop
             except anthropic.RateLimitError as e:
                 if _is_input_token_rate_limit(e):
                     raise InputTokenRateLimitError(str(e)) from e

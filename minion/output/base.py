@@ -23,10 +23,10 @@ class SlotSpec(NamedTuple):
     label     : optional [label] shown in status lines; set for agent roles,
                 None for generic tools where the header is self-identifying
     """
-    key: str
+    key: str          # stable identity for the slot across updates (tool_use_id)
     tool_name: str
     inputs: dict
-    label: Optional[str] = None
+    label: Optional[str] = None  # agent role tag (e.g. "coder"); None for non-agent tools
 
 
 @runtime_checkable
@@ -39,6 +39,7 @@ class ParallelDisplayProtocol(Protocol):
       ParallelDisplay (console): False  — Rich Live __exit__ prints the final state
       SlotsManager (TUI):        True   — caller must commit slots to the conversation
     """
+    # True only for TUI: Rich Live auto-prints on exit, but TUI slots must be committed manually
     needs_scrollback_flush: bool
 
     def pre_register(self, slots: list[SlotSpec]) -> None: ...
@@ -182,6 +183,7 @@ class OutputRenderer(ABC):
 
     # ── Parallel display ──────────────────────────────────────────────────────
 
+    # None → caller allocates a new Rich-Live ParallelDisplay; non-None → reuse existing display
     @property
     @abstractmethod
     def parallel_display(self) -> Optional[ParallelDisplayProtocol]:

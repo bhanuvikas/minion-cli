@@ -1,4 +1,18 @@
-"""Parallel tool and agent execution."""
+"""Parallel tool and agent execution.
+
+Two parallel paths, selected by _execute_tools_async():
+  1. Delegation tools (spawn_agent / send_remote_task) → _execute_parallel_agents_async()
+       Each agent runs in asyncio.to_thread() (sync run_prompt() under the hood).
+       A thread-local display callback routes each agent's output to its own slot.
+       asyncio.TaskGroup waits for all agents, then results are injected into conversation.
+
+  2. Generic parallel tools → _execute_parallel_tools_async()
+       STANDALONE mode (top-level call): creates its own ParallelDisplay / SlotsManager,
+         each tool runs in asyncio.to_thread(), a _RenderBuffer captures output per-tool,
+         flushed to scrollback in order after all tasks complete.
+       SUBAGENT mode (inside spawn_agent): outer slot display already active, so uses
+         parallel_sub_* events on the outer callback instead of a nested Live display.
+"""
 
 import asyncio
 import time as _time
@@ -65,6 +79,8 @@ async def _execute_parallel_agents_async(
     _callbacks = {tb.id: _make_registry_cb(tb.id, display.make_callback(tb.id)) for tb in tool_blocks}
 
     async def _run_spawn_async(tb: ToolUseBlock) -> str:
+        # set_agent_display_callback() uses a threading.local so each concurrent agent
+        # routes its text/tool output to its own slot without interfering with others.
         task = tb.input.get("task", "")
         role = tb.input.get("role") or "researcher"
         callback = _callbacks[tb.id]
@@ -134,9 +150,13 @@ async def _execute_parallel_agents_async(
         return await _run_remote_async(tb)
 
     tasks_map: dict[str, asyncio.Task] = {}
+    # Pre-mark all slots "running" before starting any task — prevents stale idle state
+    # if a fast-completing agent wins the slot before slower ones show their status.
     for tb in tool_blocks:
         _callbacks[tb.id]("running")
 
+    # TaskGroup starts all agents concurrently and awaits all of them.
+    # If any task raises, the group cancels the rest and re-raises.
     with display:
         display.render_now()
         async with asyncio.TaskGroup() as tg:
@@ -225,6 +245,8 @@ async def _execute_parallel_tools_async(
     _buffers: dict[str, _RenderBuffer] = {}
 
     async def _run_tb_async(tb: ToolUseBlock) -> str:
+        # _RenderBuffer captures each tool's renderer calls (call header, diff, result)
+        # so they can be replayed to scrollback in order after all tasks complete.
         _buf = _RenderBuffer()
         _buffers[tb.id] = _buf
         slot_cb = callbacks[tb.id]

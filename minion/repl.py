@@ -1305,6 +1305,10 @@ async def _run_repl_tui(
     from .tui import set_tui_app
     _renderer = TuiRenderer(tui_app)
 
+    # on_submit is an async callback registered with MinionApp.run_async().
+    # The TUI calls it on each Enter keystroke; it runs the full prompt pipeline
+    # (hooks → slash-command → memory inject → run_prompt_async → memory extract)
+    # then signals the TUI to stop thinking and refresh.
     async def on_submit(user_input: str) -> None:
         get_tracer().emit("user_turn", text=user_input)
 
@@ -1351,10 +1355,10 @@ async def _run_repl_tui(
             tui_app.set_thinking(False)
             return
 
-        # Slash commands: capture console output into the conversation zone.
-        # Run in a thread executor via run_in_terminal so the TUI is suspended
-        # and the thread has no running event loop — required for commands that
-        # use questionary (which calls asyncio.run() internally).
+        # Slash commands: run in a thread executor via run_in_terminal so the TUI is
+        # suspended and the thread has no running event loop (questionary calls
+        # asyncio.run() internally, which fails if a loop is already running).
+        # Console output is captured via _CaptureBuf and replayed into the TUI zone.
         if user_input.startswith("/"):
             from prompt_toolkit.application import run_in_terminal
             _buf = _CaptureBuf()
@@ -1494,7 +1498,18 @@ async def run_repl_async(
     debug: bool = False,
     agents_enabled: bool = True,
 ) -> None:
-    """Async REPL loop. Call via asyncio.run(run_repl_async(...))."""
+    """Async REPL loop. Call via asyncio.run(run_repl_async(...)).
+
+    Setup sequence:
+      1. Build project context (MINION.md, file tree, manifest) and system prompt.
+      2. Initialise memory store, permission store, and hook registry from config.
+      3. Load skill / agent / A2A / MCP registries.
+      4. Print greeting, then bifurcate:
+           - TTY + no MINION_NO_TUI → _run_repl_tui() (prompt_toolkit full-screen TUI)
+           - Otherwise             → PromptSession loop (console REPL)
+      In both paths, each user message goes through:
+        optional slash-command handling → memory injection → run_prompt_async() → memory extraction
+    """
     history_path = Path.home() / ".minion" / "history"
     history_path.parent.mkdir(exist_ok=True)
 
@@ -1737,9 +1752,9 @@ async def run_repl_async(
             console.print()
             continue
 
-        # Memory injection — off the hot path: runs in thread pool.
-        # Dynamic content (memory + plan) is separated from the static base prompt
-        # so the static prefix can be cached by the Anthropic API.
+        # Memory injection: retrieve relevant memories in a thread (vector/keyword search).
+        # Injected as system_dynamic (separate from system_prompt) so the static system_prompt
+        # prefix stays cacheable by the Anthropic API — only the dynamic suffix changes.
         memory_tokens = 0
         system_dynamic = ""
         if state.memory_enabled:
