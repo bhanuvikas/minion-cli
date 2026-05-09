@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import time as _time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,7 +124,7 @@ async def _stream_one_iteration_async(
         message_count=len(conversation.messages),
         messages=_serialize_messages(conversation.messages),
         system=system_prompt,
-        tools=[{"name": t.name, "description": t.description} for t in effective_tools],
+        tools=[dataclasses.asdict(t) for t in effective_tools],
         tool_names=[t.name for t in effective_tools],
         model=getattr(client, "model_id", "unknown"),
         estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
