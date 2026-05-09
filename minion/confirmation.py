@@ -13,7 +13,7 @@ class ConfirmationManager:
 
     All confirmation prompts go through this class. Guarantees:
     - One prompt visible at a time (threading.Lock serializes all callers)
-    - AgentLiveDisplay paused before prompt, resumed after (non-TUI path)
+    - ParallelDisplay paused before prompt, resumed after (non-TUI path)
     - Full scope selector for every confirmation, including MCP tools
 
     In TUI mode (set_tui() called):

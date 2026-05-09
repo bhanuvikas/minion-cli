@@ -1,11 +1,15 @@
-"""SlotsManager — TUI replacement for AgentLiveDisplay.
+"""SlotsManager — TUI parallel display (satisfies ParallelDisplayProtocol).
 
-Uses the same callback protocol as AgentLiveDisplay.make_callback() so
-runner.py can use it transparently. Instead of updating a Rich Live display,
+Uses the same callback interface as ParallelDisplay (console) so runner.py
+can treat both transparently. Instead of updating a Rich Live display,
 it calls app.invalidate() to trigger a prompt_toolkit redraw.
 
 No pause()/resume() needed — ConfirmationManager in TUI mode routes directly
 to the permission panel rather than pausing the display.
+
+needs_scrollback_flush=True: after a parallel run, the caller must commit
+completed slot states to the conversation scrollback and then call clear().
+ParallelDisplay (console) does this automatically via Rich Live __exit__.
 """
 
 import threading
@@ -20,8 +24,12 @@ from ..theme import _TOOL_NAME_COLORS
 class SlotsManager:
     """Thread-safe slot state manager for the TUI slots zone.
 
-    Same public interface as AgentLiveDisplay, minus the Rich Live machinery.
+    Satisfies ParallelDisplayProtocol. needs_scrollback_flush=True because
+    prompt_toolkit does not print slot states on exit — the caller must
+    explicitly flush completed states into the conversation scrollback.
     """
+
+    needs_scrollback_flush: bool = True
 
     _SLOT_SKIP_KEYS: ClassVar[dict[str, set[str]]] = {
         "write_file": {"content"},
@@ -34,10 +42,10 @@ class SlotsManager:
         self._order: list[str] = []
         self._invalidate = invalidate_fn
 
-    # ── Pre-registration (mirrors AgentLiveDisplay.pre_register) ─────────────
+    # ── Pre-registration ──────────────────────────────────────────────────────
 
     def pre_register(self, slots) -> None:
-        """Register slots before the run starts (same API as AgentLiveDisplay)."""
+        """Register slots before the run starts."""
         with self._lock:
             for slot in slots:
                 if slot.key not in self._states:
@@ -62,7 +70,7 @@ class SlotsManager:
             self._states.clear()
             self._order.clear()
 
-    # ── Callback factory (mirrors AgentLiveDisplay.make_callback) ────────────
+    # ── Callback factory ──────────────────────────────────────────────────────
 
     def make_callback(self, key: str) -> Callable:
         """Return an event callback bound to a specific slot key."""
@@ -113,7 +121,7 @@ class SlotsManager:
             self._invalidate()
         return callback
 
-    # ── Context manager (noop — AgentLiveDisplay compatibility) ─────────────────
+    # ── Context manager (noop — prompt_toolkit redraws on next invalidate) ──────
 
     def __enter__(self) -> "SlotsManager":
         return self

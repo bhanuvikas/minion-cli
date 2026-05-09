@@ -293,7 +293,7 @@ class TestSpawnAgentTool:
 # ─── TestParallelToolExecution (async path) ───────────────────────────────────
 
 def _make_mock_display():
-    """No-op AgentLiveDisplay mock (avoids real Rich Live terminal)."""
+    """No-op ParallelDisplay mock (avoids real Rich Live terminal)."""
     mock = MagicMock()
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
@@ -339,7 +339,7 @@ class TestParallelToolExecution:
         ]
 
         mock_display = _make_mock_display()
-        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+        with patch("minion.agents.display.ParallelDisplay", return_value=mock_display):
             start = time.monotonic()
             await _execute_tools_async(blocks, executor, conv)
             elapsed = time.monotonic() - start
@@ -374,7 +374,7 @@ class TestParallelToolExecution:
         ]
 
         mock_display = _make_mock_display()
-        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+        with patch("minion.agents.display.ParallelDisplay", return_value=mock_display):
             await _execute_tools_async(blocks, executor, conv)
 
         # Despite t2 finishing first, results are injected in original order
@@ -399,7 +399,7 @@ class TestParallelToolExecution:
         ]
 
         mock_display = _make_mock_display()
-        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+        with patch("minion.agents.display.ParallelDisplay", return_value=mock_display):
             await _execute_tools_async(blocks, executor, conv)
 
         calls = {c[0][0]: c[0][1] for c in conv.add_tool_result.call_args_list}

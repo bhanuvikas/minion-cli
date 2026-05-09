@@ -210,4 +210,4 @@ class ConsoleRenderer(OutputRenderer):
 
     @property
     def parallel_display(self) -> Any:
-        return None  # Caller creates a fresh AgentLiveDisplay each time
+        return None  # Caller creates a fresh ParallelDisplay each time

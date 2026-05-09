@@ -12,12 +12,13 @@ the same for subagent status updates.
 
 import contextvars
 import threading
-from typing import Callable, ClassVar, NamedTuple, Optional
+from typing import Callable, ClassVar, Optional
 
 from rich.live import Live
 from rich.text import Text
 
 from ..display_utils import format_tool_args
+from ..output.base import SlotSpec
 from ..theme import BLUE, GREEN, YELLOW
 
 # ─── Context-variable callback registry ───────────────────────────────────────
@@ -30,7 +31,7 @@ _display_callback_var: contextvars.ContextVar[Optional[Callable]] = contextvars.
     "display_callback", default=None
 )
 
-_active_live_display_var: contextvars.ContextVar[Optional["AgentLiveDisplay"]] = (
+_active_live_display_var: contextvars.ContextVar[Optional["ParallelDisplay"]] = (
     contextvars.ContextVar("active_live_display", default=None)
 )
 
@@ -45,61 +46,43 @@ def set_agent_display_callback(callback: Optional[Callable]) -> None:
     _display_callback_var.set(callback)
 
 
-def get_active_live_display() -> Optional["AgentLiveDisplay"]:
-    """Return the AgentLiveDisplay active in this task context, or None."""
+def get_active_live_display() -> Optional["ParallelDisplay"]:
+    """Return the ParallelDisplay active in this task context, or None."""
     return _active_live_display_var.get()
 
 
-def set_active_live_display(display: Optional["AgentLiveDisplay"]) -> None:
-    """Register (or clear) the active AgentLiveDisplay for this task context."""
+def set_active_live_display(display: Optional["ParallelDisplay"]) -> None:
+    """Register (or clear) the active ParallelDisplay for this task context."""
     _active_live_display_var.set(display)
-
-
-# ─── Slot specification ───────────────────────────────────────────────────────
-
-class SlotSpec(NamedTuple):
-    """Definition for one slot in the parallel live display.
-
-    key       : unique identifier (role name for agents, tool_use id for generic tools)
-    tool_name : shown in the header line (e.g. "spawn_agent", "read_file")
-    inputs    : tool inputs dict — used to render the header args
-    label     : optional [label] shown in status lines; used for agent role names;
-                None for generic tools where the header is self-identifying
-    """
-    key: str
-    tool_name: str
-    inputs: dict
-    label: Optional[str] = None
 
 
 # ─── Live display ─────────────────────────────────────────────────────────────
 
-class AgentLiveDisplay:
-    """Thread-safe live status panel for parallel tool execution.
+class ParallelDisplay:
+    """Thread-safe live status panel for parallel tool execution (console mode).
 
-    Subagent slots (label set) use a compact 2-line Claude-Code-inspired format:
+    Satisfies ParallelDisplayProtocol. needs_scrollback_flush=False because
+    Rich Live's __exit__ prints the final Done state permanently to the terminal.
+
+    Subagent slots (label set) use a compact 2-line format:
         ⏺  [researcher]  Count the methods in game.py…
           └─  Running · ↳ read_file  path='game.py'
 
-        ⏺  [researcher]  Count the methods in game.py…
-          └─  Done (4.2s)
-
     Generic tool slots (no label) use a 3-line format:
-        ⚙  read_file  path='/path/to/tetris.py'
-          ⚙  running…
-             ↳ read_file  'game.py'
         ⚙  read_file  path='/path/to/tetris.py'
           ✓  done (0.1s)
              └─  import pygame  +301 more lines
 
     Usage:
-        display = AgentLiveDisplay()
+        display = ParallelDisplay()
         slots = [SlotSpec(key="researcher", tool_name="spawn_agent", inputs=tb.input, label="researcher")]
         display.pre_register(slots)
         with display:
             callback = display.make_callback("researcher")
             set_agent_display_callback(callback)
     """
+
+    needs_scrollback_flush: bool = False  # Rich Live __exit__ prints final state
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -111,7 +94,7 @@ class AgentLiveDisplay:
         # bracket each confirmation; __exit__ prints the final Done state permanently.
         self._live = Live(Text(""), refresh_per_second=8, transient=True)
 
-    def __enter__(self) -> "AgentLiveDisplay":
+    def __enter__(self) -> "ParallelDisplay":
         self._live.__enter__()
         return self
 
@@ -350,3 +333,7 @@ class AgentLiveDisplay:
                     text.append("\n")  # blank detail row — holds slot height
 
         return text
+
+
+# Backward-compat alias — remove once all call sites are updated.
+AgentLiveDisplay = ParallelDisplay

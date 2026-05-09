@@ -9,7 +9,46 @@ from __future__ import annotations
 
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Callable, NamedTuple, Optional, Protocol, runtime_checkable
+
+
+# ── Parallel display shared types ─────────────────────────────────────────────
+
+class SlotSpec(NamedTuple):
+    """Definition for one slot in the parallel live display.
+
+    key       : unique identifier (tool_use id)
+    tool_name : shown in the header line (e.g. "spawn_agent", "read_file")
+    inputs    : tool inputs dict — used to render the header args
+    label     : optional [label] shown in status lines; set for agent roles,
+                None for generic tools where the header is self-identifying
+    """
+    key: str
+    tool_name: str
+    inputs: dict
+    label: Optional[str] = None
+
+
+@runtime_checkable
+class ParallelDisplayProtocol(Protocol):
+    """Interface satisfied by both ParallelDisplay (console) and SlotsManager (TUI).
+
+    Runner code uses this type so it doesn't need to know which display is active.
+    The one behavioural difference — whether completed slots need to be flushed
+    into the scrollback buffer — is expressed via needs_scrollback_flush:
+      ParallelDisplay (console): False  — Rich Live __exit__ prints the final state
+      SlotsManager (TUI):        True   — caller must commit slots to the conversation
+    """
+    needs_scrollback_flush: bool
+
+    def pre_register(self, slots: list[SlotSpec]) -> None: ...
+    async def pre_register_async(self, slots: list[SlotSpec]) -> None: ...
+    def make_callback(self, key: str) -> Callable: ...
+    def render_now(self) -> None: ...
+    def __enter__(self) -> "ParallelDisplayProtocol": ...
+    def __exit__(self, *args: object) -> None: ...
+    def clear(self) -> None: ...
+    def slot_results(self) -> list[dict]: ...
 
 
 class OutputRenderer(ABC):
@@ -145,9 +184,9 @@ class OutputRenderer(ABC):
 
     @property
     @abstractmethod
-    def parallel_display(self) -> Any:
-        """Return the parallel-agent display object, or None to create a fresh one.
+    def parallel_display(self) -> Optional[ParallelDisplayProtocol]:
+        """Return the parallel display object, or None to create a fresh ParallelDisplay.
 
-        TuiRenderer: returns app.slots (SlotsManager).
-        ConsoleRenderer: returns None (caller creates AgentLiveDisplay each time).
+        TuiRenderer: returns app.slots (SlotsManager — needs_scrollback_flush=True).
+        ConsoleRenderer: returns None (caller creates a fresh ParallelDisplay).
         """

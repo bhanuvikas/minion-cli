@@ -24,6 +24,7 @@ from typing import Optional
 from .conversation import Conversation
 from .llm.base import ContentTextBlock, ContentToolUseBlock, InputTokenRateLimitError, LLMClient, LLMResponse, StreamComplete, TextChunk, ToolAccumulationStart, ToolUseBlock
 from .output import ConsoleRenderer, OutputRenderer
+from .output.base import SlotSpec
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
@@ -169,6 +170,20 @@ def _build_content_blocks(result: _IterationResult) -> list:
     for tb in result.tool_blocks:
         blocks.append(ContentToolUseBlock(id=tb.id, name=tb.name, input=tb.input))
     return blocks
+
+
+def _agent_slots(tool_blocks: list[ToolUseBlock]) -> list[SlotSpec]:
+    """Build SlotSpec list for delegation tools (spawn_agent / send_remote_task)."""
+    def _label(tb: ToolUseBlock) -> str:
+        if tb.name == "spawn_agent":
+            return tb.input.get("role") or "researcher"
+        return tb.input.get("agent") or "remote"
+    return [SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=_label(tb)) for tb in tool_blocks]
+
+
+def _tool_slots(tool_blocks: list[ToolUseBlock]) -> list[SlotSpec]:
+    """Build SlotSpec list for generic (non-delegation) parallel tools."""
+    return [SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None) for tb in tool_blocks]
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
@@ -439,23 +454,16 @@ async def _execute_parallel_agents_async(
 ) -> None:
     """Async parallel agent dispatch using asyncio.TaskGroup.
 
-    Each delegation tool gets its own slot in AgentLiveDisplay. Tool execution
+    Each delegation tool gets its own slot in ParallelDisplay. Tool execution
     runs in asyncio.to_thread() so sync agent runners don't block the event loop.
     The callback is set inside the thread (thread-local) to route output correctly.
     """
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback, set_active_live_display
+    from .agents.display import ParallelDisplay, set_agent_display_callback, set_active_live_display
 
     _parallel = renderer.parallel_display if renderer is not None else None
-    display = _parallel if _parallel is not None else AgentLiveDisplay()
+    display = _parallel if _parallel is not None else ParallelDisplay()
 
-    slots = []
-    for tb in tool_blocks:
-        if tb.name == "spawn_agent":
-            label = tb.input.get("role") or "researcher"
-        else:
-            label = tb.input.get("agent") or "remote"
-        slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
-
+    slots = _agent_slots(tool_blocks)
     await display.pre_register_async(slots)
 
     # Register agents with the inspector registry and wrap display callbacks so
@@ -561,30 +569,29 @@ async def _execute_parallel_agents_async(
     await asyncio.sleep(0)
 
     # Commit completed agent slots to the scrollback and clear the live zone.
-    if _parallel is not None and renderer is not None:
-        from .tui.slots import SlotsManager as _SlotsManager
-        if isinstance(_parallel, _SlotsManager):
-            from rich.markup import escape as _rme
-            for tb, state in zip(tool_blocks, _parallel.slot_results()):
-                label = state.get("label", tb.name)
-                task = tb.input.get("task", "")
-                task_clean = task.replace("\n", " ").strip()
-                if len(task_clean) > 58:
-                    task_clean = task_clean[:58] + "…"
-                renderer.on_info(
-                    f"[#888888]⏺[/]  [bold]\\[{_rme(label)}][/]  [#C0C0C0]{_rme(task_clean)}[/]"
-                )
-                status = state.get("status", "")
-                if status == "complete":
-                    latency = state.get("latency_ms", 0) / 1000
-                    renderer.on_info(f"   [muted]└─[/]  [bold #4CAF50]done ({latency:.1f}s)[/]")
-                    preview = state.get("preview", "")
-                    if preview:
-                        renderer.on_info(f"       [#C0C0C0]{_rme(preview[:100])}[/]")
-                elif status == "error":
-                    error = state.get("error", "unknown error")
-                    renderer.on_info(f"   [muted]└─[/]  [bold red]Error: {error}[/]")
-            _parallel.clear()
+    # needs_scrollback_flush=True on SlotsManager (TUI); False on ParallelDisplay (console).
+    if _parallel is not None and renderer is not None and _parallel.needs_scrollback_flush:
+        from rich.markup import escape as _rme
+        for tb, state in zip(tool_blocks, _parallel.slot_results()):
+            label = state.get("label", tb.name)
+            task = tb.input.get("task", "")
+            task_clean = task.replace("\n", " ").strip()
+            if len(task_clean) > 58:
+                task_clean = task_clean[:58] + "…"
+            renderer.on_info(
+                f"[#888888]⏺[/]  [bold]\\[{_rme(label)}][/]  [#C0C0C0]{_rme(task_clean)}[/]"
+            )
+            status = state.get("status", "")
+            if status == "complete":
+                latency = state.get("latency_ms", 0) / 1000
+                renderer.on_info(f"   [muted]└─[/]  [bold #4CAF50]done ({latency:.1f}s)[/]")
+                preview = state.get("preview", "")
+                if preview:
+                    renderer.on_info(f"       [#C0C0C0]{_rme(preview[:100])}[/]")
+            elif status == "error":
+                error = state.get("error", "unknown error")
+                renderer.on_info(f"   [muted]└─[/]  [bold red]Error: {error}[/]")
+        _parallel.clear()
 
 
 async def _execute_parallel_tools_async(
@@ -605,7 +612,7 @@ async def _execute_parallel_tools_async(
     display correctly.
     """
     from .agents.display import (
-        AgentLiveDisplay, SlotSpec,
+        ParallelDisplay,
         get_agent_display_callback, get_active_live_display,
         set_agent_display_callback, set_active_live_display,
     )
@@ -642,14 +649,10 @@ async def _execute_parallel_tools_async(
 
     # ── STANDALONE MODE: top-level parallel tools ────────────────────────────
     _parallel = renderer.parallel_display if renderer is not None else None
-    display = _parallel if _parallel is not None else AgentLiveDisplay()
+    display = _parallel if _parallel is not None else ParallelDisplay()
 
     callbacks = {tb.id: display.make_callback(tb.id) for tb in tool_blocks}
-    slots = [
-        SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
-        for tb in tool_blocks
-    ]
-
+    slots = _tool_slots(tool_blocks)
     display.pre_register(slots)
 
     _buffers: dict[str, _RenderBuffer] = {}
@@ -693,12 +696,10 @@ async def _execute_parallel_tools_async(
     # Flush each tool's render buffer to the scrollback in order, then clear
     # the live slots zone. execute_async already rendered everything correctly
     # (call header, diff, result) into the per-tool buffer — no reconstruction.
-    if _parallel is not None and renderer is not None:
-        from .tui.slots import SlotsManager as _SlotsManager
-        if isinstance(_parallel, _SlotsManager):
-            for tb in tool_blocks:
-                _buffers.get(tb.id, _RenderBuffer()).flush_to(renderer)
-            _parallel.clear()
+    if _parallel is not None and renderer is not None and _parallel.needs_scrollback_flush:
+        for tb in tool_blocks:
+            _buffers.get(tb.id, _RenderBuffer()).flush_to(renderer)
+        _parallel.clear()
 
 
 async def _execute_tools_async(
