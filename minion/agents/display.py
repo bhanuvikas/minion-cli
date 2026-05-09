@@ -176,6 +176,17 @@ class AgentLiveDisplay:
                     }
                     self._order.append(slot.key)
 
+    async def pre_register_async(self, slots: list[SlotSpec]) -> None:
+        """Async variant of pre_register with a brief transition pause.
+
+        The 300 ms pause lets the terminal render any in-progress thinking
+        animation before the slot rows appear.  This is a display timing
+        concern that belongs here, not in the caller (runner.py).
+        """
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.3)
+        self.pre_register(slots)
+
     def make_callback(self, key: str) -> Callable:
         """Return an event callback bound to a specific slot key."""
         def callback(event: str, **data) -> None:

@@ -838,11 +838,7 @@ async def _execute_parallel_agents_async(
             label = tb.input.get("agent") or "remote"
         slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
 
-    # Show thinking animation while the system transitions from the assistant's
-    # text response to spawning agents.  300 ms is short enough to feel snappy
-    # but long enough for the terminal to render the animation visibly.
-    await asyncio.sleep(0.3)
-    display.pre_register(slots)
+    await display.pre_register_async(slots)
 
     # Register agents with the inspector registry and wrap display callbacks so
     # turn_end / complete / error events also update the registry.

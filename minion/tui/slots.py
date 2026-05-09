@@ -49,6 +49,14 @@ class SlotsManager:
                     }
                     self._order.append(slot.key)
 
+    async def pre_register_async(self, slots) -> None:
+        """Async variant of pre_register — no transition delay needed for TUI.
+
+        prompt_toolkit redraws are driven by invalidate() calls, so slot rows
+        appear immediately on the next frame without any artificial pause.
+        """
+        self.pre_register(slots)
+
     def clear(self) -> None:
         with self._lock:
             self._states.clear()
