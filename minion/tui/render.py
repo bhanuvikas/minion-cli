@@ -150,7 +150,7 @@ def render_message_blocks(
       - role=asst   / type=blocks → text blocks + tool_use blocks (⚙ icon)
       - role=user   / type=blocks → tool_result blocks (✓ icon)
     """
-    from ..display_utils import _trunc, format_tool_args, tool_name_style, tool_slot_header_frags
+    from ..output.display_utils import _trunc, format_tool_args, tool_name_style, tool_slot_header_frags
     from ..theme import GREEN as _GREEN
 
     lines: list[list[tuple[str, str]]] = []

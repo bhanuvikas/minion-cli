@@ -31,7 +31,7 @@ def format_tool_call(
 
     mode_badge: None=normal  "edits"=yellow»  "yolo"=⚡  "trusted"=green~
     """
-    from ..display_utils import _SKIP_KEYS, frags_to_rich_markup, tool_slot_header_frags
+    from .display_utils import _SKIP_KEYS, frags_to_rich_markup, tool_slot_header_frags
     from ..theme import YELLOW
 
     label        = "[muted][dry-run][/] " if dry_run else ""

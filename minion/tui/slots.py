@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from ..display_utils import apply_slot_event, tool_slot_header_frags
+from ..output.display_utils import apply_slot_event, tool_slot_header_frags
 
 
 class SlotsManager:

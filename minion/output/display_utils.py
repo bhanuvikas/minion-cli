@@ -84,7 +84,7 @@ def tool_name_style(tool_name: str) -> str:
     Used by render_message_blocks (inspector), tool_slot_header_frags (slots),
     and format_tool_call (formatter) so the name style is consistent.
     """
-    from .theme import _TOOL_NAME_COLORS
+    from ..theme import _TOOL_NAME_COLORS
     color = _TOOL_NAME_COLORS.get(tool_name, "")
     return f"bold {color}".strip()
 
@@ -111,7 +111,7 @@ def tool_slot_header_frags(
     Key:    #C0C0C0  (silver/muted)
     Value:  #1E90FF  (blue)
     """
-    from .theme import BLUE, YELLOW  # lazy to avoid circular at init
+    from ..theme import BLUE, YELLOW  # lazy to avoid circular at init
 
     _icon_style = icon_style if icon_style is not None else "#C0C0C0"
     _skip       = frozenset() if expanded else _SKIP_KEYS

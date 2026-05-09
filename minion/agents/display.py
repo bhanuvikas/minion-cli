@@ -17,7 +17,7 @@ from typing import Callable, ClassVar, Optional
 from rich.live import Live
 from rich.text import Text
 
-from ..display_utils import apply_slot_event, tool_slot_header_frags
+from ..output.display_utils import apply_slot_event, tool_slot_header_frags
 from ..output.base import SlotSpec
 from ..theme import GREEN, YELLOW
 

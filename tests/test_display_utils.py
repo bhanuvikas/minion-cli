@@ -5,7 +5,7 @@ No API calls. No filesystem operations. Pure unit tests.
 
 import pytest
 
-from minion.display_utils import _trunc, apply_slot_event, format_tool_args, frags_to_rich_markup, tool_name_style, tool_slot_header_frags
+from minion.output.display_utils import _trunc, apply_slot_event, format_tool_args, frags_to_rich_markup, tool_name_style, tool_slot_header_frags
 
 
 # ─── _trunc ──────────────────────────────────────────────────────────────────
