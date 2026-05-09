@@ -292,7 +292,7 @@ class TestExecutePlan:
 
         from minion.planner.creator import execute_plan
         from minion.repl import ReplState
-        from minion.reflection import ReflectionConfig
+        from minion.llm.reflection import ReflectionConfig
 
         state = ReplState(reflect_depth=2)
 

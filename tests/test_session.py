@@ -12,7 +12,7 @@ from minion.conversation import Conversation
 from minion.llm.base import (
     ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock, Message,
 )
-from minion.session import save, load, list_sessions, _serialize_content, _deserialize_content
+from minion.runner.session import save, load, list_sessions, _serialize_content, _deserialize_content
 
 
 def _make_conversation() -> Conversation:
@@ -28,7 +28,7 @@ def _make_conversation() -> Conversation:
 @pytest.fixture(autouse=True)
 def mock_sessions_dir(tmp_path):
     """Redirect all session I/O to a temp directory."""
-    with patch("minion.session.SESSIONS_DIR", tmp_path):
+    with patch("minion.runner.session.SESSIONS_DIR", tmp_path):
         yield tmp_path
 
 

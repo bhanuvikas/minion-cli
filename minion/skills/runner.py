@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ..conversation import Conversation
 from ..llm.base import LLMClient
-from ..reflection import ReflectionConfig
+from ..llm.reflection import ReflectionConfig
 from ..runner import run_prompt
 from ..theme import console
 from ..tools.definitions import TOOL_DEFINITIONS

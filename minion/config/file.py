@@ -1,4 +1,4 @@
-"""config_file.py — persistent user preferences from ~/.minion/config.toml.
+"""config/file.py — persistent user preferences from ~/.minion/config.toml.
 
 Loading priority (lowest → highest):
     hardcoded defaults → ~/.minion/config.toml → .env file → CLI flags

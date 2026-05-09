@@ -39,7 +39,7 @@ def _post(tool_name="write_file", tool_input=None, result="ok", success=True, cw
 
 
 def _make_defn(event="PostToolUse", command="echo '{}'", tool=None, timeout=5, blocking=None):
-    from minion.config_file import HookDefinition
+    from minion.config import HookDefinition
     return HookDefinition(event=event, command=command, tool=tool, timeout=timeout, blocking=blocking)
 
 
@@ -247,7 +247,7 @@ class TestHookRunner:
 
 class TestHookRegistry:
     def _cfg(self, builtin_minion_md=True, hooks=None):
-        from minion.config_file import HookDefinition, HooksBuiltinConfig, MinionConfig
+        from minion.config import HookDefinition, HooksBuiltinConfig, MinionConfig
         cfg = MinionConfig()
         cfg.hooks_config = HooksBuiltinConfig(builtin_minion_md=builtin_minion_md)
         cfg.hooks = hooks or []
@@ -264,7 +264,7 @@ class TestHookRegistry:
         assert "MinionMdStalenessHandler" not in types
 
     def test_from_config_registers_shell_handlers_from_definitions(self):
-        from minion.config_file import HookDefinition
+        from minion.config import HookDefinition
         defn = HookDefinition(event="PostToolUse", command="./test.sh", tool="write_file")
         runner = HookRegistry.from_config(self._cfg(hooks=[defn]))
         types = [type(h).__name__ for h in runner._handlers]

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from minion.config_file import (
+from minion.config import (
     MinionConfig,
     load_config,
     format_config,

@@ -34,7 +34,7 @@ from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.styles import Style
 
 from .config import MINION_STYLE, run_model_config
-from .reflection import ReflectionConfig
+from .llm.reflection import ReflectionConfig
 from .context import ProjectContext, build_project_context
 from .conversation import Conversation
 from .llm.base import ContentTextBlock, LLMClient
@@ -43,10 +43,10 @@ from .memory.embedder import build_embedder
 from .memory.injection import _format_age, inject_memories
 from .memory.record import MemoryRecord
 from .memory.store import MemoryStore
-from .prompts import build_system_prompt
+from .context.prompts import build_system_prompt
 from .output import ConsoleRenderer, TuiRenderer
 from .runner import run_prompt, run_prompt_async
-from .session import list_sessions, load, save
+from .runner.session import list_sessions, load, save
 from .theme import BLUE, SILVER, YELLOW, console, print_context, print_error, print_greeting, print_mode_toggle, print_startup_warnings, startup_warnings
 from .tracing import get_tracer
 
@@ -413,7 +413,7 @@ def _handle_slash_command(
         is_regen = minion_md_path.exists()
         if is_regen:
             import questionary
-            from .setup_wizard import _MINION_STYLE
+            from .config import _MINION_STYLE
             regenerate = questionary.confirm(
                 "MINION.md already exists. Regenerate it from the current codebase?",
                 default=False,
@@ -745,7 +745,7 @@ def _handle_slash_command(
         return True
 
     if cmd == "/config":
-        from .config_file import format_config, load_config as _load_cfg
+        from .config import format_config, load_config as _load_cfg
         cfg = _load_cfg(cwd=cwd)
         console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + CLI flags):[/]\n")
         console.print(format_config(cfg))
@@ -1525,7 +1525,7 @@ async def run_repl_async(
     )
 
 
-    from .config_file import load_config as _load_cfg
+    from .config import load_config as _load_cfg
     from .memory.triggers import (
         AlwaysTrigger, EveryNTurnsTrigger, ManualOnlyTrigger, SubstantialContentTrigger,
     )
@@ -1551,7 +1551,7 @@ async def run_repl_async(
         embedder=embedder,
     )
 
-    from .permissions import PermissionStore
+    from .tools.permissions import PermissionStore
     permission_store = PermissionStore(project_cwd=project_cwd)
 
     from .hooks.registry import HookRegistry
@@ -1621,7 +1621,7 @@ async def run_repl_async(
     await hook_runner.fire(SessionStartEvent(session_id=_hook_session_id, cwd=project_cwd))
 
     # ── ConfirmationManager — shared by both TUI and non-TUI paths ────────────
-    from .confirmation import ConfirmationManager
+    from .tools.confirmation import ConfirmationManager
     confirmation_manager = ConfirmationManager(permission_store=permission_store)
 
     # ── TUI / console bifurcation ─────────────────────────────────────────────

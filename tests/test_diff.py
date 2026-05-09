@@ -6,7 +6,7 @@ No API calls. No filesystem operations. Pure unit tests.
 import sys
 import pytest
 
-from minion.diff import compute_diff, format_diff_rich, _inline_diff_markup
+from minion.output.diff import compute_diff, format_diff_rich, _inline_diff_markup
 
 
 # ─── compute_diff ─────────────────────────────────────────────────────────────
@@ -158,9 +158,8 @@ class TestInlineDiffMarkup:
         assert "on #" not in new_hl
 
     def test_no_minion_package_imports(self):
-        """diff.py must not import from the minion package (standalone guarantee)."""
-        import importlib
-        import minion.diff as diff_module
+        """output/diff.py must not import from the minion package (standalone guarantee)."""
+        import minion.output.diff as diff_module
         import inspect
         source = inspect.getsource(diff_module)
         # The only allowed import pattern from within the package would start with

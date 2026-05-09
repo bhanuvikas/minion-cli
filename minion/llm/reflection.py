@@ -22,8 +22,8 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .llm.base import LLMClient, LLMResponse, Message
-from .tracing import get_tracer
+from .base import LLMClient, LLMResponse, Message
+from ..tracing import get_tracer
 
 
 def _ser_msgs(messages: list) -> list:

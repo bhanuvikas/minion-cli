@@ -341,7 +341,7 @@ def execute_plan(
     across all ReAct iterations without being truncated and the agent can
     re-read it at any point.
     """
-    from ..reflection import ReflectionConfig
+    from ..llm.reflection import ReflectionConfig
 
     plan_content = load_plan(plan_path)
     augmented = system_prompt + _PLAN_INJECTION_HEADER.format(plan=plan_content)

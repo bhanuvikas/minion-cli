@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 
 from minion.tools.implementations import search_code, get_file_outline
 from minion.runner import _resolve_mentions
-from minion.prompts import build_system_prompt, BASE_SYSTEM_PROMPT
+from minion.context.prompts import build_system_prompt, BASE_SYSTEM_PROMPT
 from minion.context.project import build_project_context
 
 

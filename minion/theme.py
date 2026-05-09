@@ -6,7 +6,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.theme import Theme
 
-from .diff import format_diff_rich
+from .output.diff import format_diff_rich
 from .llm.base import LLMResponse
 
 if TYPE_CHECKING:

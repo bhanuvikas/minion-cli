@@ -13,8 +13,8 @@ from typing import Optional
 import questionary
 from questionary import Style
 
-from .llm.base import LLMClient
-from .theme import BLUE, YELLOW, console, print_model_info
+from ..llm.base import LLMClient
+from ..theme import BLUE, YELLOW, console, print_model_info
 
 # ─── Questionary style that matches Minion theme ─────────────────────────────
 MINION_STYLE = Style(

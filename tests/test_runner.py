@@ -12,7 +12,7 @@ import pytest
 from minion.conversation import Conversation
 from minion.llm.base import LLMResponse, Message, StreamComplete, TextChunk, ToolUseBlock
 from minion.output import OutputRenderer
-from minion.reflection import ReflectionConfig, ReflectionResult, CritiqueResult
+from minion.llm.reflection import ReflectionConfig, ReflectionResult, CritiqueResult
 from minion.runner import run_prompt_async, MAX_ITERATIONS
 
 

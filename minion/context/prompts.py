@@ -11,7 +11,7 @@ pass it here. The result is a string that stays constant for the session.
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from .context.project import ProjectContext
+    from .project import ProjectContext
 
 BASE_SYSTEM_PROMPT = """\
 You are Minion, a precise, opinionated, and highly capable coding assistant that lives in the terminal.

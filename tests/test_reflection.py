@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, call
 
 from minion.llm.base import LLMResponse, Message
-from minion.reflection import (
+from minion.llm.reflection import (
     SCORE_THRESHOLD,
     CritiqueResult,
     ReflectionConfig,

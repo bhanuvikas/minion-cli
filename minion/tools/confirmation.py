@@ -5,7 +5,7 @@ import threading
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from .tui.app import MinionApp
+    from ..tui.app import MinionApp
 
 
 class ConfirmationManager:
@@ -65,8 +65,8 @@ class ConfirmationManager:
                 return future.result()
 
             # ── Non-TUI path ─────────────────────────────────────────────────
-            from .tools.executor import _interactive_confirm
-            from .agents.display import get_active_live_display
+            from .executor import _interactive_confirm
+            from ..agents.display import get_active_live_display
             display = get_active_live_display()
             if display is not None:
                 display.pause()

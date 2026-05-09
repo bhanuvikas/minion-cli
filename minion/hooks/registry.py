@@ -14,7 +14,7 @@ from .handlers.shell import ShellHookHandler
 from .runner import HookRunner
 
 if TYPE_CHECKING:
-    from ..config_file import MinionConfig
+    from ..config import MinionConfig
 
 
 class HookRegistry:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from minion.permissions import (
+from minion.tools.permissions import (
     PermissionStore,
     _suggest_command_patterns,
     _suggest_path_patterns,

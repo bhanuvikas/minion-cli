@@ -15,7 +15,7 @@ from pathlib import Path
 
 import questionary
 
-from .theme import BLUE, SILVER, YELLOW, console
+from ..theme import BLUE, SILVER, YELLOW, console
 
 # Questionary style matching the rest of the codebase
 from questionary import Style as _QStyle

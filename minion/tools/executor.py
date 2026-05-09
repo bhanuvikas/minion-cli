@@ -32,7 +32,7 @@ from typing import Optional
 import questionary
 
 from ..config import MINION_STYLE
-from ..permissions import PermissionStore, split_compound, suggest_patterns_for_tool
+from .permissions import PermissionStore, split_compound, suggest_patterns_for_tool
 
 # Serializes questionary prompts across threads (sync path only).
 _CONFIRM_LOCK = threading.Lock()
@@ -94,7 +94,7 @@ def _diff_detail(path: str, new_content: str) -> str:
     New file: treated as diffing empty string → all lines shown as additions.
     """
     from pathlib import Path as _Path
-    from ..diff import format_diff_rich
+    from ..output.diff import format_diff_rich
 
     try:
         existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
@@ -112,7 +112,7 @@ def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
     original vs resulting so the user sees the full change in context.
     """
     from pathlib import Path as _Path
-    from ..diff import format_diff_rich
+    from ..output.diff import format_diff_rich
 
     try:
         existing = _Path(path).read_text(encoding="utf-8") if _Path(path).exists() else ""
@@ -134,7 +134,7 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
     Limited to 30 lines to keep the panel usable.
     """
     from pathlib import Path as _Path
-    from ..diff import format_diff_rich
+    from ..output.diff import format_diff_rich
 
     if name == "write_file":
         path = inputs.get("path", "")
@@ -547,7 +547,7 @@ class ToolExecutor:
         self._permission_store = permission_store
         self._hook_runner = hook_runner          # type: HookRunner | None
         if confirmation_manager is None and confirm_callback is None:
-            from ..confirmation import ConfirmationManager
+            from .confirmation import ConfirmationManager
             confirmation_manager = ConfirmationManager(permission_store)
         self._confirmation_manager = confirmation_manager
         # Auto-detect renderer if not provided

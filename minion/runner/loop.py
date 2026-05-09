@@ -30,7 +30,7 @@ from ..llm.base import (
     ToolDefinition, ToolUseBlock,
 )
 from ..output import ConsoleRenderer, OutputRenderer
-from ..reflection import ReflectionConfig, reflect
+from ..llm.reflection import ReflectionConfig, reflect
 from ..theme import (
     BLUE, YELLOW, console,
     print_critique, print_diff, print_iteration_limit,

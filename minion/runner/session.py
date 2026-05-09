@@ -21,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Union
 
-from .conversation import Conversation
-from .llm.base import (
+from ..conversation import Conversation
+from ..llm.base import (
     ContentTextBlock, ContentToolUseBlock, ContentToolResultBlock, Message,
 )
 

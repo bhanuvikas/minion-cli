@@ -20,7 +20,7 @@ from .theme import YELLOW, console, print_error
 load_dotenv()  # project-level .env (cwd) — takes precedence
 load_dotenv(Path.home() / ".minion" / ".env")  # user-level fallback
 
-from .config_file import load_config as _load_config  # noqa: E402 — after dotenv
+from .config import load_config as _load_config  # noqa: E402 — after dotenv
 
 
 app = typer.Typer(
@@ -293,7 +293,7 @@ def a2a_serve(
     from .a2a.server import A2AServer
     from .context import build_project_context
     from .conversation import Conversation
-    from .prompts import build_system_prompt
+    from .context.prompts import build_system_prompt
     from .runner import run_prompt
 
     try:
@@ -358,7 +358,7 @@ def _needs_setup() -> bool:
 @app.command("setup")
 def setup_cmd() -> None:
     """Interactive first-run setup — configure your API key and provider."""
-    from .setup_wizard import run_setup_wizard
+    from .config import run_setup_wizard
     asyncio.run(run_setup_wizard())
 
 
@@ -473,11 +473,11 @@ def _run_one_shot(prompt: str, raw_argv: list) -> None:
         _sys.exit(1)
 
     from .context import build_project_context
-    from .prompts import build_system_prompt
+    from .context.prompts import build_system_prompt
     from .runner import run_prompt_async
-    from .reflection import ReflectionConfig
+    from .llm.reflection import ReflectionConfig
     from .conversation import Conversation
-    from .permissions import PermissionStore
+    from .tools.permissions import PermissionStore
 
     import os as _os
     project_cwd = Path.cwd()
@@ -524,7 +524,7 @@ def _entry() -> None:
             # First positional arg that isn't a subcommand → one-shot prompt
             prompt = " ".join(raw[i:])
             if _needs_setup():
-                from .setup_wizard import run_setup_wizard
+                from .config import run_setup_wizard
                 asyncio.run(run_setup_wizard())
             _run_one_shot(prompt, prefix)
             return
@@ -532,6 +532,6 @@ def _entry() -> None:
     # No positional args at all → REPL / --help / --version via typer
     if _needs_setup() and not any(a.startswith("-") for a in raw):
         # Only trigger wizard on bare `minion` (no flags) so --help etc. still work
-        from .setup_wizard import run_setup_wizard
+        from .config import run_setup_wizard
         asyncio.run(run_setup_wizard())
     app()
