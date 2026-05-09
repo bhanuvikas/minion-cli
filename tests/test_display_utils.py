@@ -1,11 +1,11 @@
-"""Tests for minion/display_utils.py — format_tool_args, _trunc, tool_slot_header_frags.
+"""Tests for minion/display_utils.py — format_tool_args, _trunc, tool_slot_header_frags, apply_slot_event.
 
 No API calls. No filesystem operations. Pure unit tests.
 """
 
 import pytest
 
-from minion.display_utils import _trunc, format_tool_args, tool_slot_header_frags
+from minion.display_utils import _trunc, apply_slot_event, format_tool_args, tool_slot_header_frags
 
 
 # ─── _trunc ──────────────────────────────────────────────────────────────────
@@ -258,3 +258,102 @@ class TestToolSlotHeaderFrags:
         frags = tool_slot_header_frags("write_file", {"path": "f.py"})
         for style, _ in frags:
             assert not style.startswith("class:"), f"Found class: style {style!r}"
+
+
+# ─── apply_slot_event ─────────────────────────────────────────────────────────
+
+class TestApplySlotEvent:
+    def _state(self) -> dict:
+        return {"status": "pending"}
+
+    def test_running_sets_status(self):
+        s = self._state()
+        apply_slot_event(s, "running")
+        assert s["status"] == "running"
+
+    def test_complete_sets_status_latency_preview(self):
+        s = self._state()
+        apply_slot_event(s, "complete", latency_ms=1234, preview="done text")
+        assert s["status"] == "complete"
+        assert s["latency_ms"] == 1234
+        assert s["preview"] == "done text"
+
+    def test_complete_defaults_latency_and_preview(self):
+        s = self._state()
+        apply_slot_event(s, "complete")
+        assert s["latency_ms"] == 0
+        assert s["preview"] == ""
+
+    def test_error_sets_status_and_error(self):
+        s = self._state()
+        apply_slot_event(s, "error", error="something went wrong")
+        assert s["status"] == "error"
+        assert s["error"] == "something went wrong"
+
+    def test_error_defaults_empty_string(self):
+        s = self._state()
+        apply_slot_event(s, "error")
+        assert s["error"] == ""
+
+    def test_tool_call_sets_last_activity(self):
+        s = self._state()
+        apply_slot_event(s, "tool_call", name="read_file", inputs={"path": "foo.py"})
+        assert "last_activity" in s
+        assert "read_file" in s["last_activity"]
+        assert "↳" in s["last_activity"]
+
+    def test_tool_call_skips_content_key(self):
+        s = self._state()
+        apply_slot_event(s, "tool_call", name="write_file", inputs={"path": "f.py", "content": "big"})
+        assert "content" not in s["last_activity"]
+        assert "f.py" in s["last_activity"]
+
+    def test_text_accumulates_in_buffer(self):
+        s = self._state()
+        apply_slot_event(s, "text", text="hello ")
+        apply_slot_event(s, "text", text="world")
+        assert "last_activity" in s
+        assert "·" in s["last_activity"]
+        assert "hello" in s["last_activity"]
+
+    def test_text_buffer_capped_at_200(self):
+        s = self._state()
+        apply_slot_event(s, "text", text="x" * 300)
+        assert len(s["_text_buf"]) <= 200
+
+    def test_parallel_sub_start_sets_sub_activities(self):
+        s = self._state()
+        tools = [{"key": "k1", "name": "read_file", "inputs": {"path": "a.py"}}]
+        apply_slot_event(s, "parallel_sub_start", tools=tools)
+        assert len(s["sub_activities"]) == 1
+        assert s["sub_activities"][0]["key"] == "k1"
+        assert s["sub_activities"][0]["done"] is False
+        assert "↳" in s["sub_activities"][0]["text"]
+
+    def test_parallel_sub_done_marks_correct_item(self):
+        s = self._state()
+        tools = [
+            {"key": "k1", "name": "read_file", "inputs": {}},
+            {"key": "k2", "name": "glob",      "inputs": {}},
+        ]
+        apply_slot_event(s, "parallel_sub_start", tools=tools)
+        apply_slot_event(s, "parallel_sub_done", key="k1")
+        assert s["sub_activities"][0]["done"] is True
+        assert s["sub_activities"][1]["done"] is False
+
+    def test_parallel_sub_done_unknown_key_is_noop(self):
+        s = self._state()
+        apply_slot_event(s, "parallel_sub_start", tools=[{"key": "k1", "name": "x", "inputs": {}}])
+        apply_slot_event(s, "parallel_sub_done", key="unknown")
+        assert s["sub_activities"][0]["done"] is False
+
+    def test_parallel_sub_clear_empties_list(self):
+        s = self._state()
+        apply_slot_event(s, "parallel_sub_start", tools=[{"key": "k1", "name": "x", "inputs": {}}])
+        apply_slot_event(s, "parallel_sub_clear")
+        assert s["sub_activities"] == []
+
+    def test_unknown_event_is_noop(self):
+        s = self._state()
+        apply_slot_event(s, "unknown_event", foo="bar")
+        assert s == {"status": "pending"}  # unchanged

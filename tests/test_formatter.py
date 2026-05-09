@@ -1,4 +1,4 @@
-"""Tests for minion/output/formatter.py — format_tool_call/result/error/todo_list.
+"""Tests for minion/output/formatter.py — format_tool_call/result/error/todo_list/agent_slot.
 
 No API calls. No filesystem operations. Pure unit tests.
 """
@@ -6,6 +6,7 @@ No API calls. No filesystem operations. Pure unit tests.
 import pytest
 
 from minion.output.formatter import (
+    format_agent_slot_summary,
     format_todo_list,
     format_tool_call,
     format_tool_error,
@@ -233,3 +234,67 @@ class TestFormatTodoList:
         )
         result = format_todo_list()
         assert "→" in result
+
+
+# ─── format_agent_slot_summary ───────────────────────────────────────────────
+
+class TestFormatAgentSlotSummary:
+    def test_returns_list_of_strings(self):
+        result = format_agent_slot_summary("coder", "write tests", {"status": "complete", "latency_ms": 500, "preview": ""})
+        assert isinstance(result, list)
+        assert all(isinstance(s, str) for s in result)
+
+    def test_header_contains_label(self):
+        lines = format_agent_slot_summary("coder", "do work", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert "coder" in lines[0]
+
+    def test_header_contains_task(self):
+        lines = format_agent_slot_summary("writer", "summarise the docs", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert "summarise" in lines[0]
+
+    def test_header_contains_bullet_icon(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert "⏺" in lines[0]
+
+    def test_complete_line_contains_done(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "complete", "latency_ms": 2000, "preview": ""})
+        assert len(lines) >= 2
+        assert "done" in lines[1]
+        assert "2.0s" in lines[1]
+
+    def test_complete_with_preview_adds_third_line(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "complete", "latency_ms": 0, "preview": "first result line"})
+        assert len(lines) == 3
+        assert "first result line" in lines[2]
+
+    def test_complete_without_preview_has_two_lines(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert len(lines) == 2
+
+    def test_error_status_shows_error_message(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "error", "error": "timeout"})
+        assert len(lines) == 2
+        assert "Error" in lines[1]
+        assert "timeout" in lines[1]
+
+    def test_error_default_message_when_missing(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "error"})
+        assert "unknown error" in lines[1]
+
+    def test_task_truncated_at_58_chars(self):
+        long_task = "a" * 100
+        lines = format_agent_slot_summary("x", long_task, {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert "…" in lines[0]
+        assert long_task not in lines[0]
+
+    def test_task_newlines_collapsed(self):
+        lines = format_agent_slot_summary("x", "line1\nline2", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert "\n" not in lines[0]
+
+    def test_label_is_rich_markup_escaped(self):
+        lines = format_agent_slot_summary("[bold]sneaky[/bold]", "t", {"status": "complete", "latency_ms": 0, "preview": ""})
+        assert isinstance(lines[0], str)  # no crash from markup injection
+
+    def test_unknown_status_returns_only_header(self):
+        lines = format_agent_slot_summary("x", "t", {"status": "running"})
+        assert len(lines) == 1

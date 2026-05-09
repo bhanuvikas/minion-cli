@@ -71,15 +71,16 @@ class TuiRenderer(OutputRenderer):
 
     def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
         from .formatter import format_tool_result
+        from ..tui.render import render_rich as _render_rich
+        from ..theme import GREEN as _GREEN
         is_success = (
             latency_ms > 0
             and not result.startswith("Error:")
             and result != "User declined tool execution."
         )
         if is_success:
-            # ANSI directly so color matches class:slot-done (bold #4CAF50 = RGB 76,175,80)
-            done_ansi = f"   \033[1m\033[38;2;76;175;80m✓  done ({latency_ms / 1000:.1f}s)\033[0m\n"
-            self._app.conversation.append_ansi(done_ansi)
+            done_line = _render_rich(f"   [bold {_GREEN}]✓  done ({latency_ms / 1000:.1f}s)[/]")
+            self._app.conversation.append_ansi(done_line + "\n")
         self._app.conversation.append_system(format_tool_result(result))
         self._app.invalidate()
 

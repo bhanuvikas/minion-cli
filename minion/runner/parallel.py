@@ -152,26 +152,12 @@ async def _execute_parallel_agents_async(
     # Commit completed agent slots to the scrollback and clear the live zone.
     # needs_scrollback_flush=True on SlotsManager (TUI); False on ParallelDisplay (console).
     if _parallel is not None and renderer is not None and _parallel.needs_scrollback_flush:
-        from rich.markup import escape as _rme
+        from ..output.formatter import format_agent_slot_summary as _fmt_agent_slot
         for tb, state in zip(tool_blocks, _parallel.slot_results()):
             label = state.get("label", tb.name)
-            task = tb.input.get("task", "")
-            task_clean = task.replace("\n", " ").strip()
-            if len(task_clean) > 58:
-                task_clean = task_clean[:58] + "…"
-            renderer.on_info(
-                f"[#888888]⏺[/]  [bold]\\[{_rme(label)}][/]  [#C0C0C0]{_rme(task_clean)}[/]"
-            )
-            status = state.get("status", "")
-            if status == "complete":
-                latency = state.get("latency_ms", 0) / 1000
-                renderer.on_info(f"   [muted]└─[/]  [bold #4CAF50]done ({latency:.1f}s)[/]")
-                preview = state.get("preview", "")
-                if preview:
-                    renderer.on_info(f"       [#C0C0C0]{_rme(preview[:100])}[/]")
-            elif status == "error":
-                error = state.get("error", "unknown error")
-                renderer.on_info(f"   [muted]└─[/]  [bold red]Error: {error}[/]")
+            task  = tb.input.get("task", "")
+            for line in _fmt_agent_slot(label, task, state):
+                renderer.on_info(line)
         _parallel.clear()
 
 

@@ -74,6 +74,39 @@ def format_tool_call(
     return header
 
 
+def format_agent_slot_summary(label: str, task: str, state: dict) -> list[str]:
+    """Rich markup lines for an agent slot's scrollback entry (header + status).
+
+    Returns an ordered list of strings, each to be passed to renderer.on_info().
+    Used by the TUI scrollback flush after parallel agent execution so the
+    committed appearance is consistent with formatter.py's colour palette
+    rather than being rebuilt inline in runner code.
+    """
+    from rich.markup import escape as _e
+    from ..theme import GREEN
+
+    task_clean = task.replace("\n", " ").strip()
+    if len(task_clean) > 58:
+        task_clean = task_clean[:58] + "…"
+
+    lines = [
+        f"[#888888]⏺[/]  [bold]\\[{_e(label)}][/]  [#C0C0C0]{_e(task_clean)}[/]"
+    ]
+
+    status = state.get("status", "")
+    if status == "complete":
+        latency = state.get("latency_ms", 0) / 1000
+        lines.append(f"   [muted]└─[/]  [bold {GREEN}]done ({latency:.1f}s)[/]")
+        preview = state.get("preview", "")
+        if preview:
+            lines.append(f"       [#C0C0C0]{_e(preview[:100])}[/]")
+    elif status == "error":
+        error = state.get("error", "unknown error")
+        lines.append(f"   [muted]└─[/]  [bold red]Error: {_e(error)}[/]")
+
+    return lines
+
+
 def format_tool_result(result: str) -> str:
     """Return Rich markup for a successful tool result summary line."""
     first_line  = result.split("\n")[0]

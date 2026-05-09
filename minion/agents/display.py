@@ -17,7 +17,7 @@ from typing import Callable, ClassVar, Optional
 from rich.live import Live
 from rich.text import Text
 
-from ..display_utils import format_tool_args, tool_slot_header_frags
+from ..display_utils import apply_slot_event, tool_slot_header_frags
 from ..output.base import SlotSpec
 from ..theme import GREEN, YELLOW
 
@@ -176,48 +176,7 @@ class ParallelDisplay:
             with self._lock:
                 if key not in self._states:
                     return
-                state = self._states[key]
-                if event == "running":
-                    state["status"] = "running"
-                elif event == "complete":
-                    state.update({
-                        "status": "complete",
-                        "latency_ms": data.get("latency_ms", 0),
-                        "preview": data.get("preview", ""),
-                    })
-                elif event == "error":
-                    state.update({
-                        "status": "error",
-                        "error": data.get("error", ""),
-                    })
-                elif event == "tool_call":
-                    name = data.get("name", "")
-                    inputs = data.get("inputs", {})
-                    state["last_activity"] = f"↳ {name}  {format_tool_args(inputs)}"
-                elif event == "text":
-                    buf = state.get("_text_buf", "") + data.get("text", "")
-                    state["_text_buf"] = buf[-200:]
-                    # Collapse all whitespace (including newlines from LLM lists/paragraphs)
-                    # to a single-line snippet — the detail row must stay exactly one line.
-                    flat = " ".join(state["_text_buf"].split())
-                    if flat:
-                        state["last_activity"] = f"· {flat[-80:]}"
-                elif event == "parallel_sub_start":
-                    state["sub_activities"] = [
-                        {
-                            "key": t["key"],
-                            "text": f"↳ {t['name']}  {format_tool_args(t['inputs'])}",
-                            "done": False,
-                        }
-                        for t in data.get("tools", [])
-                    ]
-                elif event == "parallel_sub_done":
-                    done_key = data.get("key")
-                    for sa in state.get("sub_activities", []):
-                        if sa["key"] == done_key:
-                            sa["done"] = True
-                elif event == "parallel_sub_clear":
-                    state["sub_activities"] = []
+                apply_slot_event(self._states[key], event, **data)
                 self._live.update(self._render())
         return callback
 
@@ -265,23 +224,22 @@ class ParallelDisplay:
                 elif status == "running":
                     sub_activities = state.get("sub_activities", [])
                     if sub_activities:
-                        # Show active sub-tools inline; completed ones dimmed
                         parts = []
                         for sa in sub_activities:
                             parts.append(("✓ " if sa["done"] else "") + sa["text"])
                         activity = "  ".join(parts)
-                        text.append(f"Running · {activity[:80]}", style="dim")
+                        text.append(f"running · {activity[:80]}", style="dim")
                     else:
                         last_activity = state.get("last_activity", "")
                         activity = last_activity.replace("\n", " ").replace("\r", "")[:72]
                         if activity:
-                            text.append(f"Running · {activity}", style="dim")
+                            text.append(f"running · {activity}", style="dim")
                         else:
-                            text.append("Running…", style="dim")
+                            text.append("running…", style="dim")
 
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    text.append(f"Done ({latency:.1f}s)", style=f"bold {GREEN}")
+                    text.append(f"done ({latency:.1f}s)", style=f"bold {GREEN}")
 
                 elif status == "error":
                     error = state.get("error", "")

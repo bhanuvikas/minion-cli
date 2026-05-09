@@ -11,6 +11,64 @@ _SKIP_KEYS = frozenset({"content", "old_string", "new_string"})
 _SLOT_VALUE_MAX = 50  # chars before switching to double-quote truncation
 
 
+def apply_slot_event(state: dict, event: str, **data) -> None:
+    """Apply a parallel-slot display event to the slot state dict in-place.
+
+    Pure function — no I/O, no side effects beyond mutating *state*.
+    Used by both ParallelDisplay.make_callback() and SlotsManager.make_callback()
+    so all event-handling logic lives in one place (Single Responsibility).
+
+    Recognised events:
+      running             — mark slot active
+      complete            — record latency_ms + preview
+      error               — record error message
+      tool_call           — update last_activity from tool name + inputs
+      text                — rolling text buffer → last_activity snippet
+      parallel_sub_start  — populate sub_activities list
+      parallel_sub_done   — mark one sub_activity complete
+      parallel_sub_clear  — clear sub_activities
+    """
+    if event == "running":
+        state["status"] = "running"
+    elif event == "complete":
+        state.update({
+            "status":     "complete",
+            "latency_ms": data.get("latency_ms", 0),
+            "preview":    data.get("preview", ""),
+        })
+    elif event == "error":
+        state.update({
+            "status": "error",
+            "error":  data.get("error", ""),
+        })
+    elif event == "tool_call":
+        name   = data.get("name", "")
+        inputs = data.get("inputs", {})
+        state["last_activity"] = f"↳ {name}  {format_tool_args(inputs)}"
+    elif event == "text":
+        buf = state.get("_text_buf", "") + data.get("text", "")
+        state["_text_buf"] = buf[-200:]
+        flat = " ".join(state["_text_buf"].split())
+        if flat:
+            state["last_activity"] = f"· {flat[-80:]}"
+    elif event == "parallel_sub_start":
+        state["sub_activities"] = [
+            {
+                "key":  t["key"],
+                "text": f"↳ {t['name']}  {format_tool_args(t['inputs'])}",
+                "done": False,
+            }
+            for t in data.get("tools", [])
+        ]
+    elif event == "parallel_sub_done":
+        done_key = data.get("key")
+        for sa in state.get("sub_activities", []):
+            if sa["key"] == done_key:
+                sa["done"] = True
+    elif event == "parallel_sub_clear":
+        state["sub_activities"] = []
+
+
 def _trunc(text: str, n: int) -> str:
     """Truncate text to n characters, appending … if shortened."""
     return text if len(text) <= n else text[: n - 1] + "…"

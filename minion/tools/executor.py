@@ -262,11 +262,10 @@ def _inline_edit_select(label: str, choices: list[str]) -> Optional[str]:
     from prompt_toolkit.layout import Layout
     from prompt_toolkit.styles import Style as PTStyle
 
+    from ..theme import BLUE, YELLOW
+
     EDIT = "[enter custom]"
     edit_idx = choices.index(EDIT) if EDIT in choices else -1
-    # Colours matching MINION_STYLE
-    YELLOW = "#FFD700"
-    BLUE   = "#1E90FF"
 
     st = {"idx": 0, "buf": "", "result": None}
 
