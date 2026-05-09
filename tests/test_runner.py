@@ -137,7 +137,6 @@ class TestRunPromptErrorHandling:
             emitted.append({"type": event_type, **kwargs})
 
         with patch("minion.runner.console"), \
-             patch("minion.runner.print_error"), \
              patch("minion.runner.get_tracer") as mock_tracer:
             mock_tracer.return_value.emit.side_effect = _capture_emit
             await run_prompt_async("hello", client, Conversation(), _SYSTEM_PROMPT)

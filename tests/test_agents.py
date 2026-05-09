@@ -5,17 +5,18 @@ Tests cover:
   - AgentRegistry three-tier loading + shadowing
   - run_agent() subagent execution + tracing
   - ToolExecutor.execute() routing for spawn_agent
-  - Parallel _execute_tools() via ThreadPoolExecutor
+  - Parallel _execute_tools_async() via asyncio.TaskGroup
   - _CONFIRM_LOCK serializing dangerous-tool confirmations
   - enable_agents / agent_depth filtering of spawn_agent from tool list
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -289,54 +290,68 @@ class TestSpawnAgentTool:
         runner.assert_not_called()
 
 
-# ─── TestParallelToolExecution ────────────────────────────────────────────────
+# ─── TestParallelToolExecution (async path) ───────────────────────────────────
+
+def _make_mock_display():
+    """No-op AgentLiveDisplay mock (avoids real Rich Live terminal)."""
+    mock = MagicMock()
+    mock.__enter__ = MagicMock(return_value=mock)
+    mock.__exit__ = MagicMock(return_value=False)
+    mock.make_callback.return_value = MagicMock()
+    mock.render_now = MagicMock()
+    mock.pre_register = MagicMock()
+    return mock
+
 
 class TestParallelToolExecution:
-    def test_single_tool_uses_fast_path(self):
-        """Single tool block takes the fast path — no ThreadPoolExecutor overhead."""
-        from minion.runner import _execute_tools
+    @pytest.mark.asyncio
+    async def test_single_tool_uses_fast_path(self):
+        """Single tool: execute_async called directly (no TaskGroup overhead)."""
+        from minion.runner import _execute_tools_async
 
         executor = MagicMock()
-        executor.execute.return_value = "result"
+        executor.execute_async = AsyncMock(return_value="result")
         conv = MagicMock()
         tb = _make_tool_use_block("read_file", inputs={"path": "f.py"})
 
-        with patch("minion.runner.ThreadPoolExecutor") as mock_pool:
-            _execute_tools([tb], executor, conv)
+        await _execute_tools_async([tb], executor, conv)
 
-        mock_pool.assert_not_called()
-        executor.execute.assert_called_once_with(tb)
+        executor.execute_async.assert_called_once_with(tb)
         conv.add_tool_result.assert_called_once_with(tb.id, "result")
 
-    def test_multiple_tools_run_concurrently(self):
-        """Two slow tools complete faster together than sequentially."""
-        from minion.runner import _execute_tools
+    @pytest.mark.asyncio
+    async def test_multiple_tools_run_concurrently(self):
+        """Two slow async tools complete faster together than sequentially."""
+        from minion.runner import _execute_tools_async
 
         DELAY = 0.08
 
-        def slow_execute(tb):
-            time.sleep(DELAY)
+        async def slow_execute(tb, **kwargs):
+            await asyncio.sleep(DELAY)
             return f"result_{tb.id}"
 
         executor = MagicMock()
-        executor.execute.side_effect = slow_execute
+        executor.execute_async.side_effect = slow_execute
         conv = MagicMock()
         blocks = [
             _make_tool_use_block("read_file", tool_id="t1"),
             _make_tool_use_block("search_code", tool_id="t2"),
         ]
 
-        start = time.monotonic()
-        _execute_tools(blocks, executor, conv)
-        elapsed = time.monotonic() - start
+        mock_display = _make_mock_display()
+        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+            start = time.monotonic()
+            await _execute_tools_async(blocks, executor, conv)
+            elapsed = time.monotonic() - start
 
-        # Sequential would take 2*DELAY ≈ 0.16s; parallel should be ~DELAY
+        # Sequential would take 2*DELAY ≈ 0.16s; TaskGroup runs them concurrently
         assert elapsed < DELAY * 1.8, f"Took {elapsed:.3f}s, expected < {DELAY * 1.8:.3f}s"
         assert conv.add_tool_result.call_count == 2
 
-    def test_parallel_results_injected_in_original_order(self):
-        """Results are added to conversation in original tool_block order, not completion order."""
-        from minion.runner import _execute_tools
+    @pytest.mark.asyncio
+    async def test_parallel_results_injected_in_original_order(self):
+        """Results are added in original tool_block order, not completion order."""
+        from minion.runner import _execute_tools_async
 
         order_of_injection = []
 
@@ -346,42 +361,46 @@ class TestParallelToolExecution:
         conv = MagicMock()
         conv.add_tool_result.side_effect = fake_add_tool_result
 
-        # Make t1 slower so t2 finishes first
-        def execute(tb):
+        async def execute(tb, **kwargs):
             if tb.id == "t1":
-                time.sleep(0.05)
+                await asyncio.sleep(0.05)  # t1 slower — t2 finishes first
             return f"r_{tb.id}"
 
         executor = MagicMock()
-        executor.execute.side_effect = execute
+        executor.execute_async.side_effect = execute
         blocks = [
             _make_tool_use_block("read_file", tool_id="t1"),
             _make_tool_use_block("search_code", tool_id="t2"),
         ]
 
-        _execute_tools(blocks, executor, conv)
+        mock_display = _make_mock_display()
+        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+            await _execute_tools_async(blocks, executor, conv)
 
         # Despite t2 finishing first, results are injected in original order
         assert order_of_injection == ["t1", "t2"]
 
-    def test_parallel_exception_captured_as_error_string(self):
-        """If a tool raises, its slot gets an error string, not a crash."""
-        from minion.runner import _execute_tools
+    @pytest.mark.asyncio
+    async def test_parallel_exception_captured_as_error_string(self):
+        """If a tool raises, its slot gets an error string — no crash."""
+        from minion.runner import _execute_tools_async
 
-        def execute(tb):
+        async def execute(tb, **kwargs):
             if tb.id == "t2":
                 raise RuntimeError("disk full")
             return "ok"
 
         executor = MagicMock()
-        executor.execute.side_effect = execute
+        executor.execute_async.side_effect = execute
         conv = MagicMock()
         blocks = [
             _make_tool_use_block("read_file", tool_id="t1"),
             _make_tool_use_block("write_file", tool_id="t2"),
         ]
 
-        _execute_tools(blocks, executor, conv)
+        mock_display = _make_mock_display()
+        with patch("minion.agents.display.AgentLiveDisplay", return_value=mock_display):
+            await _execute_tools_async(blocks, executor, conv)
 
         calls = {c[0][0]: c[0][1] for c in conv.add_tool_result.call_args_list}
         assert calls["t1"] == "ok"
@@ -450,8 +469,7 @@ class TestAgentsToggle:
         client.model_id = "stub"
         conv = Conversation()
 
-        with patch("minion.runner._stream_one_iteration_async", side_effect=fake_stream_one_iteration_async), \
-             patch("minion.runner.print_error"):
+        with patch("minion.runner._stream_one_iteration_async", side_effect=fake_stream_one_iteration_async):
             await run_prompt_async("hi", client, conv, "system", **run_prompt_kwargs)
 
         return captured.get("tools")

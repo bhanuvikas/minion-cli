@@ -5,20 +5,18 @@ Core of the ReAct pattern: on each iteration the model either finishes
 Tool results are injected back as observations and the loop continues.
 
 Responsibilities:
-  run_prompt()              — orchestrates the full agent loop
+  run_prompt()              — sync wrapper; delegates to run_prompt_async()
+  run_prompt_async()        — orchestrates the full agent loop
   _resolve_mentions()       — expand @file.py references before sending to LLM
-  _stream_one_iteration()   — one LLM call: spin → stream events → structured result
+  _stream_one_iteration_async() — one LLM call: spin → stream events → structured result
   _build_content_blocks()   — assemble content block list for conversation storage
-  _execute_tools()          — run each tool call, inject results into conversation
+  _execute_tools_async()    — route tool calls (fast path / parallel agents / parallel tools)
 """
 
 import asyncio
 import contextlib
 import re
-import sys
-import threading
 import time as _time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -29,7 +27,7 @@ from .output import ConsoleRenderer, OutputRenderer
 from .reflection import ReflectionConfig, ReflectionResult, reflect
 from .theme import (
     BLUE, YELLOW, console,
-    print_critique, print_diff, print_error, print_iteration_limit,
+    print_critique, print_diff, print_iteration_limit,
     print_reflection_header,
 )
 from .agents.display import get_agent_display_callback as _get_slot_cb
@@ -163,187 +161,6 @@ def _resolve_mentions(prompt: str, cwd: Path) -> str:
 
 # ─── Private helpers ──────────────────────────────────────────────────────────
 
-def _stream_one_iteration(
-    client: LLMClient,
-    conversation: Conversation,
-    system_prompt: str,
-    tools: Optional[list] = None,
-    silent: bool = False,
-    flush_narration: bool = True,
-    spinner_label: Optional[str] = None,
-    agent_label: Optional[str] = None,
-    stream_markdown: bool = False,
-) -> Optional[_IterationResult]:
-    """Run one LLM streaming call and collect all events into a structured result.
-
-    When silent=False (default): shows spinner until first token, then streams
-    text directly to stdout as it arrives.
-
-    When silent=True: suppresses all stdout output and keeps the spinner active
-    for the full stream duration. Used by skills with output_format=markdown so
-    the response can be collected and rendered as rich Markdown after the loop.
-
-    Returns None on error (already displayed) and pops the pending user message
-    so conversation history stays consistent.
-    """
-    _llm_start = _time.monotonic()
-    effective_tools = tools if tools is not None else TOOL_DEFINITIONS
-    get_tracer().emit(
-        "llm_request",
-        message_count=len(conversation.messages),
-        messages=_serialize_messages(conversation.messages),
-        system=system_prompt,
-        tools=effective_tools,
-        tool_names=[t["name"] for t in effective_tools],
-        model=getattr(client, "model_id", "unknown"),
-        estimated_input_tokens=sum(len(str(m.content)) for m in conversation.messages) // 4,
-    )
-    effective_spinner = spinner_label or _SPINNER_LABEL
-    try:
-        stream = client.stream(conversation.messages, system=system_prompt, tools=effective_tools)
-        _in_live = _get_slot_cb() is not None
-        _first_cm = contextlib.nullcontext() if _in_live else console.status(effective_spinner, spinner="dots")
-        with _first_cm:
-            first_event = next(stream, None)
-    except Exception as e:
-        get_tracer().emit(
-            "llm_error",
-            error=str(e),
-            latency_ms=int((_time.monotonic() - _llm_start) * 1000),
-        )
-        # Only remove the last message if it's the plain-text user turn that opened
-        # this prompt (content is a str). In iteration 2+ the last message is a
-        # tool_result (content is a list); popping it would leave the preceding
-        # assistant tool_use block without a matching tool_result, causing a 400.
-        if conversation.messages and isinstance(conversation.messages[-1].content, str):
-            conversation.messages.pop()
-        print_error(str(e))
-        return None
-
-    if first_event is None:
-        if conversation.messages and isinstance(conversation.messages[-1].content, str):
-            conversation.messages.pop()
-        print_error("Received an empty response from the model.")
-        return None
-
-    text_chunks: list[str] = []
-    tool_blocks: list[ToolUseBlock] = []
-    stop_reason = "end_turn"
-    usage: Optional[LLMResponse] = None
-    printed_prefix = False
-    _tool_spinner = None          # spinner shown while model generates tool JSON
-    _tool_newline_printed = False  # True once we've ended the text line for the spinner
-    _md_streamer = MarkdownStreamer(display_name=agent_label or "minion")
-
-    def _process(event) -> None:
-        nonlocal printed_prefix, stop_reason, usage, _tool_spinner, _tool_newline_printed
-        if isinstance(event, TextChunk):
-            text_chunks.append(event.text)
-            _slot_cb = _get_slot_cb()
-            if _slot_cb is not None:
-                # Parallel agent mode: route thinking text to the slot display.
-                # Suppress stdout entirely — writing to it would corrupt the Live display.
-                _slot_cb("text", text=event.text)
-                return
-            if not silent:
-                if not printed_prefix:
-                    display_name = agent_label or "minion"
-                    if stream_markdown:
-                        _md_streamer.__enter__()
-                    else:
-                        console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
-                    printed_prefix = True
-                if stream_markdown:
-                    _md_streamer.write(event.text)
-                else:
-                    sys.stdout.write(event.text)
-                    sys.stdout.flush()
-        elif isinstance(event, ToolAccumulationStart):
-            # Model is about to stream a (potentially large) tool call JSON.
-            # If text was already shown, end the line and start a spinner so
-            # the user isn't staring at a static cursor waiting for the tool
-            # confirmation prompt to appear.
-            if not silent and printed_prefix and _get_slot_cb() is None:
-                if stream_markdown:
-                    _md_streamer.close()
-                else:
-                    print()  # close the streamed text line
-                _tool_newline_printed = True
-                _tool_spinner = console.status(TOOL_SPINNER_LABELS.get(event.name, "[muted]thinking...[/]"), spinner="dots")
-                _tool_spinner.start()
-        elif isinstance(event, ToolUseBlock):
-            if _tool_spinner is not None:
-                _tool_spinner.stop()
-                _tool_spinner = None
-            tool_blocks.append(event)
-        elif isinstance(event, StreamComplete):
-            if _tool_spinner is not None:
-                _tool_spinner.stop()
-                _tool_spinner = None
-            stop_reason = event.stop_reason
-            usage = LLMResponse(
-                content="",
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                model=event.model,
-                cache_read_tokens=event.cache_read_tokens,
-                cache_creation_tokens=event.cache_creation_tokens,
-            )
-            get_tracer().emit(
-                "llm_response",
-                response="".join(text_chunks),
-                stop_reason=event.stop_reason,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                model=event.model,
-                latency_ms=int((_time.monotonic() - _llm_start) * 1000),
-                tool_calls=[{"name": tb.name, "input": tb.input} for tb in tool_blocks],
-            )
-
-    if silent:
-        # Spinner covers the full LLM streaming call.
-        # Narration text is collected but not printed yet — we decide after:
-        #   tool_use turn → flush narration so user sees LLM's reasoning
-        #   end_turn      → suppress (the markdown Panel replaces it)
-        # When inside a Live context (parallel agents), use nullcontext to avoid
-        # conflicting with the Live display.
-        _in_live2 = _get_slot_cb() is not None
-        _silent_cm = contextlib.nullcontext() if _in_live2 else console.status(effective_spinner, spinner="dots")
-        with _silent_cm:
-            _process(first_event)
-            try:
-                for event in stream:
-                    _process(event)
-            except KeyboardInterrupt:
-                pass
-        if flush_narration and stop_reason == "tool_use" and text_chunks:
-            display_name = agent_label or "minion"
-            console.print(f"[bold {BLUE}]{display_name}[/] › ", end="")
-            sys.stdout.write("".join(text_chunks))
-            print()
-    else:
-        _process(first_event)
-        try:
-            for event in stream:
-                _process(event)
-        except KeyboardInterrupt:
-            pass  # Ctrl+C mid-stream — stop cleanly, no traceback
-
-    # Finalise markdown streamer (closes Live context, handles any unfinished last line).
-    # Skipped for plain streaming — trailing newline is handled below.
-    if stream_markdown:
-        _md_streamer.close()
-    elif text_chunks and not silent and _get_slot_cb() is None and not _tool_newline_printed:
-        print()
-
-    return _IterationResult(
-        full_text="".join(text_chunks),
-        tool_blocks=tool_blocks,
-        stop_reason=stop_reason,
-        usage=usage,
-    )
-
-
 def _build_content_blocks(result: _IterationResult) -> list:
     """Assemble typed ContentBlocks for an assistant tool-use turn."""
     blocks = []
@@ -352,201 +169,6 @@ def _build_content_blocks(result: _IterationResult) -> list:
     for tb in result.tool_blocks:
         blocks.append(ContentToolUseBlock(id=tb.id, name=tb.name, input=tb.input))
     return blocks
-
-
-def _execute_parallel_agents(
-    tool_blocks: list[ToolUseBlock],
-    executor: ToolExecutor,
-    conversation: Conversation,
-) -> None:
-    """Execute spawn_agent and send_remote_task calls concurrently with a live display.
-
-    Each delegation tool block gets its own 3-line slot (header + status + detail)
-    inside the Live area. For spawn_agent, the subagent's thinking/tool activity is
-    routed through the slot callback (thread-local). For send_remote_task, the slot
-    shows running → complete/error without subagent internals (remote agent is opaque).
-    Traces are emitted manually (bypasses executor.execute() print helpers).
-    """
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback, set_active_live_display
-
-    results: dict[str, str] = {}
-    display = AgentLiveDisplay()
-
-    # Use tb.id as slot key (unique per block) to avoid collision when the same
-    # role or agent name appears twice. label= is the human-readable name shown
-    # in the status row (role for spawn_agent, agent name for send_remote_task).
-    slots = []
-    for tb in tool_blocks:
-        if tb.name == "spawn_agent":
-            label = tb.input.get("role") or "researcher"
-        else:  # send_remote_task
-            label = tb.input.get("agent") or "remote"
-        slots.append(SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=label))
-
-    # Pre-register all slots before the Live context starts so the display has a
-    # fixed height from the first render — Rich Live never resizes, eliminating flicker.
-    display.pre_register(slots)
-
-    def run_spawn_agent(tb: ToolUseBlock) -> str:
-        task = tb.input.get("task", "")
-        role = tb.input.get("role") or "researcher"
-        callback = display.make_callback(tb.id)
-        set_agent_display_callback(callback)
-        set_active_live_display(display)
-
-        # Confirmation: ConfirmationManager.confirm_sync() serializes via its own
-        # lock and pauses/resumes the display automatically.
-        if executor._confirmation_manager is not None:
-            _cm = executor._confirmation_manager
-            _confirm_cb = lambda name, inputs: _cm.confirm_sync(name, inputs)
-        else:
-            _confirm_cb = executor._confirm_callback
-
-        try:
-            get_tracer().emit("tool_call", tool_name="spawn_agent", inputs=tb.input)
-            result = executor._agent_runner(task, role, _confirm_cb)
-            get_tracer().emit("tool_result", tool_name="spawn_agent", output=result, success=True)
-            return result
-        except Exception as exc:
-            err = f"Error: {exc}"
-            get_tracer().emit("tool_result", tool_name="spawn_agent", output=err, success=False)
-            return err
-        finally:
-            set_agent_display_callback(None)
-
-    def run_remote_task(tb: ToolUseBlock) -> str:
-        agent = tb.input.get("agent", "")
-        task = tb.input.get("task", "")
-        callback = display.make_callback(tb.id)
-        callback("running")
-        start = _time.monotonic()
-        try:
-            get_tracer().emit("tool_call", tool_name="send_remote_task", inputs=tb.input)
-            result = executor._remote_task_runner(agent, task)
-            latency_ms = int((_time.monotonic() - start) * 1000)
-            preview = result.split("\n")[0][:100] if result else ""
-            if result.startswith("Error:"):
-                callback("error", error=result.removeprefix("Error: ")[:60])
-            else:
-                callback("complete", latency_ms=latency_ms, preview=preview)
-            get_tracer().emit("tool_result", tool_name="send_remote_task", output=result, success=True)
-            return result
-        except Exception as exc:
-            callback("error", error=str(exc)[:60])
-            get_tracer().emit("tool_result", tool_name="send_remote_task", output=str(exc), success=False)
-            return f"Error: {exc}"
-
-    def run_one(tb: ToolUseBlock) -> str:
-        if tb.name == "spawn_agent":
-            return run_spawn_agent(tb)
-        return run_remote_task(tb)
-
-    with display:
-        with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
-            future_to_block = {pool.submit(run_one, tb): tb for tb in tool_blocks}
-            for future in as_completed(future_to_block):
-                tb = future_to_block[future]
-                try:
-                    results[tb.id] = future.result()
-                except Exception as exc:
-                    results[tb.id] = f"Error: {exc}"
-
-    # Inject in original order — preserves conversation history coherence.
-    for tb in tool_blocks:
-        conversation.add_tool_result(tb.id, results[tb.id])
-
-
-def _execute_parallel_tools(
-    tool_blocks: list[ToolUseBlock],
-    executor: ToolExecutor,
-    conversation: Conversation,
-) -> None:
-    """Execute multiple non-agent tool calls concurrently with a grouped live display.
-
-    Each tool block gets its own 3-line slot (⚙ header + status + result preview).
-    The slot callback is set on each thread so executor.execute() routes its
-    print_tool_call / print_tool_result through the callback instead of stdout,
-    preventing output from corrupting the Live display.
-    """
-    from .agents.display import AgentLiveDisplay, SlotSpec, set_agent_display_callback
-
-    display = AgentLiveDisplay()
-
-    # tb.id is unique per tool_use block even when the same tool is called twice.
-    slots = [
-        SlotSpec(key=tb.id, tool_name=tb.name, inputs=tb.input, label=None)
-        for tb in tool_blocks
-    ]
-    display.pre_register(slots)
-
-    results: dict[str, str] = {}
-
-    def _run_tb(tb: ToolUseBlock) -> str:
-        slot_cb = display.make_callback(tb.id)
-        slot_cb("running")
-        set_agent_display_callback(slot_cb)
-        start = _time.monotonic()
-        try:
-            result = executor.execute(tb)  # print_tool_call/result suppressed via slot_cb
-            latency_ms = int((_time.monotonic() - start) * 1000)
-            first_line = result.split("\n")[0][:100]
-            if result.startswith("Error:"):
-                slot_cb("error", error=first_line.removeprefix("Error: "))
-            else:
-                slot_cb("complete", latency_ms=latency_ms, preview=first_line)
-            return result
-        except Exception as exc:
-            slot_cb("error", error=str(exc))
-            raise
-        finally:
-            set_agent_display_callback(None)
-
-    with display:
-        with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
-            future_to_block = {pool.submit(_run_tb, tb): tb for tb in tool_blocks}
-            for future in as_completed(future_to_block):
-                tb = future_to_block[future]
-                try:
-                    results[tb.id] = future.result()
-                except Exception as exc:
-                    results[tb.id] = f"Error: {exc}"
-
-    for tb in tool_blocks:
-        conversation.add_tool_result(tb.id, results[tb.id])
-
-
-def _execute_tools(
-    tool_blocks: list[ToolUseBlock],
-    executor: ToolExecutor,
-    conversation: Conversation,
-) -> None:
-    """Execute all tool calls from one LLM turn and inject results into conversation.
-
-    When the model requests a single tool call the fast path avoids thread
-    overhead. When it requests multiple tool calls they run concurrently via
-    ThreadPoolExecutor and results are injected in the original order so the
-    conversation stays coherent regardless of which thread finishes first.
-
-    Thread-safety:
-    - ToolExecutor.execute() is stateless (reads dry_run/mcp_manager, never writes).
-    - ConfirmationManager serializes all confirmation prompts.
-    - conversation.add_tool_result() is called sequentially after all futures settle.
-    """
-    if len(tool_blocks) == 1:
-        # Fast path: single tool call — no threading overhead.
-        tb = tool_blocks[0]
-        conversation.add_tool_result(tb.id, executor.execute(tb))
-        return
-
-    # Parallel delegation path: all blocks are delegation tools (spawn_agent or
-    # send_remote_task) — use the agent live display which shows status per slot.
-    if all(tb.name in DELEGATION_TOOLS for tb in tool_blocks):
-        _execute_parallel_agents(tool_blocks, executor, conversation)
-        return
-
-    # Parallel generic path: any mix of non-agent tool calls — use the generic
-    # live display so each tool gets its own slot instead of interleaving output.
-    _execute_parallel_tools(tool_blocks, executor, conversation)
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
@@ -645,10 +267,6 @@ def run_prompt(
 
 
 # ─── Async implementation ─────────────────────────────────────────────────────
-# run_prompt_async() is the canonical implementation. The sync helpers below
-# (_stream_one_iteration, _execute_tools, _execute_parallel_agents) are kept
-# because test_agents.py tests them in isolation.
-
 
 async def _stream_one_iteration_async(
     client: LLMClient,
