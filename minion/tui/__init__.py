@@ -1,4 +1,4 @@
-"""minion/tui — prompt_toolkit Application for the full TUI experience.
+"""minion/tui — Textual Application for the full TUI experience.
 
 Active only when stdout is a TTY and MINION_NO_TUI is not set.
 Non-TTY fallback (tests, pipes, CI) uses the existing Rich/questionary path.
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def tui_print(renderable) -> None:
-    """Print a Rich markup string or renderable through the active TUI (run_in_terminal).
+    """Print a Rich markup string or renderable through the active TUI.
 
     Falls back to a plain Rich console when no TUI is active, so callers
     don't need to branch — just replace console.print() with tui_print().

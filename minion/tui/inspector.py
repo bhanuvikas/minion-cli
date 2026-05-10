@@ -1,35 +1,34 @@
 """InspectorPanel — read-only subagent transcript viewer (Ctrl+O).
 
-Renders a full-width bordered box at 3/4 terminal height:
+Renders a bordered box using Rich Text:
 
-  ┌─ Inspector ──────────────────────────────────────────────────────────────────┐
-  │   [coder ✓]    coder ●                                                       │
-  │                                                                               │
-  │   ── Turn 1 ────────────────────────────────────────────────────────────     │
-  │      I'll create hello.py for you.                                            │
-  │      ⚙  write_file  path='hello.py'                                           │
-  │         ✓  Wrote 24 chars (1 lines) to 'hello.py'.                           │
-  │                                                                               │
-  │   ←/→ switch agents  ·  ↑↓ scroll  ·  ctrl+e expand  ·  ctrl+o close        │
-  └───────────────────────────────────────────────────────────────────────────────┘
+  ┌─ Inspector ────────────────────────────────────────────┐
+  │   [coder ✓]    coder ●                                 │
+  │                                                         │
+  │   ── Turn 1 ──────────────────────────────────         │
+  │      I'll create hello.py for you.                      │
+  │      ⚙  write_file  path='hello.py'                     │
+  │         ✓  Wrote 24 chars (1 lines) to 'hello.py'.     │
+  │                                                         │
+  │   ←/→ switch  ·  ↑↓ scroll  ·  ctrl+e expand  ·  ctrl+o close  │
+  └──────────────────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
 
-from prompt_toolkit.formatted_text import FormattedText
+from rich.text import Text
 
 from .agent_registry import SubagentRegistry, SubagentState
 from .render import render_message_blocks
 
 _STATUS_ICON = {"pending": "○", "running": "●", "complete": "✓", "error": "✗"}
-_STATUS_STYLE = {
-    "pending": "class:slot-running",
-    "running": "class:slot-running",
-    "complete": "class:slot-done",
-    "error":    "class:slot-error",
+_STATUS_STYLE_RICH = {
+    "pending": "#C0C0C0",
+    "running": "#C0C0C0",
+    "complete": "#4CAF50",
+    "error":    "red",
 }
 
-# Fallback dimensions when the app is not yet running
 _DEFAULT_WIDTH  = 120
 _DEFAULT_HEIGHT = 40
 
@@ -38,8 +37,31 @@ def _frags_len(frags: list[tuple[str, str]]) -> int:
     return sum(len(t) for _, t in frags)
 
 
+def _frags_to_text(frags: list[tuple[str, str]]) -> Text:
+    """Convert (class:name, text) fragment list to Rich Text."""
+    t = Text()
+    for style, chunk in frags:
+        if style.startswith("class:"):
+            style = _CLASS_TO_RICH.get(style[6:], "")
+        t.append(chunk, style=style or "")
+    return t
+
+
+_CLASS_TO_RICH: dict[str, str] = {
+    "slot-detail":       "#C0C0C0",
+    "slot-done":         "#4CAF50",
+    "slot-error":        "bold red",
+    "slot-running":      "#C0C0C0",
+    "inspector-title":   "bold",
+    "inspector-tab-sel": "bold #FFD700 on #2a1f00",
+    "inspector-tab":     "#555555",
+    "inspector-hint":    "#444444",
+    "inspector-agent":   "bold #E8E8E8",
+}
+
+
 class InspectorPanel:
-    """Reads from SubagentRegistry; renders a bordered box as FormattedText."""
+    """Reads from SubagentRegistry; renders a bordered box as Rich Text."""
 
     def __init__(self, registry: SubagentRegistry) -> None:
         self._reg      = registry
@@ -47,6 +69,10 @@ class InspectorPanel:
         self._sel_idx  = 0
         self._scroll   = 0
         self._expanded = False
+        self._app_ref  = None   # set by MinionApp after construction
+
+    def set_app(self, app) -> None:
+        self._app_ref = app
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -92,121 +118,102 @@ class InspectorPanel:
 
     # ── Top-level render ─────────────────────────────────────────────────────
 
-    def get_formatted_text(self) -> FormattedText:
+    def get_rich_text(self) -> Text:
+        """Return a Rich Text object rendering the inspector box."""
         states = self._reg.get_all()
         if not states:
             self._visible = False
-            return FormattedText([])
+            return Text()
 
-        try:
-            from prompt_toolkit.application.current import get_app
-            size   = get_app().output.get_size()
-            term_w = size.columns
-            term_h = size.rows
-        except Exception:
-            term_w = _DEFAULT_WIDTH
-            term_h = _DEFAULT_HEIGHT
+        if self._app_ref is not None:
+            try:
+                term_w = self._app_ref.size.width
+                term_h = self._app_ref.size.height
+            except Exception:
+                term_w, term_h = _DEFAULT_WIDTH, _DEFAULT_HEIGHT
+        else:
+            term_w, term_h = _DEFAULT_WIDTH, _DEFAULT_HEIGHT
 
         idx      = min(self._sel_idx, len(states) - 1)
         selected = states[idx]
 
-        # Box geometry
-        box_w   = term_w
-        inner_w = box_w - 3        # "│ " (2) + content + " │" (2) — use 3 so pad by 1 minimum
-        # 3/4 of terminal, minimum 14 lines
+        box_w        = term_w
+        inner_w      = box_w - 3
         target_h     = max(14, (term_h * 3) // 4)
-        # Fixed inner rows: tab_row + blank + blank_before_hint + hint_row = 4
-        transcript_h = max(4, target_h - 2 - 4)   # subtract top+bottom borders + 4 fixed
+        transcript_h = max(4, target_h - 2 - 4)
 
-        # Transcript content
         all_lines = self._render_transcript(selected)
         total     = len(all_lines)
         end       = min(total, max(total - self._scroll, transcript_h))
         start     = max(0, end - transcript_h)
         visible   = all_lines[start:end]
 
-        # Assemble inner rows (plain fragment lists, no box borders yet)
         inner: list[list[tuple[str, str]]] = []
-
-        inner.append(self._tab_row(states, idx))   # tab pills
-        inner.append([])                            # blank after tabs
+        inner.append(self._tab_row(states, idx))
+        inner.append([])
 
         for lf in visible:
             inner.append(lf)
 
         if total > transcript_h and start > 0:
             inner.append([("class:inspector-hint",
-                            f" ↑ {start} more lines above  (↑ to scroll)")])
+                           f" ↑ {start} more lines above  (↑ to scroll)")])
 
-        # Pad to fill transcript area
-        target_inner = 2 + transcript_h  # tab + blank + transcript lines
+        target_inner = 2 + transcript_h
         while len(inner) < target_inner:
             inner.append([])
 
-        inner.append([])                            # blank before hint
-        inner.append(self._hint_row(states))        # key hint
+        inner.append([])
+        inner.append(self._hint_row(states))
 
         # ── Box rendering ─────────────────────────────────────────────────────
-        frags: list[tuple[str, str]] = []
+        result = Text()
 
-        # Top border with embedded title
         title    = "─ Inspector "
         top_fill = max(0, box_w - 2 - len(title))
-        frags.append(("class:slot-detail", "┌" + title + "─" * top_fill + "┐\n"))
+        result.append("┌" + title + "─" * top_fill + "┐\n", style="#C0C0C0")
 
         for row in inner:
             text_len = _frags_len(row)
             pad      = max(0, inner_w - text_len)
-            frags.append(("class:slot-detail", "│ "))
-            frags.extend(row)
-            frags.append(("", " " * pad))
-            frags.append(("class:slot-detail", "│\n"))
+            result.append("│ ", style="#C0C0C0")
+            result.append_text(_frags_to_text(row))
+            result.append(" " * pad)
+            result.append("│\n", style="#C0C0C0")
 
-        # Bottom border
-        frags.append(("class:slot-detail", "└" + "─" * (box_w - 2) + "┘"))
-
-        return FormattedText(frags)
+        result.append("└" + "─" * (box_w - 2) + "┘", style="#C0C0C0")
+        return result
 
     # ── Tab row ───────────────────────────────────────────────────────────────
 
-    def _tab_row(
-        self, states: list[SubagentState], sel_idx: int
-    ) -> list[tuple[str, str]]:
+    def _tab_row(self, states: list[SubagentState], sel_idx: int) -> list[tuple[str, str]]:
         frags: list[tuple[str, str]] = [("class:inspector-title", " Inspector")]
-
         for i, s in enumerate(states):
-            icon  = _STATUS_ICON.get(s.status, "?")
+            icon = _STATUS_ICON.get(s.status, "?")
             frags.append(("", "    "))
             if i == sel_idx:
                 frags.append(("class:inspector-tab-sel", f" {s.label}  {icon} "))
             else:
                 frags.append(("class:inspector-tab", f"{s.label}  "))
-                frags.append((_STATUS_STYLE.get(s.status, "class:inspector-tab"), icon))
-
+                frags.append((_STATUS_STYLE_RICH.get(s.status, "class:inspector-tab"), icon))
         return frags
 
     # ── Hint row ──────────────────────────────────────────────────────────────
 
-    def _hint_row(
-        self, states: list[SubagentState]
-    ) -> list[tuple[str, str]]:
+    def _hint_row(self, states: list[SubagentState]) -> list[tuple[str, str]]:
         sep   = ("class:inspector-hint", "  ·  ")
         parts: list[tuple[str, str]] = []
-
         if len(states) > 1:
             parts += [("class:inspector-hint", "←/→ switch agents"), sep]
         parts += [("class:inspector-hint", "↑↓ scroll"), sep]
         parts += [("class:inspector-hint",
                    "ctrl+e collapse" if self._expanded else "ctrl+e expand"), sep]
         parts += [("class:inspector-hint", "ctrl+o close")]
-
         return parts
 
     # ── Transcript ────────────────────────────────────────────────────────────
 
-    def _render_transcript(
-        self, state: SubagentState
-    ) -> list[list[tuple[str, str]]]:
+    def _render_transcript(self, state: SubagentState) -> list[list[tuple[str, str]]]:
         if not state.messages:
             if state.status in ("pending", "running"):
                 return [[("class:slot-running", " running…")]]
@@ -214,13 +221,7 @@ class InspectorPanel:
                 return [[("class:slot-error", f" Error: {state.error}")]]
             return []
 
-        lines = render_message_blocks(
-            state.messages, state.label, expanded=self._expanded
-        )
-
+        lines = render_message_blocks(state.messages, state.label, expanded=self._expanded)
         if state.status == "error" and state.error:
             lines.append([("class:slot-error", f" ✗  Error: {state.error}")])
-
         return lines
-
-

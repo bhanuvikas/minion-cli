@@ -132,11 +132,10 @@ def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
     return markup if markup else "[muted](no changes)[/]"
 
 
-def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
-    """Compute diff for the TUI permission panel using the same format_diff_rich as non-TUI.
+def _diff_lines_for_panel(name: str, inputs: dict) -> str:
+    """Compute diff for the TUI permission panel.
 
-    Returns prompt_toolkit (style, text) pairs ready for FormattedText.
-    Limited to 30 lines to keep the panel usable.
+    Returns raw ANSI string. Limited to 30 lines to keep the panel usable.
     """
     from pathlib import Path as _Path
     from ..output.diff import format_diff_rich
@@ -158,11 +157,11 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
             existing = ""
         new_content = existing.replace(old_str, new_str, 1)
     else:
-        return []
+        return ""
 
     markup = format_diff_rich(existing, new_content)
     if not markup:
-        return []
+        return ""
 
     lines = markup.split("\n")
     if len(lines) > 30:
@@ -171,10 +170,7 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
     markup = "\n".join(lines)
 
     from ..tui.render import render_rich as _render_rich
-    ansi = _render_rich(markup, width=76)
-
-    from prompt_toolkit.formatted_text import ANSI as _ANSI, to_formatted_text as _to_ft
-    return list(_to_ft(_ANSI(ansi + "\n")))  # type: ignore[return-value]
+    return _render_rich(markup, width=76)
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
@@ -628,7 +624,7 @@ class ToolExecutor:
                         self._renderer.on_diff_preview(detail, tool_name=name)
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
-                _diff_lns: list = []
+                _diff_lns: str = ""
                 if self._confirm_callback is None:
                     from ..tui import is_tui_active as _is_tui_active
                     if _is_tui_active():
@@ -780,7 +776,7 @@ class ToolExecutor:
                         _immediate_r.on_diff_preview(detail, tool_name=name)
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
-                _diff_lns: list = []
+                _diff_lns: str = ""
                 if self._confirm_callback is None:
                     from ..tui import is_tui_active as _is_tui_active
                     if _is_tui_active():

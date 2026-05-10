@@ -1,20 +1,17 @@
-"""MinionApp — the prompt_toolkit Application that owns the terminal in TUI mode.
+"""MinionApp — the Textual Application that owns the terminal in TUI mode.
 
-Layout (bottom strip, always visible):
-  streaming_zone  — live in-progress assistant response (hidden when idle)
-  slots_zone      — live agent status (hidden when no agents running)
-  separator
-  bottom_zone     — switches between input_bar and permission_panel
-  separator
-  status_bar      — 1-line model/mode indicator
+Layout (vertical stack):
+  ConversationArea  — RichLog for all completed turns (grows to fill)
+  StreamingZone     — live in-progress assistant response
+  SlotsZone         — live parallel agent/tool status (hidden when idle)
+  InspectorZone     — subagent transcript viewer (hidden by default)
+  PermissionZone    — confirmation panel (replaces input when visible)
+  InputRow          — "you › " label + TextArea for user input
+  CompletionList    — slash-command completion overlay (hidden when idle)
+  StatusLine        — 1-line docked status bar
 
-All completed output (user turns, finished LLM responses, tool results, system
-messages) is printed to the real terminal via run_in_terminal(), landing in the
-terminal scrollback buffer — giving natural terminal-like scrolling where content
-flows up as the conversation grows, exactly like Claude Code.
-
-Non-TTY or MINION_NO_TUI=1: this module is not used; the existing
-PromptSession + Rich Live + questionary path remains active.
+Non-TTY or MINION_NO_TUI=1: this module is not used; the console path
+(PromptSession + Rich Live + questionary) remains active.
 """
 
 from __future__ import annotations
@@ -22,602 +19,659 @@ from __future__ import annotations
 import asyncio
 import io
 import sys
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from prompt_toolkit import Application
-from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import Completer
-from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import (
-    ConditionalContainer,
-    Float,
-    FloatContainer,
-    HSplit,
-    Window,
-)
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-from prompt_toolkit.layout.layout import Layout
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput
-from prompt_toolkit.lexers import Lexer
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, VerticalScroll
+from textual.events import Key
+from textual.message import Message
+from textual.widgets import OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 
 from .agent_registry import get_registry
 from .conversation import ConversationBuffer
 from .inspector import InspectorPanel
+from .messages import InspectorUpdated, SlotsUpdated
 from .permission import PermissionPanel
 from .slots import SlotsManager
 from .status import StatusBar
-from .theme import TUI_STYLE
+from .theme import MINION_TCSS
 
 
-class MinionApp:
-    """Full-screen TUI Application for minion.
+# ── Internal messages (app-private event bus) ─────────────────────────────────
 
-    Create once per session, pass on_submit and on_quit at run time via
-    run_async(). All component state (conversation, slots, permission, status)
-    lives here so it can be shared with runner.py and confirmation.py.
-    """
+class TuiSubmit(Message):
+    """User has submitted text from the InputArea."""
+    def __init__(self, text: str) -> None:
+        self.text = text
+        super().__init__()
 
-    def __init__(self, model_name: str, completer: Optional[Completer] = None) -> None:
-        self._model_name = model_name
-        self._thinking   = False
+
+class TuiHistoryNav(Message):
+    """User pressed ↑/↓ to navigate history."""
+    def __init__(self, direction: int) -> None:
+        self.direction = direction   # -1 = older, +1 = newer
+        super().__init__()
+
+
+class TuiUpdateCompletion(Message):
+    """Text has changed; update the completion overlay."""
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+        super().__init__()
+
+
+# ── Custom widget classes ─────────────────────────────────────────────────────
+
+class ConversationArea(VerticalScroll):
+    """Hosts the RichLog for all completed conversation turns."""
+
+    def compose(self) -> ComposeResult:
+        yield RichLog(markup=True, highlight=False, auto_scroll=True, id="rich-log")
+
+    def write_ansi(self, ansi: str) -> None:
+        rl = self.query_one(RichLog)
+        text = Text.from_ansi(ansi.rstrip("\n"))
+        rl.write(text)
+
+    def write_markup(self, markup: str) -> None:
+        self.query_one(RichLog).write(markup)
+
+    def clear_log(self) -> None:
+        self.query_one(RichLog).clear()
+
+
+class StreamingZone(Static):
+    """Live in-progress assistant response / thinking indicator."""
+
+
+class SlotsZone(Static):
+    """Live parallel agent/tool status."""
+
+
+class InspectorZone(Static):
+    """Subagent transcript viewer."""
+
+
+class PermissionZone(Static):
+    """Permission scope selector — shown when a dangerous tool needs confirmation."""
+
+
+class InputArea(TextArea):
+    """Multiline input box with submit, newline-insert, and history navigation."""
+
+    BINDINGS = [
+        Binding("enter",  "submit_input",         "Submit",    priority=True, show=False),
+        Binding("ctrl+j", "insert_newline",        "New line",  show=False),
+        Binding("up",     "navigate_history_up",   "Hist ↑",    show=False),
+        Binding("down",   "navigate_history_down", "Hist ↓",    show=False),
+    ]
+
+    def action_submit_input(self) -> None:
+        # Apply completion if overlay is visible
+        try:
+            cl = self.app.query_one(CompletionList)
+            if cl.display:
+                highlighted = cl.highlighted
+                if highlighted is not None:
+                    opt = cl.get_option_at_index(highlighted)
+                    cmd = str(getattr(opt, "id", "") or "")
+                    if cmd:
+                        self.clear()
+                        self.insert(cmd)
+                        cl.display = False
+                        return
+        except Exception:
+            pass
+        text = self.text.strip()
+        if text:
+            self.post_message(TuiSubmit(text))
+
+    def action_insert_newline(self) -> None:
+        self.insert("\n")
+
+    def action_navigate_history_up(self) -> None:
+        self.app.post_message(TuiHistoryNav(direction=-1))
+
+    def action_navigate_history_down(self) -> None:
+        self.app.post_message(TuiHistoryNav(direction=1))
+
+    def on_key(self, event: Key) -> None:
+        try:
+            cl = self.app.query_one(CompletionList)
+        except Exception:
+            return
+        if not cl.display:
+            return
+        if event.key == "escape":
+            cl.display = False
+            event.prevent_default()
+        elif event.key == "tab":
+            highlighted = cl.highlighted
+            if highlighted is not None:
+                opt = cl.get_option_at_index(highlighted)
+                cmd = str(getattr(opt, "id", "") or "")
+                if cmd:
+                    self.clear()
+                    self.insert(cmd)
+            cl.display = False
+            event.prevent_default()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        text = event.text_area.text
+        try:
+            cl = self.app.query_one(CompletionList)
+        except Exception:
+            return
+        if text.startswith("/") and "\n" not in text:
+            self.app.post_message(TuiUpdateCompletion(text))
+        else:
+            cl.display = False
+
+
+class InputRow(Horizontal):
+    """Input row: "you › " prefix label + InputArea."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("[bold #FFD700]you ›[/] ", classes="input-prefix", id="you-prefix")
+        yield InputArea(language=None, id="input-area")
+
+
+class CompletionList(OptionList):
+    """Slash-command completion overlay."""
+
+
+class StatusLine(Static):
+    """1-line docked status bar."""
+
+
+# ── Main Application ──────────────────────────────────────────────────────────
+
+class MinionApp(App):
+    """Full-screen Textual TUI for minion."""
+
+    CSS = MINION_TCSS
+
+    BINDINGS = [
+        Binding("ctrl+c", "cancel_or_quit",     "Cancel/Quit", show=False),
+        Binding("ctrl+l", "clear_conversation",  "Clear",       show=False),
+        Binding("ctrl+o", "toggle_inspector",    "Inspector",   show=False),
+        Binding("ctrl+e", "expand_inspector",    "Expand",      show=False),
+    ]
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        agent_registry=None,
+        skill_registry=None,
+        a2a_manager=None,
+        # Legacy parameters — ignored; completion uses registries directly
+        completer=None,
+        completer_data=None,
+    ) -> None:
+        super().__init__()
+        self._model_name     = model_name
+        self._agent_registry = agent_registry
+        self._skill_registry = skill_registry
+        self._a2a_manager    = a2a_manager
         self._terminal_width = 120
-        self._completer  = completer
-        self._thinking_task: Optional[asyncio.Task] = None
+        self._thinking       = False
+        self._think_timer    = None
+        self._current_task: Optional[asyncio.Task] = None
 
-        # Components
-        self.conversation = ConversationBuffer()
-        self.slots        = SlotsManager(invalidate_fn=self._invalidate)
-        self.permission   = PermissionPanel(app_ref=self)
-        self.status       = StatusBar(model_name=model_name, width=self._terminal_width)
-        _reg = get_registry()
-        _reg.set_invalidate(self._invalidate)
-        self.inspector    = InspectorPanel(registry=_reg)
-
-        # Wire conversation callbacks now (before _build).
-        # Use the *internal* write path so ConversationBuffer's own emits do NOT
-        # trigger mark_printed() — only external print_renderable() calls do.
-        self.conversation.set_callbacks(
-            print_ansi_fn=self._write_ansi,
-            invalidate_fn=self._invalidate,
-            flush_fn=self._flush_writes,
-        )
-
-        # Callbacks set by run_async()
         self._on_submit: Optional[Callable[[str], Awaitable[None]]] = None
         self._on_quit:   Optional[Callable[[], Awaitable[None]]]    = None
 
-        # Background task tracking
-        self._current_task: Optional[asyncio.Task] = None
+        # In-memory + persistent history
+        self._history:    list[str] = []
+        self._hist_idx:   int = -1
+        self._hist_saved: str = ""
+        self._history_path = Path.home() / ".minion" / "history"
+        self._load_history()
 
-        # Batched scrollback write state.
-        # All _write_ansi() calls within a 16ms window are combined into a
-        # single run_in_terminal() call so the TUI erases and redraws only
-        # once per batch instead of once per individual emit.
-        self._pending_output: list[str] = []
-        self._pending_flush: Optional[asyncio.TimerHandle] = None
+        # Component state machines (not Textual widgets)
+        self.conversation = ConversationBuffer()
+        self.permission   = PermissionPanel(app_ref=self)
+        self.status       = StatusBar(model_name=model_name, width=self._terminal_width)
 
-        # The Application — built lazily so the event loop is available
-        self._app: Optional[Application] = None
+        _reg = get_registry()
+        _reg.set_post_message(self.post_message)
+        self.inspector = InspectorPanel(registry=_reg)
+        self.inspector.set_app(self)
+        self.slots = SlotsManager(post_message_fn=self.post_message)
 
-    # ── Build ─────────────────────────────────────────────────────────────────
-
-    def _build(self) -> Application:
-        kb = KeyBindings()
-
-        # ── Condition filters ─────────────────────────────────────────────────
-        is_perm_visible      = Condition(lambda: self.permission.is_visible)
-        is_thinking          = Condition(lambda: self._thinking)
-        is_inspector_visible = Condition(lambda: self.inspector.is_visible)
-        is_inspector_active  = is_inspector_visible & ~is_perm_visible
-        is_input_active      = ~is_perm_visible & ~is_thinking & ~is_inspector_visible
-
-        # ── Key bindings ──────────────────────────────────────────────────────
-
-        @kb.add("enter", filter=is_input_active)
-        async def _on_enter(event):
-            buf = event.app.current_buffer
-            # Apply a selected (or the only) completion before submitting.
-            state = buf.complete_state
-            if state is not None and state.completions:
-                buf.apply_completion(state.current_completion or state.completions[0])
-                return
-            text = buf.text
-            stripped = text.strip()
-            if not stripped:
-                return
-            buf.append_to_history()
-            buf.reset()
-            self.conversation.append_user(stripped)
-            self._set_thinking(True)
-            if self._on_submit is not None:
-                self._current_task = asyncio.create_task(
-                    _wrap_submit(self._on_submit, stripped, self)
-                )
-
-        @kb.add("escape", "enter", filter=is_input_active)
-        def _insert_nl(event):
-            event.app.current_buffer.insert_text("\n")
-
-        @kb.add("c-j", filter=is_input_active)
-        def _paste_nl(event):
-            event.app.current_buffer.insert_text("\n")
-
-        @kb.add("c-c")
-        async def _on_ctrl_c(event):
-            if self._current_task and not self._current_task.done():
-                self._current_task.cancel()
-            else:
-                if self._on_quit is not None:
-                    await self._on_quit()
-                self._flush_writes()  # drain buffer before TUI tears down
-                event.app.exit()
-
-        @kb.add("c-l")
-        def _clear_conv(event):
-            self.conversation.clear()
-            event.app.invalidate()
-
-        # Permission panel keys
-        @kb.add("1", filter=is_perm_visible)
-        def _perm1(event): self.permission.confirm_by_index(0); event.app.invalidate()
-
-        @kb.add("2", filter=is_perm_visible)
-        def _perm2(event): self.permission.confirm_by_index(1); event.app.invalidate()
-
-        @kb.add("3", filter=is_perm_visible)
-        def _perm3(event): self.permission.confirm_by_index(2); event.app.invalidate()
-
-        @kb.add("4", filter=is_perm_visible)
-        @kb.add("n",       filter=is_perm_visible)
-        @kb.add("escape",  filter=is_perm_visible)
-        def _perm_no(event): self.permission.deny(); event.app.invalidate()
-
-        @kb.add("up",   filter=is_perm_visible)
-        def _perm_up(event):
-            self.permission.move_cursor(-1)
-            event.app.invalidate()
-
-        @kb.add("down", filter=is_perm_visible)
-        def _perm_down(event):
-            self.permission.move_cursor(1)
-            event.app.invalidate()
-
-        @kb.add("enter", filter=is_perm_visible)
-        def _perm_enter(event):
-            self.permission.confirm_current()
-            event.app.invalidate()
-
-        # ── Inspector keys ────────────────────────────────────────────────────
-
-        @kb.add("c-o", filter=~is_perm_visible)
-        def _toggle_inspector(event):
-            self.inspector.toggle()
-            self.status.set_inspector_hint(self.inspector.hint() if self.inspector.is_visible else "")
-            event.app.invalidate()
-
-        @kb.add("c-e", filter=is_inspector_visible)
-        def _expand_inspector(event):
-            self.inspector.toggle_expanded()
-            self.status.set_inspector_hint(self.inspector.hint())
-            event.app.invalidate()
-
-        @kb.add("left", filter=is_inspector_active)
-        def _inspector_left(event):
-            self.inspector.move_agent(-1)
-            self.status.set_inspector_hint(self.inspector.hint())
-            event.app.invalidate()
-
-        @kb.add("right", filter=is_inspector_active)
-        def _inspector_right(event):
-            self.inspector.move_agent(1)
-            self.status.set_inspector_hint(self.inspector.hint())
-            event.app.invalidate()
-
-        @kb.add("up", filter=is_inspector_active)
-        def _inspector_up(event):
-            self.inspector.scroll(-1)
-            event.app.invalidate()
-
-        @kb.add("down", filter=is_inspector_active)
-        def _inspector_down(event):
-            self.inspector.scroll(1)
-            event.app.invalidate()
-
-        @kb.add("escape", filter=is_inspector_active)
-        def _close_inspector(event):
-            self.inspector.close()
-            self.status.set_inspector_hint("")
-            event.app.invalidate()
-
-        # ── Input buffer ──────────────────────────────────────────────────────
-        history_path = __import__("pathlib").Path.home() / ".minion" / "history"
-        history_path.parent.mkdir(exist_ok=True)
-
-        input_buf = Buffer(
-            name="input",
-            history=FileHistory(str(history_path)),
-            multiline=True,
-            completer=self._completer,
-            complete_while_typing=True,
-            accept_handler=None,  # handled by Enter key above
+        # Wire conversation callbacks
+        self.conversation.set_callbacks(
+            write_ansi_fn=self._write_ansi,
+            refresh_fn=self._refresh_streaming,
         )
 
-        # ── Layout zones ──────────────────────────────────────────────────────
+        # Widget references populated in on_mount()
+        self._conv_area:       Optional[ConversationArea] = None
+        self._streaming_zone:  Optional[StreamingZone]    = None
+        self._slots_zone:      Optional[SlotsZone]        = None
+        self._inspector_zone:  Optional[InspectorZone]    = None
+        self._permission_zone: Optional[PermissionZone]   = None
+        self._input_row:       Optional[InputRow]         = None
+        self._completion_list: Optional[CompletionList]   = None
+        self._status_line:     Optional[StatusLine]       = None
+        self._input_area:      Optional[InputArea]        = None
 
-        # Streaming zone: always in the layout (never conditionally removed).
-        # When idle, get_streaming_formatted_text() returns a single blank line
-        # so the window stays at height=1 and the bottom strip never shifts.
-        def _streaming_content():
-            # Suppress while the permission panel is visible, parallel tools are
-            # running (slots visible), or the inspector is open.
-            if self.permission.is_visible or self.slots.is_visible or self.inspector.is_visible:
-                return FormattedText([("", " ")])
-            return self.conversation.get_streaming_formatted_text()
+    # ── History helpers ───────────────────────────────────────────────────────
 
-        streaming_zone = Window(
-            content=FormattedTextControl(_streaming_content, focusable=False),
-            wrap_lines=True,
-            dont_extend_height=True,
-        )
-
-        slots_window = Window(
-            content=FormattedTextControl(
-                lambda: self.slots.get_formatted_text(),
-                focusable=False,
-            ),
-            wrap_lines=True,
-            dont_extend_height=True,
-        )
-
-        slots_zone = ConditionalContainer(
-            content=slots_window,
-            filter=Condition(lambda: self.slots.is_visible),
-        )
-
-        inspector_window = Window(
-            content=FormattedTextControl(
-                lambda: self.inspector.get_formatted_text(),
-                focusable=False,
-            ),
-            wrap_lines=False,   # box lines must not wrap — each row is exactly box_w chars
-        )
-
-        inspector_zone = ConditionalContainer(
-            content=inspector_window,
-            filter=is_inspector_visible,
-        )
-
-        status_window = Window(
-            content=FormattedTextControl(
-                lambda: self.status.get_formatted_text(),
-                focusable=False,
-            ),
-            height=1,
-        )
-
-        import re as _re
-        from ..repl import REPL_COMMANDS as _REPL_COMMANDS
-        _token_re = _re.compile(r"@[\w./\-]+|/\S+")
-
-        class _TuiInputLexer(Lexer):
-            def lex_document(self, document):
-                lines = document.text.split("\n")
-                def get_line(lineno):
-                    if lineno >= len(lines):
-                        return []
-                    line = lines[lineno]
-                    tokens = []
-                    cursor = 0
-                    for m in _token_re.finditer(line):
-                        if m.start() > cursor:
-                            tokens.append(("", line[cursor:m.start()]))
-                        text = m.group()
-                        if text.startswith("@"):
-                            tokens.append(("class:at-mention", text))
-                        elif text.lower() in _REPL_COMMANDS:
-                            tokens.append(("class:slash-command", text))
-                        else:
-                            tokens.append(("", text))
-                        cursor = m.end()
-                    if cursor < len(line):
-                        tokens.append(("", line[cursor:]))
-                    return tokens
-                return get_line
-
-        input_window = Window(
-            content=BufferControl(
-                buffer=input_buf,
-                lexer=_TuiInputLexer(),
-                input_processors=[BeforeInput([("class:input-prefix", "you › ")])],
-                focusable=True,
-            ),
-            wrap_lines=True,
-            dont_extend_height=True,
-        )
-
-        permission_window = Window(
-            content=FormattedTextControl(
-                lambda: self.permission.get_formatted_text(),
-                focusable=False,
-            ),
-            wrap_lines=True,
-            dont_extend_height=True,
-        )
-
-        bottom_zone = ConditionalContainer(
-            content=HSplit([
-                ConditionalContainer(
-                    content=input_window,
-                    filter=~is_perm_visible,
-                ),
-                ConditionalContainer(
-                    content=permission_window,
-                    filter=is_perm_visible,
-                ),
-            ]),
-            filter=~Condition(lambda: False),  # always visible
-        )
-
-        layout = Layout(
-            FloatContainer(
-                content=HSplit([
-                    streaming_zone,
-                    slots_zone,
-                    inspector_zone,
-                    Window(height=1),
-                    Window(height=1, char="─", style="class:separator"),
-                    bottom_zone,
-                    Window(height=1, char="─", style="class:separator"),
-                    status_window,
-                ]),
-                floats=[
-                    Float(
-                        xcursor=True,
-                        ycursor=True,
-                        content=CompletionsMenu(max_height=8, scroll_offset=2),
-                    ),
-                ],
-            ),
-            focused_element=input_buf,
-        )
-
-        app = Application(
-            layout=layout,
-            key_bindings=kb,
-            style=TUI_STYLE,
-            full_screen=False,
-            mouse_support=False,
-            erase_when_done=True,
-        )
-
-        # Suppress the terminal cursor while streaming/thinking is active so
-        # any layout-height transition frame can't flash the cursor.
-        _orig_show_cursor = app.output.show_cursor
-        def _guarded_show_cursor():
-            if not self.conversation.is_streaming:
-                _orig_show_cursor()
-        app.output.show_cursor = _guarded_show_cursor
-
-        # Initialise with the real width right away (before first render).
+    def _load_history(self) -> None:
         try:
-            w = app.output.get_size().columns
-            self._terminal_width = w
-            self.conversation.set_width(w)
-            self.status.set_width(w)
+            if self._history_path.exists():
+                self._history = [
+                    l.strip() for l in self._history_path.read_text().splitlines()
+                    if l.strip() and not l.startswith("#")
+                ]
+        except Exception:
+            self._history = []
+
+    def _save_history_entry(self, text: str) -> None:
+        try:
+            self._history_path.parent.mkdir(exist_ok=True)
+            with self._history_path.open("a", encoding="utf-8") as f:
+                f.write(text.replace("\n", " ") + "\n")
         except Exception:
             pass
 
-        return app
+    # ── Compose ───────────────────────────────────────────────────────────────
 
-    # ── Run ───────────────────────────────────────────────────────────────────
+    def compose(self) -> ComposeResult:
+        yield ConversationArea(id="conv-area")
+        yield StreamingZone(" ", id="streaming-zone")
+        yield SlotsZone(" ", id="slots-zone")
+        yield InspectorZone(" ", id="inspector-zone")
+        yield PermissionZone(" ", id="permission-zone")
+        yield InputRow(id="input-row")
+        yield CompletionList(id="completion-list")
+        yield StatusLine("", id="status-line")
 
-    async def run_async(
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def on_mount(self) -> None:
+        self._conv_area       = self.query_one("#conv-area",       ConversationArea)
+        self._streaming_zone  = self.query_one("#streaming-zone",  StreamingZone)
+        self._slots_zone      = self.query_one("#slots-zone",      SlotsZone)
+        self._inspector_zone  = self.query_one("#inspector-zone",  InspectorZone)
+        self._permission_zone = self.query_one("#permission-zone", PermissionZone)
+        self._input_row       = self.query_one("#input-row",       InputRow)
+        self._completion_list = self.query_one("#completion-list", CompletionList)
+        self._status_line     = self.query_one("#status-line",     StatusLine)
+        self._input_area      = self.query_one("#input-area",      InputArea)
+
+        # Initial dimensions
+        self._terminal_width = self.size.width
+        self.conversation.set_width(self._terminal_width)
+        self.status.set_width(self._terminal_width)
+
+        # Initially hidden zones
+        self._slots_zone.display      = False
+        self._inspector_zone.display  = False
+        self._permission_zone.display = False
+        self._completion_list.display = False
+
+        # Thinking animation timer (paused until first prompt)
+        self._think_timer = self.set_interval(0.25, self._tick_thinking, pause=True)
+
+        self._refresh_status()
+        self._write_banner()
+        self.set_focus(self._input_area)
+
+    def on_resize(self, event) -> None:
+        self._terminal_width = event.size.width
+        self.conversation.set_width(event.size.width)
+        self.status.set_width(event.size.width)
+        self._refresh_status()
+
+    # ── run_async override ────────────────────────────────────────────────────
+
+    async def run_async(  # type: ignore[override]
         self,
         *,
-        on_submit: Callable[[str], Awaitable[None]],
-        on_quit:   Callable[[], Awaitable[None]],
+        on_submit: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_quit:   Optional[Callable[[], Awaitable[None]]]    = None,
+        **kwargs,
     ) -> None:
-        """Run the Application until the user exits."""
-        self._on_submit = on_submit
-        self._on_quit   = on_quit
-        self._app       = self._build()
-        await self._app.run_async()
-        # Flush any buffered writes that didn't fire before the app exited
-        if self._pending_flush is not None:
-            self._pending_flush.cancel()
-            self._pending_flush = None
-        if self._pending_output:
-            combined = "".join(self._pending_output)
-            self._pending_output.clear()
-            sys.stdout.write(combined)
-            sys.stdout.flush()
-        # Print a closing rule so the shell prompt has a clean visual boundary
+        if on_submit is not None:
+            self._on_submit = on_submit
+        if on_quit is not None:
+            self._on_quit = on_quit
+        await super().run_async(**kwargs)
+        # Post-exit: print a resume hint to the restored terminal
         rule = "\033[38;2;192;192;192m" + "─" * self._terminal_width + "\033[0m\n"
         sys.stdout.write(rule)
+        sys.stdout.write("  minion session ended — run `minion` to resume\n")
         sys.stdout.flush()
 
-    # ── Scrollback write paths ────────────────────────────────────────────────
+    # ── Actions ───────────────────────────────────────────────────────────────
 
-    def _write_ansi(self, ansi: str) -> None:
-        """Internal path: write ANSI to the terminal scrollback (batched).
+    async def action_cancel_or_quit(self) -> None:
+        if self._current_task and not self._current_task.done():
+            self._current_task.cancel()
+        else:
+            if self._on_quit is not None:
+                await self._on_quit()
+            self.exit()
 
-        Multiple calls within the same ~16ms window are combined into a single
-        run_in_terminal() invocation so the TUI only erases+redraws once per
-        batch, eliminating the flicker that separate emit() calls would cause.
+    def action_clear_conversation(self) -> None:
+        self.conversation.clear()
+        if self._conv_area is not None:
+            self._conv_area.clear_log()
 
-        Falls back to an immediate run_in_terminal() when called from a thread
-        (sync subagent execution) where no running event loop is accessible.
-        """
-        if not ansi.endswith("\n"):
-            ansi = ansi + "\n"
-        if self._app is None or not self._app.is_running:
-            sys.stdout.write(ansi)
-            sys.stdout.flush()
+    def action_toggle_inspector(self) -> None:
+        if self.permission.is_visible:
+            return
+        self.inspector.toggle()
+        self.status.set_inspector_hint(
+            self.inspector.hint() if self.inspector.is_visible else ""
+        )
+        self._refresh_inspector()
+        self._refresh_status()
+
+    def action_expand_inspector(self) -> None:
+        if not self.inspector.is_visible:
+            return
+        self.inspector.toggle_expanded()
+        self.status.set_inspector_hint(self.inspector.hint())
+        self._refresh_inspector()
+        self._refresh_status()
+
+    # ── Key handler for permission + inspector navigation ─────────────────────
+
+    def on_key(self, event: Key) -> None:
+        if self.permission.is_visible:
+            handled = True
+            k = event.key
+            if k == "1":
+                self.permission.confirm_by_index(0)
+            elif k == "2":
+                self.permission.confirm_by_index(1)
+            elif k == "3":
+                self.permission.confirm_by_index(2)
+            elif k in ("4", "n", "escape"):
+                self.permission.deny()
+            elif k == "enter":
+                self.permission.confirm_current()
+            elif k == "up":
+                self.permission.move_cursor(-1)
+                self._refresh_permission()
+                handled = False   # don't swallow but still refresh
+            elif k == "down":
+                self.permission.move_cursor(1)
+                self._refresh_permission()
+                handled = False
+            else:
+                handled = False
+            if handled:
+                event.prevent_default()
+            return
+
+        if self.inspector.is_visible:
+            handled = True
+            k = event.key
+            if k == "left":
+                self.inspector.move_agent(-1)
+                self.status.set_inspector_hint(self.inspector.hint())
+                self._refresh_inspector()
+                self._refresh_status()
+            elif k == "right":
+                self.inspector.move_agent(1)
+                self.status.set_inspector_hint(self.inspector.hint())
+                self._refresh_inspector()
+                self._refresh_status()
+            elif k == "up":
+                self.inspector.scroll(-1)
+                self._refresh_inspector()
+            elif k == "down":
+                self.inspector.scroll(1)
+                self._refresh_inspector()
+            elif k == "escape":
+                self.inspector.close()
+                self.status.set_inspector_hint("")
+                self._refresh_inspector()
+                self._refresh_status()
+            else:
+                handled = False
+            if handled:
+                event.prevent_default()
+
+    # ── Message handlers ──────────────────────────────────────────────────────
+
+    def on_slots_updated(self, _: SlotsUpdated) -> None:
+        if self._slots_zone is None:
+            return
+        self._slots_zone.update(self.slots.get_rich_text())
+        self._slots_zone.display = self.slots.is_visible
+
+    def on_inspector_updated(self, _: InspectorUpdated) -> None:
+        self._refresh_inspector()
+
+    def on_tui_submit(self, message: TuiSubmit) -> None:
+        """User submitted text from InputArea."""
+        text = message.text
+        if not text:
+            return
+        if self._input_area is not None:
+            self._input_area.clear()
+        self._history.append(text)
+        self._hist_idx  = -1
+        self._hist_saved = ""
+        self._save_history_entry(text)
+        self.conversation.append_user(text)
+        self._set_thinking(True)
+        if self._on_submit is not None:
+            self._current_task = asyncio.ensure_future(self._run_submit(text))
+
+    def on_tui_history_nav(self, message: TuiHistoryNav) -> None:
+        if self._input_area is None or not self._history:
+            return
+        direction = message.direction   # -1 = older (up), +1 = newer (down)
+        if self._hist_idx == -1:
+            self._hist_saved = self._input_area.text
+        new_idx = self._hist_idx - direction
+        if new_idx < -1:
+            new_idx = -1
+        if new_idx >= len(self._history):
+            new_idx = len(self._history) - 1
+        self._hist_idx = new_idx
+        self._input_area.clear()
+        if new_idx == -1:
+            self._input_area.insert(self._hist_saved)
+        else:
+            self._input_area.insert(self._history[-(new_idx + 1)])
+
+    def on_tui_update_completion(self, message: TuiUpdateCompletion) -> None:
+        if self._completion_list is None:
+            return
+        prefix = message.prefix.lower()
+        from ..repl import REPL_COMMANDS as _CMDS
+        matches: list[str] = [cmd for cmd in _CMDS if cmd.startswith(prefix)][:10]
+        self._completion_list.clear_options()
+        if matches:
+            for cmd in matches:
+                desc = _CMDS.get(cmd, "")
+                display = f"{cmd}  [dim]{desc}[/dim]" if desc else cmd
+                self._completion_list.add_option(Option(display, id=cmd))
+            self._completion_list.display = True
+        else:
+            self._completion_list.display = False
+
+    # ── Submit runner ─────────────────────────────────────────────────────────
+
+    async def _run_submit(self, text: str) -> None:
+        if self._on_submit is None:
             return
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # Thread context — write immediately (no loop to schedule on)
-            from prompt_toolkit.application import run_in_terminal
-            run_in_terminal(lambda: (sys.stdout.write(ansi), sys.stdout.flush()))
-            return
-        self._pending_output.append(ansi)
-        if self._pending_flush is None:
-            self._pending_flush = loop.call_later(0.016, self._flush_pending_output)
+            await self._on_submit(text)
+        except asyncio.CancelledError:
+            self.conversation.append_system("[#C0C0C0]⚠ Cancelled.[/]")
+            self.conversation.finalize_turn()
+        except Exception as exc:
+            self.conversation.append_system(f"[red]Error: {exc}[/]")
+        finally:
+            self._set_thinking(False)
+            if self._input_area is not None:
+                self.set_focus(self._input_area)
 
-    def _flush_pending_output(self) -> None:
-        """Drain the write buffer in a single run_in_terminal() call."""
-        self._pending_flush = None
-        if not self._pending_output:
-            return
-        combined = "".join(self._pending_output)
-        self._pending_output.clear()
-        if self._app is None or not self._app.is_running:
-            sys.stdout.write(combined)
-            sys.stdout.flush()
-            return
-        from prompt_toolkit.application import run_in_terminal
-        run_in_terminal(lambda: (sys.stdout.write(combined), sys.stdout.flush()))
+    # ── Thinking animation ────────────────────────────────────────────────────
 
-    def _flush_writes(self) -> None:
-        """Immediately drain the write buffer, bypassing the 16ms delay.
-
-        Called by ConversationBuffer.start_assistant_turn() so the blank line
-        before the assistant response lands in the terminal at the same moment
-        the streaming zone switches from thinking → streaming, not 16ms later.
-        """
-        if self._pending_flush is not None:
-            self._pending_flush.cancel()
-            self._pending_flush = None
-        self._flush_pending_output()
-
-    async def flush_writes_async(self) -> None:
-        """Drain pending scrollback writes using the awaitable run_in_terminal.
-
-        Unlike _flush_writes() (which schedules a Future but returns before it
-        executes), this coroutine awaits the actual terminal write so the
-        scrollback content is visible before the next TUI redraw.  Used before
-        clearing the slots zone so tool results land in the scrollback before
-        slots disappear.
-        """
-        if self._pending_flush is not None:
-            self._pending_flush.cancel()
-            self._pending_flush = None
-        if self._pending_output and self._app is not None and self._app.is_running:
-            combined = "".join(self._pending_output)
-            self._pending_output.clear()
-            from prompt_toolkit.application import run_in_terminal
-            await run_in_terminal(
-                lambda: (sys.stdout.write(combined), sys.stdout.flush())
-            )
-
-    async def flush_and_exit(self) -> None:
-        """Drain pending scrollback writes then tear down the application."""
-        await self.flush_writes_async()
-        if self._app is not None:
-            self._app.exit()
-
-    def _print_ansi_to_scrollback(self, ansi: str) -> None:
-        """External path: write ANSI from print_renderable() to the scrollback.
-
-        Calls conversation.mark_printed() so finalize_turn() knows that tool
-        calls / hooks / other content appeared since start_assistant_turn().
-        """
-        self.conversation.mark_printed()
-        self._write_ansi(ansi)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _invalidate(self) -> None:
-        if self._app is not None:
-            self._app.invalidate()
-
-    def scroll_to_bottom(self) -> None:
-        """No-op: terminal handles its own scroll."""
-        self._invalidate()
-
-    def start_spinner(self) -> None:
-        """No-op: streaming zone updates via stream_chunk → invalidate."""
-
-    def stop_spinner_if_idle(self) -> None:
-        """No-op: no spinner loop needed."""
-
-    def invalidate(self) -> None:
-        self._invalidate()
+    def _tick_thinking(self) -> None:
+        if self._streaming_zone is not None:
+            self._streaming_zone.update(self.conversation.get_streaming_markup())
 
     def _set_thinking(self, thinking: bool) -> None:
         self._thinking = thinking
         self.conversation.set_thinking(thinking)
         self.status.set_thinking(thinking)
         if thinking:
-            if self._thinking_task is None or self._thinking_task.done():
+            if self._think_timer is not None:
                 try:
-                    loop = asyncio.get_running_loop()
-                    self._thinking_task = loop.create_task(self._animate_thinking())
-                except RuntimeError:
-                    pass  # no running loop — called from non-async context, skip task
+                    self._think_timer.resume()
+                except Exception:
+                    pass
         else:
-            if self._thinking_task and not self._thinking_task.done():
-                self._thinking_task.cancel()
-            self._thinking_task = None
+            if self._think_timer is not None:
+                try:
+                    self._think_timer.pause()
+                except Exception:
+                    pass
+            if self._streaming_zone is not None:
+                self._streaming_zone.update(" ")
 
-    async def _animate_thinking(self) -> None:
-        """Invalidate at ~4 fps while thinking so the spinner advances."""
+    # ── Write paths ───────────────────────────────────────────────────────────
+
+    def _write_ansi(self, ansi: str) -> None:
+        """Write ANSI content to the RichLog. Thread-safe."""
+        if self._conv_area is None:
+            sys.stdout.write(ansi)
+            sys.stdout.flush()
+            return
         try:
-            while self._thinking:
-                self._invalidate()
-                await asyncio.sleep(0.25)
-        except asyncio.CancelledError:
-            pass
+            asyncio.get_running_loop()
+            # On the event loop — direct call
+            self._conv_area.write_ansi(ansi)
+        except RuntimeError:
+            # Worker thread
+            self.call_from_thread(self._conv_area.write_ansi, ansi)
+
+    def _print_ansi_to_scrollback(self, ansi: str) -> None:
+        """External path: marks conversation.mark_printed() then writes."""
+        self.conversation.mark_printed()
+        self._write_ansi(ansi)
+
+    # ── Refresh helpers ───────────────────────────────────────────────────────
+
+    def _refresh_streaming(self) -> None:
+        if self._streaming_zone is None:
+            return
+        markup = self.conversation.get_streaming_markup()
+        try:
+            asyncio.get_running_loop()
+            self._streaming_zone.update(markup)
+        except RuntimeError:
+            self.call_from_thread(self._streaming_zone.update, markup)
+
+    def _refresh_status(self) -> None:
+        if self._status_line is None:
+            return
+        self._status_line.update(self.status.get_rich_markup())
+
+    def _refresh_inspector(self) -> None:
+        if self._inspector_zone is None:
+            return
+        if self.inspector.is_visible:
+            self._inspector_zone.update(self.inspector.get_rich_text())
+            self._inspector_zone.display = True
+        else:
+            self._inspector_zone.display = False
+
+    def _refresh_permission(self) -> None:
+        if self._permission_zone is not None:
+            self._permission_zone.update(self.permission.get_rich_markup())
+
+    # ── Permission show/hide ──────────────────────────────────────────────────
+
+    def show_permission(self) -> None:
+        if self._permission_zone is not None:
+            self._permission_zone.update(self.permission.get_rich_markup())
+            self._permission_zone.display = True
+        if self._input_row is not None:
+            self._input_row.display = False
+
+    def hide_permission(self) -> None:
+        if self._permission_zone is not None:
+            self._permission_zone.display = False
+        if self._input_row is not None:
+            self._input_row.display = True
+        if self._input_area is not None:
+            self.set_focus(self._input_area)
+
+    # ── Public API (called by session.py, TuiRenderer, confirmation.py) ───────
+
+    def invalidate(self) -> None:
+        self.refresh()
+
+    def scroll_to_bottom(self) -> None:
+        pass  # RichLog auto-scrolls
+
+    async def flush_writes_async(self) -> None:
+        pass  # no-op — Textual renders per frame
+
+    async def flush_and_exit(self) -> None:
+        self.exit()
 
     def set_thinking(self, thinking: bool) -> None:
         self._set_thinking(thinking)
 
     def update_session(self, **kwargs) -> None:
-        """Forward session info (model, provider, project, memory, agents) to StatusBar."""
         self.status.update_session(**kwargs)
-        self._invalidate()
+        self._refresh_status()
 
     def print_to_terminal(self, rich_text: str) -> None:
-        """Print Rich-markup text to the terminal scrollback."""
         self.print_renderable(rich_text)
 
     def print_renderable(self, renderable) -> None:
-        """Print any Rich renderable (markup, Panel, Markdown, etc.) to the scrollback.
-
-        Routes through _print_ansi_to_scrollback (the *external* path) so that
-        conversation.mark_printed() is called, enabling finalize_turn() to insert
-        a blank line before the assistant response when tool calls preceded it.
-        """
+        """Render any Rich renderable and write it to the RichLog."""
         from rich.console import Console as _RC
-        from ..theme import MINION_THEME as _THEME
+        try:
+            from ..theme import MINION_THEME as _THEME
+            theme_kwarg: dict = {"theme": _THEME}
+        except Exception:
+            theme_kwarg = {}
         buf = io.StringIO()
-        c   = _RC(file=buf, force_terminal=True, color_system="truecolor",
-                  width=self._terminal_width, highlight=False, theme=_THEME)
+        c = _RC(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            width=self._terminal_width,
+            highlight=False,
+            **theme_kwarg,
+        )
         c.print(renderable)
-        ansi = buf.getvalue()
-        self._print_ansi_to_scrollback(ansi)
+        self._print_ansi_to_scrollback(buf.getvalue())
 
+    # ── Banner ────────────────────────────────────────────────────────────────
 
-# ── Internal helper ───────────────────────────────────────────────────────────
-
-async def _wrap_submit(
-    on_submit: Callable[[str], Awaitable[None]],
-    text: str,
-    tui_app: MinionApp,
-) -> None:
-    """Run on_submit() and ensure thinking state is cleared on completion."""
-    try:
-        await on_submit(text)
-    except asyncio.CancelledError:
-        tui_app.conversation.append_system("[#C0C0C0]⚠ Cancelled.[/]")
-        tui_app.conversation.finalize_turn()
-    except Exception as exc:
-        tui_app.conversation.append_system(f"[red]Error: {exc}[/]")
-    finally:
-        tui_app.set_thinking(False)
-        tui_app.scroll_to_bottom()
+    def _write_banner(self) -> None:
+        """Write the greeting banner to the RichLog on startup."""
+        try:
+            from ..theme.banner import print_greeting as _greet
+            from ..theme.console import console as _gc
+            buf = io.StringIO()
+            _old = _gc._file
+            _gc._file = buf  # type: ignore[assignment]
+            try:
+                _greet()
+            finally:
+                _gc._file = _old
+            if self._conv_area is not None:
+                self._conv_area.write_ansi(buf.getvalue())
+        except Exception:
+            pass

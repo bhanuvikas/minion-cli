@@ -1,34 +1,26 @@
 """Status bar for the TUI.
 
-Composed of left_sections() and right_sections() — override in subclasses
-to extend. Right content is padded to the terminal edge using the actual
-terminal width read at render time.
-
 Session info (model, provider, project, memory, agents) is set via
-update_session() and rendered on the right side in minion palette colours:
-  #FFD700  YELLOW  — thinking indicator
-  #1E90FF  BLUE    — model name
-  #4CAF50  GREEN   — memory enabled dot
-  #C0C0C0  SILVER  — provider, separators
+update_session() and rendered as a Rich markup string for the StatusLine
+Static widget.
+
+  #FFD700  GOLD   — project name
+  #1E90FF  BLUE   — model name
+  #4CAF50  GREEN  — memory enabled dot
+  #C0C0C0  SILVER — dim/muted text
 """
 
 from __future__ import annotations
 
-from prompt_toolkit.formatted_text import FormattedText
-
-
-Section = tuple[str, str]   # (pt_style, display_text)
-
 
 class StatusBar:
-    """Width-aware status bar built from composable section lists."""
+    """Width-aware status bar — renders as a Rich markup string."""
 
     def __init__(self, model_name: str, width: int = 120) -> None:
         self._width    = width
         self._thinking = False
-        self._inspector_hint = ""   # set by InspectorPanel; shown on left when non-empty
+        self._inspector_hint = ""
 
-        # Session fields — set via update_session()
         self._model    = model_name
         self._provider = ""
         self._project  = ""
@@ -73,88 +65,66 @@ class StatusBar:
 
     # ── Section builders ──────────────────────────────────────────────────────
 
-    def left_sections(self) -> list[Section]:
+    def _left_parts(self) -> list[tuple[str, str]]:
+        """Return (rich_style, text) pairs for left section."""
         if self._inspector_hint:
-            return [("class:status-dim", self._inspector_hint)]
-        # Show availability hint whenever agents are registered (running or done)
+            return [("#666666", self._inspector_hint)]
         from .agent_registry import get_registry as _gr
         if len(_gr()):
-            return [("class:status-dim", "ctrl+o to inspect agents")]
+            return [("#666666", "ctrl+o to inspect agents")]
         return []
 
-    def right_sections(self) -> list[Section]:
-        parts: list[Section] = []
-
-        # Version
+    def _right_parts(self) -> list[tuple[str, str]]:
+        """Return (rich_style, text) pairs for right section."""
+        parts: list[tuple[str, str]] = []
         if self._version:
-            parts.append(("class:status-dim", f"v{self._version}"))
-
-        # Memory dot — green when enabled, dim when not
+            parts.append(("#666666", f"v{self._version}"))
         if self._memory:
-            parts.append(("class:status-mem-on",  "● memory"))
+            parts.append(("#4CAF50", "● memory"))
         else:
-            parts.append(("class:status-mem-off", "○ memory"))
-
-        # Agent count (only if agents are loaded)
+            parts.append(("#666666", "○ memory"))
         if self._agents:
             label = f"{self._agents} agent{'s' if self._agents != 1 else ''}"
-            parts.append(("class:status-dim", label))
-
-        # cwd — show last two path components so context is clear
+            parts.append(("#666666", label))
         if self._cwd:
             from pathlib import Path as _P
             p = _P(self._cwd)
             short = str(p).replace(str(_P.home()), "~")
-            parts.append(("class:status-dim", short if len(short) <= 28 else "…/" + p.name))
-
-        # Project name
+            parts.append(("#666666", short if len(short) <= 28 else "…/" + p.name))
         if self._project:
             proj = self._project if len(self._project) <= 16 else self._project[:14] + "…"
-            parts.append(("class:status-project", proj))
-
-        # Model name (always shown)
+            parts.append(("#FFD700", proj))
         model = self._model if len(self._model) <= 24 else self._model[:22] + "…"
-        parts.append(("class:status-model", model))
-
+        parts.append(("#1E90FF", model))
         return parts
 
     # ── Render ────────────────────────────────────────────────────────────────
 
-    def get_formatted_text(self) -> FormattedText:
-        try:
-            from prompt_toolkit.application.current import get_app
-            width = get_app().output.get_size().columns
-        except Exception:
-            width = self._width
+    def get_rich_markup(self) -> str:
+        """Return a Rich markup string for StatusLine.update()."""
+        width = self._width
 
-        left  = self.left_sections()
-        right = self.right_sections()
+        left  = self._left_parts()
+        right = self._right_parts()
 
-        sep = ("class:status-dim", "  ·  ")
+        sep = ("[#666666]  ·  [/]",)
 
-        # Build flat fragment list for left and right, joined by separator
-        left_frags:  list[Section] = []
-        for i, s in enumerate(left):
-            left_frags.append(s)
-            if i < len(left) - 1:
-                left_frags.append(sep)
+        def _join(parts: list[tuple[str, str]]) -> str:
+            out: list[str] = []
+            for i, (style, text) in enumerate(parts):
+                out.append(f"[{style}]{text}[/]")
+                if i < len(parts) - 1:
+                    out.append("[#666666]  ·  [/]")
+            return "".join(out)
 
-        right_frags: list[Section] = []
-        for i, s in enumerate(right):
-            right_frags.append(s)
-            if i < len(right) - 1:
-                right_frags.append(sep)
+        left_str  = _join(left)
+        right_str = _join(right)
 
-        left_len  = sum(len(t) for _, t in left_frags)
-        right_len = sum(len(t) for _, t in right_frags)
+        # Compute plain lengths for padding
+        left_len  = sum(len(t) for _, t in left)
+        right_len = sum(len(t) for _, t in right)
+        sep_len   = (len(left) - 1) * 5 if len(left) > 1 else 0
+        sep_r_len = (len(right) - 1) * 5 if len(right) > 1 else 0
+        pad = max(1, width - 2 - left_len - sep_len - right_len - sep_r_len - 4)
 
-        # 2-char left margin, 4-char right margin (avoids clipping at terminal edge)
-        pad = max(1, width - 2 - left_len - right_len - 4)
-
-        frags: list[Section] = [("class:status-bar", "  ")]
-        frags.extend(left_frags)
-        frags.append(("class:status-bar", " " * pad))
-        frags.extend(right_frags)
-        frags.append(("class:status-bar", "    "))
-
-        return FormattedText(frags)
+        return "  " + left_str + " " * pad + right_str + "    "

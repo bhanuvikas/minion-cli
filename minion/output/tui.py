@@ -1,4 +1,4 @@
-"""TuiRenderer — routes output to the prompt_toolkit MinionApp."""
+"""TuiRenderer — routes output to the Textual MinionApp."""
 
 from __future__ import annotations
 

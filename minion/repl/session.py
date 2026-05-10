@@ -199,11 +199,9 @@ async def run_repl_async(
         while True:
             tui_app = MinionApp(
                 model_name=client.model_id,
-                completer=_SlashCompleter(
-                    agent_registry=agent_registry,
-                    skill_registry=skill_registry,
-                    a2a_manager=a2a_manager,
-                ),
+                agent_registry=agent_registry,
+                skill_registry=skill_registry,
+                a2a_manager=a2a_manager,
             )
             tui_app.update_session(
                 model=client.model_id,
@@ -337,7 +335,6 @@ async def _run_repl_tui(
             return
 
         if user_input.startswith("/"):
-            from prompt_toolkit.application import run_in_terminal
             _buf = _CaptureBuf()
             _exit_requested = [False]
 
@@ -351,7 +348,7 @@ async def _run_repl_tui(
                 finally:
                     console._file = _old_file
 
-            await run_in_terminal(_exec_slash, in_executor=True)
+            await asyncio.to_thread(_exec_slash)
 
             if _exit_requested[0]:
                 await tui_app.flush_and_exit()
