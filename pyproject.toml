@@ -64,7 +64,7 @@ source = ["minion"]
 omit = [
     "minion/repl.py",
     "minion/setup_wizard.py",
-    "minion/theme.py",
+    "minion/theme/*",
     "minion/tracing/server.py",
     "minion/tracing/cli.py",
     "minion/tracing/events.py",

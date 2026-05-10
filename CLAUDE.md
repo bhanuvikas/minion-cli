@@ -36,9 +36,31 @@ The venv Python interpreter is `.venv/bin/python` — use it when `python` / `py
 
 ```
 minion/
-├── cli.py              # typer entry point — argument parsing only
-├── repl.py             # REPL session — input loop, slash commands, session setup
-├── theme.py            # global Rich console, colour palette, print helpers
+├── __main__.py         # enables `python -m minion`; delegates to cli._entry()
+├── cli/                # typer entry point — argument parsing only
+│   ├── _core.py        # _entry() — scans sys.argv, routes one-shot vs REPL
+│   ├── skills.py       # /skill subcommand + _list_skills()
+│   ├── mcp.py          # /mcp subcommand
+│   ├── agents.py       # /agents subcommand
+│   ├── remote.py       # /remote subcommand
+│   ├── memory.py       # /memory subcommand
+│   ├── config.py       # /config subcommand
+│   └── doctor.py       # /doctor subcommand
+├── repl/               # REPL session — input loop, slash commands, session setup
+│   ├── __init__.py     # re-exports public API (ReplState, REPL_COMMANDS, CommandContext, run_repl_async, …)
+│   ├── state.py        # ReplState dataclass, REPL_COMMANDS dict, CommandContext dataclass
+│   ├── input.py        # prompt_toolkit UI: _SlashCompleter, _InputLexer, _CaptureBuf, _kb, _INPUT_STYLE
+│   ├── init_md.py      # /init handlers: _generate_minion_md, _generate_minion_md_llm
+│   ├── mcp.py          # _handle_mcp_command, _extract_mcp_text, _inject_mcp_message
+│   ├── agent_handlers.py # _handle_agent_direct, _handle_remote_command
+│   ├── commands.py     # _handle_slash_command dispatcher + _load_session, _display_plan, _get_last_response_text
+│   └── session.py      # _setup_session, _run_repl_tui, _run_console_loop, run_repl_async, run_repl
+├── theme/              # global Rich console, colour palette, print helpers
+│   ├── __init__.py     # re-exports all public API (YELLOW, console, print_error, …)
+│   ├── palette.py      # color constants (YELLOW, BLUE, …) + MINION_THEME + _TOOL_NAME_COLORS
+│   ├── console.py      # shared Console instance + startup_warnings + spinner state
+│   ├── banner.py       # figlet title + BANNER_COMMANDS + print_greeting/startup_warnings
+│   └── printers.py     # all print_* functions + MarkdownStreamer + stream_response_to_stdout
 │
 ├── llm/                # LLM clients and core data types
 │   ├── base.py         # ABCs: LLMClient, streaming events, ToolDefinition, Message
@@ -164,7 +186,7 @@ cli._entry()                     # scans sys.argv; one-shot prompt bypasses type
        ├─ _run_repl_tui()        # TTY + not MINION_NO_TUI
        │    MinionApp.run_async() (prompt_toolkit full-screen)
        │
-       └─ _run_repl_console()    # otherwise — PromptSession + Rich output
+       └─ _run_console_loop()    # otherwise — PromptSession + Rich output  (repl/session.py)
             └─ run_prompt_async()     # ReAct loop (up to MAX_ITERATIONS=20)
                  ├─ _stream_one_iteration_async()   # one LLM call → event stream
                  │    TextChunk → on_text_delta()
@@ -348,7 +370,7 @@ Triggered when `InputTokenRateLimitError` is raised (auto) or by `/compact` (man
 - `SummaryStrategy` — calls the LLM to summarise the conversation, replaces all messages with a single summary message
 - `TruncateStrategy` — drops oldest messages until under a token budget (preserves the system message and most recent turns)
 
-Strategy is selected in `repl.py` based on `/compact truncate` argument.
+Strategy is selected in `repl/session.py` based on `/compact truncate` argument.
 
 ---
 
@@ -365,12 +387,12 @@ Strategy is selected in `repl.py` based on `/compact truncate` argument.
 | New native tool | `tools/definitions.py` (schema) + `tools/implementations.py` (function + `_DISPATCH` entry) |
 | Make a tool require confirmation | add to `DANGEROUS_TOOLS` in `tools/executor.py` |
 | New renderer event | `output/base.py` (add to ABC) + `output/console.py` + `output/tui.py` |
-| New slash command | `repl.py` — `_handle_slash_command()` |
+| New slash command | `repl/commands.py` — `_handle_slash_command()`; register in `repl/state.py` — `REPL_COMMANDS` |
 | New agent role (builtin) | `agents/builtin/<role>.yaml` |
 | New skill (builtin) | `skills/builtin/<skill>.yaml` |
 | New hook event type | `hooks/events.py` (frozen dataclass) + `hooks/runner.py` (dispatch) |
 | New hook handler type | implement `HookHandler` ABC, register in `hooks/registry.py` |
-| New compaction strategy | implement `CompactionStrategy` ABC in `compact/`, wire in `repl.py` |
+| New compaction strategy | implement `CompactionStrategy` ABC in `compact/`, wire in `repl/session.py` |
 | New config setting | `config/file.py` (add to dataclass + `load_config()`) |
 | Parallel display fragment | `output/display_utils.py` |
 | TUI layout change | `tui/app.py` |
@@ -391,6 +413,17 @@ async def test_something():
 # Patch internal module paths, not the import source
 with patch("minion.runner.loop.console"):  # not "rich.console.Console"
     ...
+
+# repl/ module patches — use the defining module, not minion.repl (the re-exporter)
+with patch("minion.repl.commands.console"):       # console used inside commands.py
+    ...
+with patch("minion.repl.commands.run_model_config"):  # imported at module level in commands.py
+    ...
+
+# _handle_slash_command now takes (raw: str, ctx: CommandContext) — build ctx first
+from minion.repl import CommandContext
+ctx = CommandContext(client=mock_client, conversation=mock_conv, state=state)
+_handle_slash_command("/help", ctx)
 
 # Patch module-level state (e.g. SESSIONS_DIR)
 with patch("minion.runner.session.SESSIONS_DIR", tmp_path):
