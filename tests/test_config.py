@@ -13,8 +13,14 @@ from minion.config import update_env_values, PROVIDER_KEY_MAP, PROVIDERS
 
 
 class TestUpdateEnvValues:
+    def _env_file(self, tmp_path: Path) -> Path:
+        """Return the .minion/.env path, creating the directory."""
+        d = tmp_path / ".minion"
+        d.mkdir(exist_ok=True)
+        return d / ".env"
+
     def test_updates_existing_key(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text("MINION_PROVIDER=anthropic\nANTHROPIC_API_KEY=old-key\n")
         monkeypatch.chdir(tmp_path)
 
@@ -25,7 +31,7 @@ class TestUpdateEnvValues:
         assert "old-key" not in content
 
     def test_preserves_comments(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text(
             "# This is a comment\nMINION_PROVIDER=anthropic\n# Another comment\n"
         )
@@ -38,7 +44,7 @@ class TestUpdateEnvValues:
         assert "# Another comment" in content
 
     def test_preserves_unrelated_keys(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text("MINION_PROVIDER=anthropic\nOPENAI_API_KEY=sk-abc\n")
         monkeypatch.chdir(tmp_path)
 
@@ -48,7 +54,7 @@ class TestUpdateEnvValues:
         assert "OPENAI_API_KEY=sk-abc" in content
 
     def test_appends_new_key(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text("MINION_PROVIDER=anthropic\n")
         monkeypatch.chdir(tmp_path)
 
@@ -58,7 +64,7 @@ class TestUpdateEnvValues:
         assert "MINION_MODEL=claude-opus-4-5" in content
 
     def test_updates_multiple_keys_at_once(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text("MINION_PROVIDER=anthropic\nMINION_MODEL=claude-sonnet-4-5\n")
         monkeypatch.chdir(tmp_path)
 
@@ -68,18 +74,16 @@ class TestUpdateEnvValues:
         assert "MINION_PROVIDER=openai" in content
         assert "MINION_MODEL=gpt-4o" in content
 
-    def test_creates_env_from_example(self, tmp_path, monkeypatch):
-        """When .env doesn't exist but .env.example does, it should be created."""
-        example = tmp_path / ".env.example"
-        example.write_text("MINION_PROVIDER=anthropic\n")
+    def test_creates_env_when_missing(self, tmp_path, monkeypatch):
+        """_find_env_file creates .minion/.env when it doesn't exist yet."""
         monkeypatch.chdir(tmp_path)
 
         update_env_values({"MINION_PROVIDER": "openai"})
 
-        assert (tmp_path / ".env").exists()
+        assert (tmp_path / ".minion" / ".env").exists()
 
     def test_blank_lines_preserved(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = self._env_file(tmp_path)
         env_file.write_text("KEY_A=1\n\nKEY_B=2\n")
         monkeypatch.chdir(tmp_path)
 
