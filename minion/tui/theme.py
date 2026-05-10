@@ -28,6 +28,7 @@ Screen {{
 
 ConversationArea {{
     height: 1fr;
+    layout: vertical;
 }}
 
 RichLog {{

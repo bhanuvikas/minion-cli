@@ -136,23 +136,13 @@ class PermissionPanel:
             lines.append(f"[#C0C0C0]  {_esc(detail)}[/]")
 
         # ── Diff / file preview ───────────────────────────────────────────────
+        # diff_lines is already a Rich markup string from format_diff_rich();
+        # embed it directly so background-color styles are preserved.
         if req.diff_lines:
-            import re as _re
-            plain = _re.sub(r"\x1b\[[0-9;]*m", "", req.diff_lines)
-            rows  = [r for r in plain.rstrip("\n").split("\n")]
-            if rows:
-                lines.append(f"[#333333]  {'─' * 60}[/]")
-                for row in rows:
-                    er = _esc(row)
-                    if row.startswith("+"):
-                        lines.append(f"[#4CAF50]  {er}[/]")
-                    elif row.startswith("-"):
-                        lines.append(f"[red]  {er}[/]")
-                    elif row.startswith("@@"):
-                        lines.append(f"[#888888]  {er}[/]")
-                    else:
-                        lines.append(f"[#666666]  {er}[/]")
-                lines.append(f"[#333333]  {'─' * 60}[/]")
+            lines.append(f"[#333333]  {'─' * 60}[/]")
+            for row in req.diff_lines.split("\n"):
+                lines.append(f"  {row}")
+            lines.append(f"[#333333]  {'─' * 60}[/]")
 
         # ── Question ──────────────────────────────────────────────────────────
         lines.append("")

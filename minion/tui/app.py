@@ -69,10 +69,11 @@ class TuiUpdateCompletion(Message):
 # ── Custom widget classes ─────────────────────────────────────────────────────
 
 class ConversationArea(Widget):
-    """Hosts the RichLog for all completed conversation turns."""
+    """Hosts the RichLog (scrollback) and StreamingZone (live in-progress turn)."""
 
     def compose(self) -> ComposeResult:
         yield RichLog(markup=True, highlight=False, auto_scroll=True, id="rich-log")
+        yield StreamingZone(" ", id="streaming-zone")
 
     def write_ansi(self, ansi: str) -> None:
         rl = self.query_one(RichLog)
@@ -304,8 +305,7 @@ class MinionApp(App):
     # ── Compose ───────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield ConversationArea(id="conv-area")
-        yield StreamingZone(" ", id="streaming-zone")
+        yield ConversationArea(id="conv-area")   # StreamingZone is nested inside
         yield SlotsZone(" ", id="slots-zone")
         yield InspectorZone(" ", id="inspector-zone")
         yield InputSection(id="input-section")
@@ -644,19 +644,13 @@ class MinionApp(App):
 
     def hide_permission(self) -> None:
         from .permission import _DIFF_TOOLS as _DT
-        # Write approved file changes to the conversation log
+        # Write the diff to the conversation log so the user can scroll through it.
+        # The tool call header (⊙ write_file) is already rendered by TuiRenderer;
+        # we only add the diff content — no redundant header here.
         if (self.permission._last_result
                 and self.permission._last_diff
                 and self.permission._last_name in _DT):
-            icon   = "✎"
-            name   = self.permission._last_name
-            detail = self.permission._last_detail
-            header = f"[bold #1E90FF]  {icon} {name}[/]"
-            if detail:
-                from rich.markup import escape as _esc
-                header += f"[#C0C0C0]  →  {_esc(detail)}[/]"
-            self._write_markup(header)
-            self._write_ansi(self.permission._last_diff)
+            self._write_markup(self.permission._last_diff)
 
         if self._permission_content is not None:
             self._permission_content.display = False

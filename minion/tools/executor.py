@@ -135,7 +135,8 @@ def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
 def _diff_lines_for_panel(name: str, inputs: dict) -> str:
     """Compute diff for the TUI permission panel.
 
-    Returns raw ANSI string. Limited to 30 lines to keep the panel usable.
+    Returns a Rich markup string (not ANSI). The permission panel embeds
+    it directly via Static.update() so colours are preserved.
     """
     from pathlib import Path as _Path
     from ..output.diff import format_diff_rich
@@ -159,21 +160,7 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> str:
     else:
         return ""
 
-    markup = format_diff_rich(existing, new_content)
-    if not markup:
-        return ""
-
-    lines = markup.split("\n")
-    if len(lines) > 30:
-        lines = lines[:30]
-        lines.append("[dim]  … (truncated)[/dim]")
-    markup = "\n".join(lines)
-
-    from ..tui.render import render_rich as _render_rich
-    try:
-        return _render_rich(markup, width=76)
-    except Exception:
-        return ""
+    return format_diff_rich(existing, new_content)
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:

@@ -457,12 +457,14 @@ class TestDiffLinesForPanel:
         from minion.tools.executor import _diff_lines_for_panel
         assert _diff_lines_for_panel("glob", {"pattern": "*.py"}) == ""
 
-    def test_write_file_new_file_returns_ansi_str(self, tmp_path):
+    def test_write_file_new_file_returns_rich_markup(self, tmp_path):
         from minion.tools.executor import _diff_lines_for_panel
         path = str(tmp_path / "new.py")
         result = _diff_lines_for_panel("write_file", {"path": path, "content": "print('hi')\n"})
         assert isinstance(result, str)
         assert len(result) > 0
+        # Result is Rich markup (not ANSI) — contains background-color style tags
+        assert "on #" in result
 
     def test_write_file_unchanged_content_returns_empty(self, tmp_path):
         from minion.tools.executor import _diff_lines_for_panel
@@ -472,7 +474,7 @@ class TestDiffLinesForPanel:
         result = _diff_lines_for_panel("write_file", {"path": str(p), "content": content})
         assert result == ""
 
-    def test_edit_file_returns_ansi_str(self, tmp_path):
+    def test_edit_file_returns_rich_markup(self, tmp_path):
         from minion.tools.executor import _diff_lines_for_panel
         p = tmp_path / "f.py"
         p.write_text("old content\n")
@@ -483,6 +485,8 @@ class TestDiffLinesForPanel:
         })
         assert isinstance(result, str)
         assert len(result) > 0
+        # Rich markup uses background style for removed/added lines
+        assert "on #" in result
 
     def test_return_type_is_str_not_list(self, tmp_path):
         from minion.tools.executor import _diff_lines_for_panel
@@ -490,13 +494,13 @@ class TestDiffLinesForPanel:
         result = _diff_lines_for_panel("write_file", {"path": path, "content": "x\n"})
         assert isinstance(result, str)
 
-    def test_write_file_truncates_to_30_lines(self, tmp_path):
+    def test_write_file_large_diff_no_truncation(self, tmp_path):
         from minion.tools.executor import _diff_lines_for_panel
         long_content = "\n".join(f"line {i}" for i in range(100))
         path = str(tmp_path / "big.py")
         result = _diff_lines_for_panel("write_file", {"path": path, "content": long_content})
-        # After truncation at 30 diff lines, the ANSI output is finite
-        assert len(result.splitlines()) <= 40   # some slack for ANSI escape sequences
+        # Full diff returned — 100 added lines + 1 hunk header
+        assert len(result.splitlines()) >= 100
 
 
 # ── _console_print_safe TUI routing ──────────────────────────────────────────
