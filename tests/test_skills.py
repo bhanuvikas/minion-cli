@@ -530,9 +530,9 @@ class TestSkillsNoRegistry:
 class TestCLISkillsList:
     def test_list_skills_prints_builtin_skills(self):
         """_list_skills() outputs all 5 built-in skill names."""
-        from minion.cli import _list_skills
+        from minion.cli.skills import _list_skills
         printed = []
-        with patch("minion.cli.console") as mc:
+        with patch("minion.cli.skills.console") as mc:
             mc.print.side_effect = lambda msg, **kw: printed.append(msg)
             _list_skills()
         combined = " ".join(printed)
@@ -541,9 +541,9 @@ class TestCLISkillsList:
 
     def test_list_skills_shows_source(self):
         """Each printed line includes the source tier label."""
-        from minion.cli import _list_skills
+        from minion.cli.skills import _list_skills
         printed = []
-        with patch("minion.cli.console") as mc:
+        with patch("minion.cli.skills.console") as mc:
             mc.print.side_effect = lambda msg, **kw: printed.append(msg)
             _list_skills()
         # All built-ins should show [builtin]
@@ -558,9 +558,9 @@ class TestCLISkillsList:
             "name: commit\ndescription: custom commit\nprompt: custom prompt\n",
             encoding="utf-8",
         )
-        from minion.cli import _list_skills
+        from minion.cli.skills import _list_skills
         printed = []
-        with patch("minion.cli.console") as mc:
+        with patch("minion.cli.skills.console") as mc:
             mc.print.side_effect = lambda msg, **kw: printed.append(msg)
             _list_skills()
         # At least one line should mention "project" for the overridden commit skill
