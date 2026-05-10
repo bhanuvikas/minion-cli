@@ -170,7 +170,10 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> str:
     markup = "\n".join(lines)
 
     from ..tui.render import render_rich as _render_rich
-    return _render_rich(markup, width=76)
+    try:
+        return _render_rich(markup, width=76)
+    except Exception:
+        return ""
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
