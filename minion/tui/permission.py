@@ -119,8 +119,10 @@ class PermissionPanel:
         for i, label in enumerate(_SCOPE_LABELS):
             selected   = i == self._cursor
             cursor_str = "  ❯" if selected else "   "
-            style      = "bold #FFD700" if selected else ""
-            lines.append(f"[{style}]{cursor_str} {i + 1}.{label}[/]")
+            if selected:
+                lines.append(f"[bold #FFD700]{cursor_str} {i + 1}.{label}[/]")
+            else:
+                lines.append(f"{cursor_str} {i + 1}.{label}")
 
         lines.append("[#666666]  ↑↓ move  1-4 select  Enter confirm  Esc deny[/]")
         return "\n".join(lines)

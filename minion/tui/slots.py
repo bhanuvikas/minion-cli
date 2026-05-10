@@ -76,6 +76,7 @@ class SlotsManager:
         with self._lock:
             self._states.clear()
             self._order.clear()
+        self._post_message(SlotsUpdated())
 
     # ── Callback factory ──────────────────────────────────────────────────────
 
