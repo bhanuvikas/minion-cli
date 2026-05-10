@@ -75,8 +75,16 @@ class ConversationArea(Widget):
 
     def write_ansi(self, ansi: str) -> None:
         rl = self.query_one(RichLog)
-        text = Text.from_ansi(ansi.rstrip("\n"))
-        rl.write(text)
+        # Strip the one trailing \n that _emit guarantees on every call so it
+        # doesn't produce a spurious blank line.  Intentional blank lines
+        # (extra \n in the middle or from append_user's trailing "\n\n") are
+        # preserved because we split and write each line separately — that way
+        # blank lines become explicit rl.write("") calls which reliably
+        # produce Strip.blank entries in the RichLog.
+        if ansi.endswith("\n"):
+            ansi = ansi[:-1]
+        for line in ansi.split("\n"):
+            rl.write(Text.from_ansi(line), expand=True)
 
     def write_markup(self, markup: str) -> None:
         self.query_one(RichLog).write(markup)
