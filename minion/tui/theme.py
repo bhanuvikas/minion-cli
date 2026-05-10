@@ -5,6 +5,7 @@
   #4CAF50  GREEN   — completed slots, success
   #C0C0C0  SILVER  — dim/muted text
   #666666  DIM     — very dim text
+  #E8E8E8  TEXT    — primary readable text (input, body)
 """
 
 # ── Palette (reused from minion/theme/palette.py) ─────────────────────────────
@@ -14,6 +15,7 @@ BLUE   = "#1E90FF"
 GREEN  = "#4CAF50"
 SILVER = "#C0C0C0"
 DIM    = "#666666"
+TEXT   = "#E8E8E8"
 
 # ── Textual CSS (embedded in MinionApp.CSS) ───────────────────────────────────
 
@@ -21,20 +23,23 @@ MINION_TCSS = f"""
 Screen {{
     layout: vertical;
     overflow: hidden hidden;
-    background: $surface;
+    background: #000000;
 }}
 
 ConversationArea {{
     height: 1fr;
-    overflow: auto auto;
-    border: none;
 }}
 
 RichLog {{
-    height: auto;
+    height: 1fr;
     background: transparent;
-    scrollbar-size: 1 1;
+    overflow-x: hidden;
     padding: 0 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
+    scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {DIM};
 }}
 
 StreamingZone {{
@@ -80,7 +85,7 @@ InputArea {{
     border: none;
     background: transparent;
     padding: 0;
-    color: $text;
+    color: {TEXT};
 }}
 
 InputArea:focus {{
@@ -92,7 +97,7 @@ CompletionList {{
     display: none;
     height: auto;
     max-height: 10;
-    background: $surface;
+    background: #111111;
     border: solid {DIM};
     padding: 0;
 }}
@@ -102,7 +107,7 @@ StatusLine {{
     height: 1;
     background: transparent;
     color: {SILVER};
-    padding: 0 1;
+    padding: 0;
 }}
 
 Separator {{

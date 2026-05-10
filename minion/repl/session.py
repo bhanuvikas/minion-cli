@@ -211,7 +211,10 @@ async def run_repl_async(
                 memory=state.memory_enabled,
                 agents=len(agent_registry) if agent_registry else 0,
                 version=_minion_ver,
+                mcp_count=mcp_count,
+                a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
             )
+            tui_app.set_startup_warnings(_all_startup_warnings)
             confirmation_manager.set_tui(tui_app, loop)
             set_tui_app(tui_app)
             model_config_ran = await _run_repl_tui(

@@ -25,9 +25,10 @@ from typing import Awaitable, Callable, Optional
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal
 from textual.events import Key
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
@@ -66,7 +67,7 @@ class TuiUpdateCompletion(Message):
 
 # ── Custom widget classes ─────────────────────────────────────────────────────
 
-class ConversationArea(VerticalScroll):
+class ConversationArea(Widget):
     """Hosts the RichLog for all completed conversation turns."""
 
     def compose(self) -> ComposeResult:
@@ -225,6 +226,7 @@ class MinionApp(App):
 
         self._on_submit: Optional[Callable[[str], Awaitable[None]]] = None
         self._on_quit:   Optional[Callable[[], Awaitable[None]]]    = None
+        self._startup_warnings: list[str] = []
 
         # In-memory + persistent history
         self._history:    list[str] = []
@@ -306,10 +308,11 @@ class MinionApp(App):
         self._status_line     = self.query_one("#status-line",     StatusLine)
         self._input_area      = self.query_one("#input-area",      InputArea)
 
-        # Initial dimensions
-        self._terminal_width = self.size.width
-        self.conversation.set_width(self._terminal_width)
-        self.status.set_width(self._terminal_width)
+        import shutil as _shutil
+        cols = _shutil.get_terminal_size().columns or 120
+        self._terminal_width = cols
+        self.conversation.set_width(cols)
+        self.status.set_width(cols)
 
         # Initially hidden zones
         self._slots_zone.display      = False
@@ -630,6 +633,9 @@ class MinionApp(App):
     def set_thinking(self, thinking: bool) -> None:
         self._set_thinking(thinking)
 
+    def set_startup_warnings(self, warnings: list[str]) -> None:
+        self._startup_warnings = list(warnings)
+
     def update_session(self, **kwargs) -> None:
         self.status.update_session(**kwargs)
         self._refresh_status()
@@ -662,16 +668,39 @@ class MinionApp(App):
     def _write_banner(self) -> None:
         """Write the greeting banner to the RichLog on startup."""
         try:
-            from ..theme.banner import print_greeting as _greet
-            from ..theme.console import console as _gc
-            buf = io.StringIO()
-            _old = _gc._file
-            _gc._file = buf  # type: ignore[assignment]
-            try:
-                _greet()
-            finally:
-                _gc._file = _old
-            if self._conv_area is not None:
-                self._conv_area.write_ansi(buf.getvalue())
+            from rich.rule import Rule as _Rule
+            from rich.text import Text as _Text
+            from ..theme.banner import get_greeting_renderables as _get_renderables
+            from ..theme.palette import SILVER as _SILVER
+
+            if self._conv_area is None:
+                return
+            rl = self._conv_area.query_one(RichLog)
+
+            # expand=True is essential: without it, Table.grid renders at minimum
+            # measured width instead of filling the content area. expand=True is
+            # stored in the DeferredRender queue if _size_known is still False
+            # (writes in on_mount are deferred until the RichLog's first Resize),
+            # so the correct width is used whenever the size becomes available.
+            for r in _get_renderables(
+                model=self.status._model,
+                provider=self.status._provider,
+                project_name=self.status._project,
+                cwd=self.status._cwd,
+                agent_count=self.status._agents,
+                memory_enabled=self.status._memory,
+                mcp_count=self.status._mcp_count,
+                a2a_count=self.status._a2a_count,
+                version=self.status._version,
+            ):
+                rl.write(r, expand=True)
+
+            # Startup warnings (MCP connection errors, MINION.md tip, etc.)
+            if self._startup_warnings:
+                for w in self._startup_warnings:
+                    rl.write(w, expand=True)
+                rl.write("", expand=True)
+                rl.write(_Rule(style=_SILVER), expand=True)
+                rl.write("", expand=True)
         except Exception:
             pass

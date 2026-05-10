@@ -21,13 +21,15 @@ class StatusBar:
         self._thinking = False
         self._inspector_hint = ""
 
-        self._model    = model_name
-        self._provider = ""
-        self._project  = ""
-        self._cwd      = ""
-        self._memory   = True
-        self._agents   = 0
-        self._version  = ""
+        self._model     = model_name
+        self._provider  = ""
+        self._project   = ""
+        self._cwd       = ""
+        self._memory    = True
+        self._agents    = 0
+        self._version   = ""
+        self._mcp_count = 0
+        self._a2a_count = 0
 
     # ── State setters ─────────────────────────────────────────────────────────
 
@@ -53,15 +55,19 @@ class StatusBar:
         memory: bool = True,
         agents: int = 0,
         version: str = "",
+        mcp_count: int = 0,
+        a2a_count: int = 0,
     ) -> None:
         if model:
-            self._model    = model
-        self._provider = provider
-        self._project  = project
-        self._cwd      = cwd
-        self._memory   = memory
-        self._agents   = agents
-        self._version  = version
+            self._model     = model
+        self._provider  = provider
+        self._project   = project
+        self._cwd       = cwd
+        self._memory    = memory
+        self._agents    = agents
+        self._version   = version
+        self._mcp_count = mcp_count
+        self._a2a_count = a2a_count
 
     # ── Section builders ──────────────────────────────────────────────────────
 
