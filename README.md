@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 | **Planning** | `/plan <goal>` — explore codebase → generate plan → execute |
 | **SubAgents** | `minion agent run coder "implement X"` or `/agent` in REPL |
 | **MCP servers** | Configure in `~/.minion/mcp.json`; any MCP-compliant server |
-| **A2A server** | `minion a2a serve` — expose minion as a remote A2A agent |
+| **A2A server** | `minion remote serve` — expose minion as a remote A2A agent |
 | **Session tracing** | Automatic JSONL traces; `nefario --latest` to view |
 | **Dry-run** | `--dry-run` — preview tool calls without executing |
 | **Permissions** | `/yolo` (auto-approve all), `/edits` (auto-approve writes only) |
@@ -109,25 +109,35 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### REPL Slash Commands
 
 ```
-/help          List all commands
-/plan <goal>   Create and execute a structured multi-step plan
-/compact       Summarize conversation to reclaim context window space
-/reflect       Toggle self-critique and refinement mode
-/yolo          Auto-approve all tool calls for this session
-/edits         Auto-approve file writes only
-/model         Switch LLM provider or model mid-session
-/context       Show token usage breakdown by category
-/clear         Wipe conversation history (keep session)
-/save <name>   Save current session to disk
-/load <name>   Restore a saved session
-/remember <f>  Manually store a memory fact
-/forget <p>    Delete memories matching a pattern
-/agent <role>  Switch to an agent role for the next task
-/skill <name>  Run a named skill directly
-/a2a run <n>   Delegate a task to a remote A2A agent
-/mcp reload    Reload MCP server connections without restarting
-/config        Show current effective config (all sources merged)
-/quit          Exit
+/help                        List all commands
+/init                        Create a MINION.md template in the current directory
+/model                       Switch provider, model, or API key interactively
+/context                     Show context window usage and token breakdown
+/reflect [N|--on|--off]      Toggle self-critique mode (optional max rounds)
+/verbose [--on|--off]        Toggle verbose output (critique text + diffs)
+/edits [on|off]              Auto-approve file writes only
+/yolo [on|off]               Auto-approve all tool calls
+/debug [--on|--off]          Toggle debug mode (prints full system prompt)
+/memory [--on|--off]         Toggle memory extraction and injection
+/hooks [list|on|off]         Manage lifecycle hooks
+/remember [--global] <text>  Store a memory fact (optional --category flag)
+/forget <id or text>         Delete a memory by ID or matching text
+/recall [query]              Search and display stored memories
+/compact [summary|truncate]  Summarise or truncate conversation history
+/clear                       Wipe conversation history (keep session)
+/save <name>                 Save current session to disk
+/load <name>                 Restore a saved session by name
+/resume                      Pick a saved session from a dropdown
+/plan <goal>                 Create a structured plan; /plan --execute to run it
+/mcp [resource|prompt|reload] Inspect MCP resources/prompts or reload servers
+/markdown [on|off]           Toggle live markdown rendering of responses
+/agents [on|off]             Enable or disable subagent tools
+/agent <role> <task>         Run a named agent role on a task directly
+/remote [list|run <n> <t>]   List or invoke configured remote A2A agents
+/config                      Show effective configuration (all sources merged)
+/<skill-name>                Run a named skill (e.g. /commit, /review, /explain)
+/skills                      List all available skills
+/quit                        Exit Minion
 ```
 
 ---

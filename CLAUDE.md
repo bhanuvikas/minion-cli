@@ -81,7 +81,8 @@ minion/
 │   ├── implementations.py  # sync Python functions for every native tool
 │   ├── executor.py     # ToolExecutor — dispatch, hooks, confirmation, dry-run
 │   ├── permissions.py  # PermissionStore — 3-tier allow-list (session/project/global)
-│   └── confirmation.py # ConfirmationManager — serialised prompts across threads
+│   ├── confirmation.py # ConfirmationManager — serialised prompts across threads
+│   └── outline.py      # Language-specific code outliners (Python/AST, JS/TS/regex); get_outline() entry point
 │
 ├── output/             # Rendering abstractions and display utilities
 │   ├── base.py         # OutputRenderer ABC + SlotSpec dataclass
@@ -339,7 +340,7 @@ When `needs_scrollback_flush=True`, the caller (in `runner/parallel.py`) must ma
 | File | Purpose |
 |---|---|
 | `config/file.py` | `load_config()` — reads `~/.minion/config.toml` then `<cwd>/.minion/config.toml`, returns `MinionConfig` |
-| `config/interactive.py` | `MINION_STYLE`, `run_model_config()` — questionary `/model` flow |
+| `config/interactive.py` | `MINION_STYLE`, `run_model_config()`, `update_env_values()`, `PROVIDER_KEY_MAP`, `PROVIDERS` — `/model` questionary flow + `.env` read/write |
 | `config/wizard.py` | `run_setup_wizard()` — first-run API key wizard |
 | `config/__init__.py` | Re-exports everything; callers use `from .config import X` |
 
@@ -397,6 +398,7 @@ Strategy is selected in `repl/session.py` based on `/compact truncate` argument.
 | Parallel display fragment | `output/display_utils.py` |
 | TUI layout change | `tui/app.py` |
 | Subagent slot display | `tui/slots.py` (TUI) and `agents/display.py` (console) |
+| New outline language | `tools/outline.py` — add `Outliner` subclass, register in `OUTLINER_REGISTRY` |
 
 ---
 
