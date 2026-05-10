@@ -137,7 +137,7 @@ def init_tracer(
 
     Creates the traces directory if needed, trims old sessions to MAX_SESSIONS,
     and sets the module-level singleton. Called once from cli.py before
-    run_repl().
+    run_repl_async().
     """
     global _tracer
     traces_dir.mkdir(parents=True, exist_ok=True)

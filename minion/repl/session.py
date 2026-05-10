@@ -36,24 +36,7 @@ if TYPE_CHECKING:
     from ..llm.base import LLMClient
 
 
-# ─── Public entry points ──────────────────────────────────────────────────────
-
-def run_repl(
-    client: "LLMClient",
-    dry_run: bool = False,
-    reflect_depth: int = 0,
-    verbose: bool = False,
-    memory_enabled: bool = True,
-    debug: bool = False,
-    agents_enabled: bool = True,
-) -> None:
-    """Start the interactive REPL loop (thin wrapper over async implementation)."""
-    asyncio.run(run_repl_async(
-        client, dry_run=dry_run, reflect_depth=reflect_depth,
-        verbose=verbose, memory_enabled=memory_enabled, debug=debug,
-        agents_enabled=agents_enabled,
-    ))
-
+# ─── Public entry point ───────────────────────────────────────────────────────
 
 async def run_repl_async(
     client: "LLMClient",

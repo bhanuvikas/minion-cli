@@ -403,7 +403,7 @@ class TestPlanReplIntegration:
 
         base_prompt = "You are Minion."
 
-        # Reproduce the injection logic from run_repl()
+        # Reproduce the injection logic from run_repl_async()
         augmented = base_prompt
         if state.active_plan and state.active_plan.exists():
             goal_hint = state.active_plan_goal or state.active_plan.stem

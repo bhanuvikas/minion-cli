@@ -1,6 +1,6 @@
 """Tests for minion/repl/ — slash commands, completer, command registry.
 
-We do NOT test run_repl() (the full loop) because it requires a live
+We do NOT test run_repl_async() (the full loop) because it requires a live
 prompt_toolkit session with a TTY. We test the stable, pure-logic pieces:
   - REPL_COMMANDS registry structure
   - _SlashCompleter.get_completions() — pure filtering logic
