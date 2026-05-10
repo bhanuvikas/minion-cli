@@ -5,10 +5,11 @@ Layout (vertical stack):
   StreamingZone     — live in-progress assistant response
   SlotsZone         — live parallel agent/tool status (hidden when idle)
   InspectorZone     — subagent transcript viewer (hidden by default)
-  PermissionZone    — confirmation panel (replaces input when visible)
-  InputRow          — "you › " label + TextArea for user input
+  InputSection      — switches between InputRow (normal) and PermissionContent
+    PermissionContent — inline permission panel (hidden when idle)
+    InputRow          — "you › " label + TextArea for user input
   CompletionList    — slash-command completion overlay (hidden when idle)
-  StatusLine        — 1-line docked status bar
+  StatusLine        — 1-line docked status bar (below InputSection)
 
 Non-TTY or MINION_NO_TUI=1: this module is not used; the console path
 (PromptSession + Rich Live + questionary) remains active.
@@ -105,8 +106,8 @@ class InspectorZone(Static):
     """Subagent transcript viewer."""
 
 
-class PermissionZone(Static):
-    """Permission scope selector — shown when a dangerous tool needs confirmation."""
+class PermissionContent(Static):
+    """Inline permission panel — shown inside InputSection when confirmation is needed."""
 
 
 class InputArea(TextArea):
@@ -189,6 +190,14 @@ class InputRow(Horizontal):
         yield InputArea(language=None, id="input-area")
 
 
+class InputSection(Widget):
+    """Container that switches between InputRow (normal) and PermissionContent."""
+
+    def compose(self) -> ComposeResult:
+        yield PermissionContent("", id="permission-content")
+        yield InputRow(id="input-row")
+
+
 class CompletionList(OptionList):
     """Slash-command completion overlay."""
 
@@ -261,15 +270,16 @@ class MinionApp(App):
         )
 
         # Widget references populated in on_mount()
-        self._conv_area:       Optional[ConversationArea] = None
-        self._streaming_zone:  Optional[StreamingZone]    = None
-        self._slots_zone:      Optional[SlotsZone]        = None
-        self._inspector_zone:  Optional[InspectorZone]    = None
-        self._permission_zone: Optional[PermissionZone]   = None
-        self._input_row:       Optional[InputRow]         = None
-        self._completion_list: Optional[CompletionList]   = None
-        self._status_line:     Optional[StatusLine]       = None
-        self._input_area:      Optional[InputArea]        = None
+        self._conv_area:          Optional[ConversationArea]  = None
+        self._streaming_zone:     Optional[StreamingZone]     = None
+        self._slots_zone:         Optional[SlotsZone]         = None
+        self._inspector_zone:     Optional[InspectorZone]     = None
+        self._input_section:      Optional[InputSection]      = None
+        self._permission_content: Optional[PermissionContent] = None
+        self._input_row:          Optional[InputRow]          = None
+        self._completion_list:    Optional[CompletionList]    = None
+        self._status_line:        Optional[StatusLine]        = None
+        self._input_area:         Optional[InputArea]         = None
 
     # ── History helpers ───────────────────────────────────────────────────────
 
@@ -298,23 +308,23 @@ class MinionApp(App):
         yield StreamingZone(" ", id="streaming-zone")
         yield SlotsZone(" ", id="slots-zone")
         yield InspectorZone(" ", id="inspector-zone")
-        yield PermissionZone(" ", id="permission-zone")
-        yield InputRow(id="input-row")
+        yield InputSection(id="input-section")
         yield CompletionList(id="completion-list")
         yield StatusLine("", id="status-line")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        self._conv_area       = self.query_one("#conv-area",       ConversationArea)
-        self._streaming_zone  = self.query_one("#streaming-zone",  StreamingZone)
-        self._slots_zone      = self.query_one("#slots-zone",      SlotsZone)
-        self._inspector_zone  = self.query_one("#inspector-zone",  InspectorZone)
-        self._permission_zone = self.query_one("#permission-zone", PermissionZone)
-        self._input_row       = self.query_one("#input-row",       InputRow)
-        self._completion_list = self.query_one("#completion-list", CompletionList)
-        self._status_line     = self.query_one("#status-line",     StatusLine)
-        self._input_area      = self.query_one("#input-area",      InputArea)
+        self._conv_area          = self.query_one("#conv-area",          ConversationArea)
+        self._streaming_zone     = self.query_one("#streaming-zone",     StreamingZone)
+        self._slots_zone         = self.query_one("#slots-zone",         SlotsZone)
+        self._inspector_zone     = self.query_one("#inspector-zone",     InspectorZone)
+        self._input_section      = self.query_one("#input-section",      InputSection)
+        self._permission_content = self.query_one("#permission-content", PermissionContent)
+        self._input_row          = self.query_one("#input-row",          InputRow)
+        self._completion_list    = self.query_one("#completion-list",    CompletionList)
+        self._status_line        = self.query_one("#status-line",        StatusLine)
+        self._input_area         = self.query_one("#input-area",         InputArea)
 
         import shutil as _shutil
         cols = _shutil.get_terminal_size().columns or 120
@@ -322,10 +332,9 @@ class MinionApp(App):
         self.conversation.set_width(cols)
         self.status.set_width(cols)
 
-        # Initially hidden zones
+        # Initially hidden zones (PermissionContent starts hidden via CSS)
         self._slots_zone.display      = False
         self._inspector_zone.display  = False
-        self._permission_zone.display = False
         self._completion_list.display = False
 
         # Thinking animation timer (paused until first prompt)
@@ -577,6 +586,20 @@ class MinionApp(App):
         self.conversation.mark_printed()
         self._write_ansi(ansi)
 
+    def _write_markup(self, markup: str) -> None:
+        """Render Rich markup to ANSI and write directly to RichLog (no mark_printed)."""
+        from rich.console import Console as _RC
+        buf = io.StringIO()
+        c = _RC(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            width=self._terminal_width,
+            highlight=False,
+        )
+        c.print(markup)
+        self._write_ansi(buf.getvalue())
+
     # ── Refresh helpers ───────────────────────────────────────────────────────
 
     def _refresh_streaming(self) -> None:
@@ -604,23 +627,43 @@ class MinionApp(App):
             self._inspector_zone.display = False
 
     def _refresh_permission(self) -> None:
-        if self._permission_zone is not None:
-            self._permission_zone.update(self.permission.get_rich_markup())
+        if self._permission_content is not None:
+            self._permission_content.update(self.permission.get_rich_markup())
 
     # ── Permission show/hide ──────────────────────────────────────────────────
 
     def show_permission(self) -> None:
-        if self._permission_zone is not None:
-            self._permission_zone.update(self.permission.get_rich_markup())
-            self._permission_zone.display = True
+        markup = self.permission.get_rich_markup()
+        if self._permission_content is not None:
+            self._permission_content.update(markup)
+            self._permission_content.display = True
         if self._input_row is not None:
             self._input_row.display = False
+        if self._input_section is not None:
+            self._input_section.add_class("permission-active")
 
     def hide_permission(self) -> None:
-        if self._permission_zone is not None:
-            self._permission_zone.display = False
+        from .permission import _DIFF_TOOLS as _DT
+        # Write approved file changes to the conversation log
+        if (self.permission._last_result
+                and self.permission._last_diff
+                and self.permission._last_name in _DT):
+            icon   = "✎"
+            name   = self.permission._last_name
+            detail = self.permission._last_detail
+            header = f"[bold #1E90FF]  {icon} {name}[/]"
+            if detail:
+                from rich.markup import escape as _esc
+                header += f"[#C0C0C0]  →  {_esc(detail)}[/]"
+            self._write_markup(header)
+            self._write_ansi(self.permission._last_diff)
+
+        if self._permission_content is not None:
+            self._permission_content.display = False
         if self._input_row is not None:
             self._input_row.display = True
+        if self._input_section is not None:
+            self._input_section.remove_class("permission-active")
         if self._input_area is not None:
             self.set_focus(self._input_area)
 

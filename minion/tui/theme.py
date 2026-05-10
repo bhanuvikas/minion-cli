@@ -58,10 +58,21 @@ InspectorZone {{
     display: none;
 }}
 
-PermissionZone {{
+InputSection {{
     height: auto;
-    padding: 0 1;
+    border-top: solid #2A2A2A;
+}}
+
+InputSection.permission-active {{
+    border-top: solid {BLUE};
+}}
+
+PermissionContent {{
     display: none;
+    height: auto;
+    max-height: 35;
+    overflow-y: auto;
+    padding: 0 1;
 }}
 
 InputRow {{

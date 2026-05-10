@@ -15,7 +15,8 @@ from minion.tui.app import (
     ConversationArea,
     InspectorZone,
     InputRow,
-    PermissionZone,
+    InputSection,
+    PermissionContent,
     SlotsZone,
     StatusLine,
     StreamingZone,
@@ -30,14 +31,15 @@ class TestCompose:
         app = MinionApp(model_name="claude-test")
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert app.query_one("#conv-area",       ConversationArea)
-            assert app.query_one("#streaming-zone",  StreamingZone)
-            assert app.query_one("#slots-zone",      SlotsZone)
-            assert app.query_one("#inspector-zone",  InspectorZone)
-            assert app.query_one("#permission-zone", PermissionZone)
-            assert app.query_one("#input-row",       InputRow)
-            assert app.query_one("#completion-list", CompletionList)
-            assert app.query_one("#status-line",     StatusLine)
+            assert app.query_one("#conv-area",          ConversationArea)
+            assert app.query_one("#streaming-zone",     StreamingZone)
+            assert app.query_one("#slots-zone",         SlotsZone)
+            assert app.query_one("#inspector-zone",     InspectorZone)
+            assert app.query_one("#input-section",      InputSection)
+            assert app.query_one("#permission-content", PermissionContent)
+            assert app.query_one("#input-row",          InputRow)
+            assert app.query_one("#completion-list",    CompletionList)
+            assert app.query_one("#status-line",        StatusLine)
 
     @pytest.mark.asyncio
     async def test_component_state_machines_attached(self):
@@ -69,11 +71,11 @@ class TestInitialVisibility:
             assert not app.query_one("#inspector-zone").display
 
     @pytest.mark.asyncio
-    async def test_permission_zone_hidden_on_mount(self):
+    async def test_permission_content_hidden_on_mount(self):
         app = MinionApp(model_name="claude-test")
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert not app.query_one("#permission-zone").display
+            assert not app.query_one("#permission-content").display
 
     @pytest.mark.asyncio
     async def test_completion_list_hidden_on_mount(self):
@@ -157,12 +159,20 @@ class TestPermissionShowHide:
             assert not app.query_one("#input-row").display
 
     @pytest.mark.asyncio
-    async def test_show_permission_reveals_permission_zone(self):
+    async def test_show_permission_reveals_permission_content(self):
         app = MinionApp(model_name="claude-test")
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.show_permission()
-            assert app.query_one("#permission-zone").display
+            assert app.query_one("#permission-content").display
+
+    @pytest.mark.asyncio
+    async def test_show_permission_adds_active_class(self):
+        app = MinionApp(model_name="claude-test")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.show_permission()
+            assert "permission-active" in app.query_one("#input-section").classes
 
     @pytest.mark.asyncio
     async def test_hide_permission_restores_input_row(self):
@@ -174,13 +184,22 @@ class TestPermissionShowHide:
             assert app.query_one("#input-row").display
 
     @pytest.mark.asyncio
-    async def test_hide_permission_conceals_permission_zone(self):
+    async def test_hide_permission_conceals_permission_content(self):
         app = MinionApp(model_name="claude-test")
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.show_permission()
             app.hide_permission()
-            assert not app.query_one("#permission-zone").display
+            assert not app.query_one("#permission-content").display
+
+    @pytest.mark.asyncio
+    async def test_hide_permission_removes_active_class(self):
+        app = MinionApp(model_name="claude-test")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.show_permission()
+            app.hide_permission()
+            assert "permission-active" not in app.query_one("#input-section").classes
 
 
 # ── Legacy constructor params ─────────────────────────────────────────────────

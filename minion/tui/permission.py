@@ -1,8 +1,8 @@
 """Permission panel for the TUI.
 
 When a dangerous tool needs confirmation, ConfirmationManager calls
-PermissionPanel.request() from the TUI event loop (via run_coroutine_threadsafe).
-The panel replaces the input bar until the user responds.
+PermissionPanel.request() from the TUI event loop (via call_from_thread).
+The panel replaces the input area until the user responds.
 
 Scope options match _interactive_confirm() in tools/executor.py:
   1. Yes, once
@@ -27,26 +27,49 @@ _SCOPE_LABELS = [
 ]
 _SCOPE_VALUES = ["once", "session", "project", "no"]
 
+_TOOL_ICONS = {
+    "write_file":  "✎",
+    "edit_file":   "✎",
+    "run_shell":   "$",
+    "web_fetch":   "◎",
+}
+
+_TOOL_QUESTIONS = {
+    "write_file":  "Allow this file write?",
+    "edit_file":   "Allow this edit?",
+    "run_shell":   "Allow this command?",
+    "web_fetch":   "Allow this fetch?",
+}
+
+# Tools where we replay the diff into the conversation after approval
+_DIFF_TOOLS = {"write_file", "edit_file"}
+
 
 @dataclass
 class PermissionRequest:
     name:       str
     inputs:     dict
-    diff_lines: str = ""         # raw ANSI string for diff preview
+    diff_lines: str = ""
     event:      asyncio.Event = field(default_factory=asyncio.Event)
     result:     bool = False
     scope:      str  = "no"
 
 
 class PermissionPanel:
-    """Renders the scope-selector permission prompt in the TUI permission zone."""
+    """Renders the permission prompt inline in the InputSection."""
 
     def __init__(self, app_ref: "MinionApp") -> None:
         self._app     = app_ref
         self._pending: Optional[PermissionRequest] = None
         self._cursor:  int = 0
 
-    # ── Request API (called from TUI event loop via run_coroutine_threadsafe) ─
+        # Retained after request() completes so hide_permission() can read them
+        self._last_result: bool = False
+        self._last_diff:   str  = ""
+        self._last_name:   str  = ""
+        self._last_detail: str  = ""
+
+    # ── Request API ───────────────────────────────────────────────────────────
 
     async def request(self, name: str, inputs: dict, diff_lines: str = "") -> bool:
         """Show the permission panel and wait for user response."""
@@ -55,6 +78,11 @@ class PermissionPanel:
         self._cursor  = 0
         self._app.show_permission()
         await req.event.wait()
+        # Persist for hide_permission() before clearing _pending
+        self._last_result = req.result
+        self._last_diff   = req.diff_lines
+        self._last_name   = req.name
+        self._last_detail = _permission_detail(req.name, req.inputs)
         self._pending = None
         self._app.hide_permission()
         return req.result
@@ -90,41 +118,58 @@ class PermissionPanel:
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def get_rich_markup(self) -> str:
-        """Return Rich markup string for the PermissionZone Static widget."""
+        """Return Rich markup string for the PermissionContent Static widget."""
         if self._pending is None:
             return ""
 
-        req   = self._pending
+        from rich.markup import escape as _esc
+
+        req      = self._pending
+        icon     = _TOOL_ICONS.get(req.name, "⬡")
+        question = _TOOL_QUESTIONS.get(req.name, "Allow this action?")
+        detail   = _permission_detail(req.name, req.inputs)
         lines: list[str] = []
 
-        # Tool name + path/command header
-        lines.append(f"[bold #FFD700]  {req.name}[/]")
-        detail = _permission_detail(req.name, req.inputs)
+        # ── Tool header ───────────────────────────────────────────────────────
+        lines.append(f"[bold #1E90FF]  {icon} {req.name}[/]")
         if detail:
-            lines.append(f"[#C0C0C0]  {detail}[/]")
+            lines.append(f"[#C0C0C0]  {_esc(detail)}[/]")
 
-        # Diff preview (raw ANSI — strip to plain for markup rendering)
+        # ── Diff / file preview ───────────────────────────────────────────────
         if req.diff_lines:
             import re as _re
-            plain_diff = _re.sub(r"\x1b\[[0-9;]*m", "", req.diff_lines)
-            for dline in plain_diff.rstrip("\n").split("\n")[:30]:
-                if dline.startswith("+"):
-                    lines.append(f"[#4CAF50]{dline}[/]")
-                elif dline.startswith("-"):
-                    lines.append(f"[red]{dline}[/]")
-                else:
-                    lines.append(f"[#C0C0C0]{dline}[/]")
+            plain = _re.sub(r"\x1b\[[0-9;]*m", "", req.diff_lines)
+            rows  = [r for r in plain.rstrip("\n").split("\n")]
+            if rows:
+                lines.append(f"[#333333]  {'─' * 60}[/]")
+                for row in rows:
+                    er = _esc(row)
+                    if row.startswith("+"):
+                        lines.append(f"[#4CAF50]  {er}[/]")
+                    elif row.startswith("-"):
+                        lines.append(f"[red]  {er}[/]")
+                    elif row.startswith("@@"):
+                        lines.append(f"[#888888]  {er}[/]")
+                    else:
+                        lines.append(f"[#666666]  {er}[/]")
+                lines.append(f"[#333333]  {'─' * 60}[/]")
 
-        # Scope options
+        # ── Question ──────────────────────────────────────────────────────────
+        lines.append("")
+        lines.append(f"  {question}")
+        lines.append("")
+
+        # ── Scope choices ─────────────────────────────────────────────────────
         for i, label in enumerate(_SCOPE_LABELS):
             selected   = i == self._cursor
-            cursor_str = "  ❯" if selected else "   "
+            cursor_str = "❯" if selected else " "
             if selected:
-                lines.append(f"[bold #FFD700]{cursor_str} {i + 1}.{label}[/]")
+                lines.append(f"[bold #FFD700]  {cursor_str} {i + 1}.{label}[/]")
             else:
-                lines.append(f"{cursor_str} {i + 1}.{label}")
+                lines.append(f"[#C0C0C0]  {cursor_str} {i + 1}.{label}[/]")
 
-        lines.append("[#666666]  ↑↓ move  1-4 select  Enter confirm  Esc deny[/]")
+        lines.append("")
+        lines.append("[#666666]  ↑↓ navigate  1-4 select  Enter confirm  Esc deny[/]")
         return "\n".join(lines)
 
 
