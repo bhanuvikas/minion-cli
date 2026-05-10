@@ -14,7 +14,7 @@ from minion.llm.conversation import Conversation
 from minion.memory.config import MemoryConfig
 from minion.memory.record import MemoryRecord
 from minion.memory.store import MemoryStore
-from minion.repl import REPL_COMMANDS, ReplState, _get_last_response_text, _handle_slash_command
+from minion.repl import REPL_COMMANDS, ReplState, CommandContext, _get_last_response_text, _handle_slash_command
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -30,11 +30,15 @@ def _make_store(tmp_path: Path) -> MemoryStore:
 
 
 def _dispatch(raw: str, memory_store=None, state=None) -> bool:
-    client = MagicMock()
-    conversation = Conversation()
     if state is None:
         state = ReplState()
-    return _handle_slash_command(raw, client, conversation, state=state, memory_store=memory_store)
+    ctx = CommandContext(
+        client=MagicMock(),
+        conversation=Conversation(),
+        state=state,
+        memory_store=memory_store,
+    )
+    return _handle_slash_command(raw, ctx)
 
 
 def _stored_record(store: MemoryStore, content: str = "test fact") -> MemoryRecord:

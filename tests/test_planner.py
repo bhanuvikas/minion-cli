@@ -342,21 +342,24 @@ class TestPlanReplIntegration:
         state.active_plan = Path("/some/plan.md")
         state.active_plan_goal = "old goal"
 
-        with patch("minion.repl.console"):
-            _handle_slash_command("/plan --clear", MagicMock(), MagicMock(), state=state)
+        from minion.repl import CommandContext
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock(), state=state)
+        with patch("minion.repl.commands.console"):
+            _handle_slash_command("/plan --clear", ctx)
 
         assert state.active_plan is None
         assert state.active_plan_goal is None
 
     def test_plan_list_calls_list_plans(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
 
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock())
         with (
-            patch("minion.repl.console"),
+            patch("minion.repl.commands.console"),
             patch("minion.planner.storage.list_plans", return_value=[]) as mock_list,
         ):
-            _handle_slash_command("/plan --list", MagicMock(), MagicMock())
+            _handle_slash_command("/plan --list", ctx)
 
         mock_list.assert_called_once()
 
@@ -365,23 +368,20 @@ class TestPlanReplIntegration:
         monkeypatch.chdir(tmp_path)
         plan_path = save_plan("# My Plan\nDo things.", "test goal")
 
-        from minion.repl import ReplState, _handle_slash_command
+        from minion.repl import ReplState, _handle_slash_command, CommandContext
 
         state = ReplState()
         state.active_plan = plan_path
         state.active_plan_goal = "test goal"
+        state.system_prompt = "Base prompt."
+
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock(), state=state)
 
         with (
-            patch("minion.repl.console"),
+            patch("minion.repl.commands.console"),
             patch("minion.planner.creator.run_prompt") as mock_run,
         ):
-            _handle_slash_command(
-                "/plan --execute",
-                MagicMock(),
-                MagicMock(),
-                state=state,
-                base_system_prompt="Base prompt.",
-            )
+            _handle_slash_command("/plan --execute", ctx)
 
         # execute_plan() calls run_prompt internally — verify it was invoked
         mock_run.assert_called_once()

@@ -346,26 +346,25 @@ class TestReplSkillIntegration:
         return SkillRegistry({"commit": s1, "review": s2})
 
     def test_skill_dispatch_from_slash_command(self):
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
         registry = self._make_registry()
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock(), skill_registry=registry)
         with patch("minion.skills.runner.execute_skill") as mock_exec, \
              patch("minion.skills.runner.get_tracer"):
-            _handle_slash_command(
-                "/commit", MagicMock(), MagicMock(),
-                skill_registry=registry, base_system_prompt="BASE",
-            )
+            _handle_slash_command("/commit", ctx)
         mock_exec.assert_called_once()
         # First arg is the skill manifest
         assert mock_exec.call_args[0][0].name == "commit"
 
     def test_skills_command_lists_all(self, capsys):
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
         from unittest.mock import patch as _patch
         registry = self._make_registry()
         printed = []
-        with _patch("minion.repl.console") as mc:
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock(), skill_registry=registry)
+        with _patch("minion.repl.commands.console") as mc:
             mc.print.side_effect = lambda msg, **kw: printed.append(msg)
-            result = _handle_slash_command("/skills", MagicMock(), MagicMock(), skill_registry=registry)
+            result = _handle_slash_command("/skills", ctx)
         assert result is True
         combined = " ".join(printed)
         assert "commit" in combined
@@ -395,13 +394,11 @@ class TestReplSkillIntegration:
             repl_mod.REPL_COMMANDS.update(original)
 
     def test_unknown_command_not_dispatched_as_skill(self):
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
         registry = self._make_registry()  # only has "commit" and "review"
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock(), skill_registry=registry)
         with patch("minion.skills.runner.execute_skill") as mock_exec:
-            result = _handle_slash_command(
-                "/nonexistent_skill_xyz", MagicMock(), MagicMock(),
-                skill_registry=registry,
-            )
+            result = _handle_slash_command("/nonexistent_skill_xyz", ctx)
         mock_exec.assert_not_called()
         assert result is True  # handled by unknown-command fallback
 
@@ -509,19 +506,21 @@ class TestExecuteSkillEdgeCases:
 class TestSkillsNoRegistry:
     def test_skills_command_with_no_registry_prints_message(self):
         """/skills with skill_registry=None prints 'No skills loaded.'"""
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
         printed = []
-        with patch("minion.repl.console") as mc:
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock())
+        with patch("minion.repl.commands.console") as mc:
             mc.print.side_effect = lambda msg, **kw: printed.append(msg)
-            result = _handle_slash_command("/skills", MagicMock(), MagicMock())
+            result = _handle_slash_command("/skills", ctx)
         assert result is True
         assert any("No skills loaded" in str(m) for m in printed)
 
     def test_skill_command_without_registry_falls_through(self):
         """/commit with no registry → unknown command (no execute_skill call)."""
-        from minion.repl import _handle_slash_command
+        from minion.repl import _handle_slash_command, CommandContext
+        ctx = CommandContext(client=MagicMock(), conversation=MagicMock())
         with patch("minion.skills.runner.execute_skill") as mock_exec:
-            result = _handle_slash_command("/commit", MagicMock(), MagicMock())
+            result = _handle_slash_command("/commit", ctx)
         mock_exec.assert_not_called()
         assert result is True  # handled as unknown command
 
