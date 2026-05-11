@@ -151,8 +151,10 @@ class InputArea(TextArea):
         try:
             cl = self.app.query_one(CompletionList)
             if cl.display:
-                # Apply highlighted or first option, then fall through to submit.
+                # Fill the input with the selected command; don't submit yet so
+                # the user can inspect or append arguments before pressing Enter again.
                 self._apply_completion(cl)
+                return
         except Exception:
             pass
         text = self.text.strip()
@@ -550,9 +552,11 @@ class MinionApp(App):
         matches: list[str] = [cmd for cmd in _CMDS if cmd.startswith(prefix)][:10]
         self._completion_list.clear_options()
         if matches:
+            col_w = max(len(cmd) for cmd in matches)
             for cmd in matches:
                 desc = _CMDS.get(cmd, "")
-                display = f"{cmd}  [dim]{desc}[/dim]" if desc else cmd
+                padded = cmd.ljust(col_w)
+                display = f"{padded}  [dim]{desc}[/dim]" if desc else padded
                 self._completion_list.add_option(Option(display, id=cmd))
             self._completion_list.display = True
         else:
