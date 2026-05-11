@@ -108,6 +108,7 @@ InputArea:focus {{
 
 CompletionList {{
     layer: overlay;
+    dock: bottom;
     display: none;
     height: auto;
     max-height: 10;

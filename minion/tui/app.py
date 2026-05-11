@@ -595,17 +595,21 @@ class MinionApp(App):
             self._completion_list.display = False
 
     def _position_completion_list(self) -> None:
-        """Position the completion overlay just above InputSection after layout reflow."""
+        """Pin the completion dropdown's bottom edge flush to InputSection's top.
+
+        dock: bottom anchors the widget to the screen bottom on the overlay layer.
+        margin-bottom = screen_height - input_section.top pushes its bottom edge
+        up to exactly flush with the input box, so the gap is always zero
+        regardless of how many options are shown.
+        """
         if self._completion_list is None or self._input_section is None:
             return
         try:
-            r = self._input_section.region          # screen coords of input section
-            n = self._completion_list.option_count
-            visible = min(n, 10)
-            h = visible + 2                          # border top + rows + border bottom
-            y = max(0, r.y - h)
-            self._completion_list.styles.offset = (r.x + 2, y)
-            self._completion_list.styles.width   = max(30, r.width - 4)
+            input_top  = self._input_section.region.y
+            screen_h   = self.size.height
+            bottom_gap = screen_h - input_top
+            # top=0, right=2, bottom=bottom_gap, left=2
+            self._completion_list.styles.margin = (0, 2, bottom_gap, 2)
         except Exception:
             pass
 
