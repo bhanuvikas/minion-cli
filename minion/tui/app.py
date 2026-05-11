@@ -80,6 +80,7 @@ class ConversationLog(RichLog):
         if n >= len(self.lines):
             return
         self.lines = self.lines[:n]
+        self._line_cache.clear()   # stale cache entries must be evicted or old strips re-appear
         self.virtual_size = Size(self.virtual_size.width, len(self.lines))
         self.refresh()
 
