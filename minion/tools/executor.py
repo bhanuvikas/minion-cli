@@ -791,13 +791,19 @@ class ToolExecutor:
                     if _deferred_r is not None:
                         _deferred_r.on_tool_result(result)
                     return result
-                # After approval: write diff to the conversation via _deferred_r.
-                # hide_permission() no longer does this — the executor owns diff routing
-                # so ordering is correct in both single (immediate) and parallel (buffered) paths.
-                # TUI only: console showed the diff inline during the questionary prompt.
+                # After approval: set diff on the slot state so _render() shows it inline.
+                # TUI: _diff_lns already computed; console: compute it now (was only shown
+                # during questionary, never stored on the slot).
+                if _slot_renderer is not None and _agent_cb is not None:
+                    if _diff_lns:
+                        _slot_diff = _diff_lns
+                    else:
+                        _, _slot_diff = _confirm_prompt(name, inputs)
+                    if _slot_diff:
+                        _agent_cb("diff", markup=_slot_diff)
+                # TUI only: also emit to _deferred_r so flush_to() replays it in order
+                # in the conversation buffer (console parallel never calls flush_to).
                 if _deferred_r is not None and _diff_lns:
-                    if _slot_renderer is not None and _agent_cb is not None:
-                        _agent_cb("diff", markup=_diff_lns)  # update slot state (parallel only)
                     _deferred_r.on_diff_preview(_diff_lns, tool_name=name)
 
         # ── Pre-tool hook ──────────────────────────────────────────────────
