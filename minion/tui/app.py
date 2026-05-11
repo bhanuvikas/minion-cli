@@ -564,11 +564,14 @@ class MinionApp(App):
         if new_idx >= len(self._history):
             new_idx = len(self._history) - 1
         self._hist_idx = new_idx
-        self._input_area.clear()
-        if new_idx == -1:
-            self._input_area.insert(self._hist_saved)
-        else:
-            self._input_area.insert(self._history[-(new_idx + 1)])
+        text = self._hist_saved if new_idx == -1 else self._history[-(new_idx + 1)]
+        # Suppress completion: load_text fires one Changed event; the flag
+        # prevents that event from reopening the dropdown for slash commands.
+        self._input_area._suppress_next_completion = True
+        if self._completion_list is not None:
+            self._completion_list.display = False
+        self._input_area.load_text(text)
+        self._input_area.move_cursor((0, len(text)))
 
     def on_tui_update_completion(self, message: TuiUpdateCompletion) -> None:
         if self._completion_list is None:
