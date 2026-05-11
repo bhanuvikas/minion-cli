@@ -2,7 +2,7 @@
 
 Layout (vertical stack):
   ConversationArea  — VerticalScroll; each content block is a child Static widget
-  SlotsZone         — live parallel agent/tool status (hidden when idle)
+  Slots             — live parallel agent/tool status (inline at end of ConversationArea)
   InspectorZone     — subagent transcript viewer (hidden by default)
   InputSection      — switches between InputRow (normal) and PermissionContent
     PermissionContent — inline permission panel (hidden when idle)
@@ -72,23 +72,51 @@ class ConversationArea(VerticalScroll):
     append_block() mounts a new Static and scrolls to bottom.
     Thinking / streaming widgets are mounted and removed in-place so they
     always appear immediately after the last committed message.
+
+    The live slots widget (_slots_widget) is also a child, always kept as the
+    last node. append_block() inserts before it when slots are active so new
+    blocks stay above the live status display.
     """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._slots_widget: Optional[Static] = None
 
     def append_block(self, renderable: RenderableType) -> Static:
         """Mount a new Static block and scroll to the bottom."""
         widget = Static(renderable)
-        self.mount(widget)
+        # Keep slots widget as the last child by inserting before it.
+        if self._slots_widget is not None and self._slots_widget.is_attached:
+            self.mount(widget, before=self._slots_widget)
+        else:
+            self.mount(widget)
         self.scroll_end(animate=False, x_axis=False)
         return widget
+
+    def update_slots(self, text: RenderableType, visible: bool) -> None:
+        """Show, update, or hide the inline live slots widget."""
+        if visible:
+            if self._slots_widget is None:
+                self._slots_widget = Static(text)
+                self.mount(self._slots_widget)
+            else:
+                self._slots_widget.update(text)
+        elif self._slots_widget is not None:
+            # Summary lines were already inserted before this widget via
+            # append_block(); remove it now so they become the new tail.
+            self._slots_widget.remove()
+            self._slots_widget = None
+        self.scroll_end(animate=False, x_axis=False)
 
     def clear_log(self) -> None:
         """Remove all child widgets and reset scroll position."""
         self.remove_children()
+        self._slots_widget = None
         self.scroll_home(animate=False)
 
 
 class SlotsZone(Static):
-    """Live parallel agent/tool status."""
+    """Live parallel agent/tool status (kept for CSS selector; not composed)."""
 
 
 class InspectorZone(Static):
@@ -97,6 +125,12 @@ class InspectorZone(Static):
 
 class PermissionContent(Static):
     """Inline permission panel — shown inside InputSection when confirmation is needed."""
+
+    # Must be focusable so that Enter/Esc are NOT intercepted by InputArea's
+    # priority=True binding (which fires before App.on_key when InputArea is
+    # focused). With PermissionContent focused, InputArea is not in the focus
+    # chain and its bindings are inactive — keys bubble cleanly to App.on_key.
+    can_focus = True
 
 
 class InputArea(TextArea):
@@ -319,7 +353,6 @@ class MinionApp(App):
 
         # Widget references populated in on_mount()
         self._conv_area:          Optional[ConversationArea]  = None
-        self._slots_zone:         Optional[SlotsZone]         = None
         self._inspector_zone:     Optional[InspectorZone]     = None
         self._input_section:      Optional[InputSection]      = None
         self._permission_content: Optional[PermissionContent] = None
@@ -352,7 +385,6 @@ class MinionApp(App):
 
     def compose(self) -> ComposeResult:
         yield ConversationArea(id="conv-area")
-        yield SlotsZone(" ", id="slots-zone")
         yield InspectorZone(" ", id="inspector-zone")
         yield InputSection(id="input-section")
         yield CompletionList(id="completion-list")
@@ -362,7 +394,6 @@ class MinionApp(App):
 
     def on_mount(self) -> None:
         self._conv_area          = self.query_one("#conv-area",          ConversationArea)
-        self._slots_zone         = self.query_one("#slots-zone",         SlotsZone)
         self._inspector_zone     = self.query_one("#inspector-zone",     InspectorZone)
         self._input_section      = self.query_one("#input-section",      InputSection)
         self._permission_content = self.query_one("#permission-content", PermissionContent)
@@ -383,7 +414,6 @@ class MinionApp(App):
         self.status.set_width(cols)
 
         # Initially hidden zones (PermissionContent starts hidden via CSS)
-        self._slots_zone.display      = False
         self._inspector_zone.display  = False
         self._completion_list.display = False
 
@@ -530,10 +560,9 @@ class MinionApp(App):
     # ── Message handlers ──────────────────────────────────────────────────────
 
     def on_slots_updated(self, _: SlotsUpdated) -> None:
-        if self._slots_zone is None:
+        if self._conv_area is None:
             return
-        self._slots_zone.update(self.slots.get_rich_text())
-        self._slots_zone.display = self.slots.is_visible
+        self._conv_area.update_slots(self.slots.get_rich_text(), self.slots.is_visible)
 
     def on_inspector_updated(self, _: InspectorUpdated) -> None:
         self._refresh_inspector()
@@ -785,6 +814,10 @@ class MinionApp(App):
         if self._permission_content is not None:
             self._permission_content.update(markup)
             self._permission_content.display = True
+            # Move focus here so InputArea's priority Enter binding is inactive.
+            # Keys bubble through PermissionContent → App.on_key which owns
+            # all permission key handling (Enter, Esc, 1-4, ↑↓).
+            self.set_focus(self._permission_content)
         if self._input_row is not None:
             self._input_row.display = False
         if self._input_section is not None:

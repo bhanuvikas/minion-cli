@@ -17,7 +17,6 @@ from minion.tui.app import (
     InputRow,
     InputSection,
     PermissionContent,
-    SlotsZone,
     StatusLine,
 )
 
@@ -31,7 +30,6 @@ class TestCompose:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             assert app.query_one("#conv-area",          ConversationArea)
-            assert app.query_one("#slots-zone",         SlotsZone)
             assert app.query_one("#inspector-zone",     InspectorZone)
             assert app.query_one("#input-section",      InputSection)
             assert app.query_one("#permission-content", PermissionContent)
@@ -55,11 +53,12 @@ class TestCompose:
 
 class TestInitialVisibility:
     @pytest.mark.asyncio
-    async def test_slots_zone_hidden_on_mount(self):
+    async def test_slots_widget_absent_on_mount(self):
+        """Slots widget is created on demand; ConversationArea has no slots child at startup."""
         app = MinionApp(model_name="claude-test")
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert not app.query_one("#slots-zone").display
+            assert app.query_one("#conv-area", ConversationArea)._slots_widget is None
 
     @pytest.mark.asyncio
     async def test_inspector_zone_hidden_on_mount(self):

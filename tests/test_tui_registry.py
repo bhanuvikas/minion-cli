@@ -371,7 +371,7 @@ class TestTuiTheme:
 
     def test_tcss_contains_key_widget_selectors(self):
         from minion.tui.theme import MINION_TCSS
-        for selector in ("ConversationArea", "SlotsZone",
+        for selector in ("ConversationArea",
                          "InspectorZone", "InputSection", "PermissionContent",
                          "InputArea", "CompletionList", "StatusLine"):
             assert selector in MINION_TCSS, f"Missing selector: {selector}"

@@ -30,6 +30,7 @@ Screen {{
 ConversationArea {{
     height: 1fr;
     padding: 0 1;
+    scrollbar-gutter: stable;
     scrollbar-size-vertical: 1;
     scrollbar-background: #111111;
     scrollbar-color: #2a2a2a;
@@ -40,12 +41,6 @@ ConversationArea {{
 ConversationArea > Static {{
     height: auto;
     width: 1fr;
-}}
-
-SlotsZone {{
-    height: auto;
-    padding: 0 1;
-    display: none;
 }}
 
 InspectorZone {{
