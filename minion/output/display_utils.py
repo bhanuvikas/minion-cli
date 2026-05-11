@@ -22,6 +22,7 @@ def apply_slot_event(state: dict, event: str, **data) -> None:
       running             — mark slot active
       complete            — record latency_ms + preview
       error               — record error message
+      diff                — store Rich markup diff for inline display
       tool_call           — update last_activity from tool name + inputs
       text                — rolling text buffer → last_activity snippet
       parallel_sub_start  — populate sub_activities list
@@ -41,6 +42,8 @@ def apply_slot_event(state: dict, event: str, **data) -> None:
             "status": "error",
             "error":  data.get("error", ""),
         })
+    elif event == "diff":
+        state["diff_markup"] = data.get("markup", "")
     elif event == "tool_call":
         name   = data.get("name", "")
         inputs = data.get("inputs", {})

@@ -93,7 +93,9 @@ class TuiRenderer(OutputRenderer):
         self._app.invalidate()
 
     def on_diff_preview(self, detail: str, *, tool_name: str = "") -> None:
-        self._app.conversation.append_system(detail)
+        # Indent to align with tool result lines (which start with 3 spaces)
+        indented = "   " + detail.rstrip("\n").replace("\n", "\n   ")
+        self._app.conversation.append_system(indented)
         self._app.invalidate()
 
     def on_todo_list(self, *, show_if_all_done: bool = False) -> None:

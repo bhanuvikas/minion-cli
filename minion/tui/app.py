@@ -794,15 +794,9 @@ class MinionApp(App):
             )
 
     def hide_permission(self) -> None:
-        from .permission import _DIFF_TOOLS as _DT
-        # Write the diff to the conversation log so the user can scroll through it.
-        # The tool call header (⊙ write_file) is already rendered by TuiRenderer;
-        # we only add the diff content — no redundant header here.
-        if (self.permission._last_result
-                and self.permission._last_diff
-                and self.permission._last_name in _DT):
-            self._write_markup(self.permission._last_diff)
-
+        # Diff is now written by the executor via _deferred_r.on_diff_preview()
+        # immediately after confirm_async() returns, which guarantees correct
+        # ordering in both single-tool and parallel-tool paths.
         if self._permission_content is not None:
             self._permission_content.display = False
         if self._input_row is not None:

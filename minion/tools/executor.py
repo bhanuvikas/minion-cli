@@ -759,11 +759,21 @@ class ToolExecutor:
 
         if name in DANGEROUS_TOOLS:
             if _mode_badge is not None:
-                # Auto-approved: show diff immediately (before execution).
-                if self._confirm_callback is None and _immediate_r is not None:
+                # Auto-approved: show diff in slot + buffer it for in-order scrollback.
+                # Never write to _immediate_r in parallel mode — that would emit the diff
+                # before the tool-call header, breaking ordering.
+                if self._confirm_callback is None:
                     _, detail = _confirm_prompt(name, inputs)
                     if detail:
-                        _immediate_r.on_diff_preview(detail, tool_name=name)
+                        if _slot_renderer is not None:
+                            # Parallel: update slot state inline; defer to buffer
+                            if _agent_cb is not None:
+                                _agent_cb("diff", markup=detail)
+                            if _deferred_r is not None:
+                                _deferred_r.on_diff_preview(detail, tool_name=name)
+                        elif _immediate_r is not None:
+                            # Single tool: show immediately (ordering is guaranteed)
+                            _immediate_r.on_diff_preview(detail, tool_name=name)
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
                 _diff_lns: str = ""
@@ -781,6 +791,14 @@ class ToolExecutor:
                     if _deferred_r is not None:
                         _deferred_r.on_tool_result(result)
                     return result
+                # After approval: write diff to the conversation via _deferred_r.
+                # hide_permission() no longer does this — the executor owns diff routing
+                # so ordering is correct in both single (immediate) and parallel (buffered) paths.
+                # TUI only: console showed the diff inline during the questionary prompt.
+                if _deferred_r is not None and _diff_lns:
+                    if _slot_renderer is not None and _agent_cb is not None:
+                        _agent_cb("diff", markup=_diff_lns)  # update slot state (parallel only)
+                    _deferred_r.on_diff_preview(_diff_lns, tool_name=name)
 
         # ── Pre-tool hook ──────────────────────────────────────────────────
         if self._hook_runner is not None:

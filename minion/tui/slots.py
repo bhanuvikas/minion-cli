@@ -14,30 +14,8 @@ from typing import Callable
 from rich.text import Text
 
 from ..output.display_utils import apply_slot_event, tool_slot_header_frags
+from ..theme import GREEN
 from .messages import SlotsUpdated
-
-
-def _frags_to_rich_text(frags: list[tuple[str, str]]) -> Text:
-    """Convert (style, text) fragment list to a Rich Text object."""
-    t = Text()
-    for style, chunk in frags:
-        # Strip class: prefix — these were prompt_toolkit class names
-        if style.startswith("class:"):
-            style = _CLASS_TO_RICH.get(style[6:], "")
-        t.append(chunk, style=style or "")
-    return t
-
-
-# Mapping from old prompt_toolkit class names → Rich style strings
-_CLASS_TO_RICH: dict[str, str] = {
-    "slot-icon":    "#888888",
-    "slot-label":   "bold",
-    "slot-task":    "#C0C0C0",
-    "slot-running": "#C0C0C0",
-    "slot-done":    "bold #4CAF50",
-    "slot-error":   "bold red",
-    "slot-detail":  "#C0C0C0",
-}
 
 
 class SlotsManager:
@@ -119,34 +97,35 @@ class SlotsManager:
             order  = list(self._order)
             states = {k: dict(v) for k, v in self._states.items()}
 
-        frags: list[tuple[str, str]] = []
+        result = Text()
         first = True
 
         for key in order:
             if not first:
-                frags.append(("", "\n"))
+                result.append("\n")
             first = False
 
-            state     = states.get(key, {})
-            tool_name = state.get("tool_name", "")
-            inputs    = state.get("inputs", {})
-            label     = state.get("label")
-            status    = state.get("status", "pending")
+            state       = states.get(key, {})
+            tool_name   = state.get("tool_name", "")
+            inputs      = state.get("inputs", {})
+            label       = state.get("label")
+            status      = state.get("status", "pending")
+            diff_markup = state.get("diff_markup", "")
 
             if label:
                 # ── Subagent slot — 2-line format ─────────────────────────────
-                frags.append(("class:slot-icon", "⏺  "))
-                frags.append(("class:slot-label", f"[{label}]"))
+                result.append("⏺  ", style=f"bold {GREEN}")
+                result.append(f"[{label}]", style="bold")
                 task = inputs.get("task", "")
                 if task:
                     task_clean = task.replace("\n", " ").strip()
                     if len(task_clean) > 58:
                         task_clean = task_clean[:58] + "…"
-                    frags.append(("class:slot-task", f"  {task_clean}"))
-                frags.append(("", "\n   └─  "))
+                    result.append(f"  {task_clean}", style="dim")
+                result.append("\n   └─  ")
 
                 if status == "pending":
-                    frags.append(("class:slot-running", "waiting…"))
+                    result.append("waiting…", style="dim")
                 elif status == "running":
                     sub_activities = state.get("sub_activities", [])
                     if sub_activities:
@@ -154,41 +133,48 @@ class SlotsManager:
                         for sa in sub_activities:
                             parts.append(("✓ " if sa["done"] else "") + sa["text"])
                         activity = "  ".join(parts)
-                        frags.append(("class:slot-running", f"running · {activity[:80]}"))
+                        result.append(f"running · {activity[:80]}", style="dim")
                     else:
                         last = state.get("last_activity", "")
                         act  = last.replace("\n", " ").replace("\r", "")[:72]
-                        frags.append(("class:slot-running", f"running · {act}" if act else "running…"))
+                        result.append(f"running · {act}" if act else "running…", style="dim")
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    frags.append(("class:slot-done", f"done ({latency:.1f}s)"))
+                    result.append(f"done ({latency:.1f}s)", style=f"bold {GREEN}")
                     preview = state.get("preview", "")
                     if preview:
-                        frags.append(("class:slot-detail", f"\n       {preview[:100]}"))
+                        result.append(f"\n       {preview[:100]}", style="dim")
                 elif status == "error":
                     error = state.get("error", "")
-                    frags.append(("class:slot-error", f"Error · {error[:72]}"))
+                    result.append(f"Error · {error[:72]}", style="red")
 
             else:
-                # ── Generic tool slot — 3-line format ────────────────────────
-                frags.extend(tool_slot_header_frags(tool_name, inputs))
+                # ── Generic tool slot — header + optional diff + status ────────
+                for style, text in tool_slot_header_frags(tool_name, inputs):
+                    result.append(text, style=style)
+
+                # Diff shown between header and status, indented to match status lines
+                if diff_markup and status != "pending":
+                    indented = "   " + diff_markup.rstrip("\n").replace("\n", "\n   ")
+                    result.append("\n")
+                    result.append_text(Text.from_markup(indented))
 
                 if status == "pending":
-                    frags.append(("class:slot-running", "\n   ○  waiting…"))
-                    frags.append(("", "\n"))
+                    result.append("\n   ○  waiting…", style="dim")
+                    result.append("\n")
                 elif status == "running":
-                    frags.append(("class:slot-running", "\n   ○  running…"))
+                    result.append("\n   ○  running…", style="dim")
                     last = state.get("last_activity", "")
                     last_line = last.replace("\n", " ").replace("\r", "")[:90]
-                    frags.append(("class:slot-detail", f"\n   {last_line}"))
+                    result.append(f"\n   {last_line}", style="dim")
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    frags.append(("class:slot-done", f"\n   ✓  done ({latency:.1f}s)"))
+                    result.append(f"\n   ✓  done ({latency:.1f}s)", style=f"bold {GREEN}")
                     preview = state.get("preview", "")
-                    frags.append(("class:slot-detail", f"\n   └─  {preview[:100]}"))
+                    result.append(f"\n   └─  {preview[:100]}", style="dim")
                 elif status == "error":
                     error = state.get("error", "")
-                    frags.append(("class:slot-error", f"\n   ✗  error: {error[:60]}"))
-                    frags.append(("", "\n"))
+                    result.append(f"\n   ✗  error: {error[:60]}", style="red")
+                    result.append("\n")
 
-        return _frags_to_rich_text(frags)
+        return result
