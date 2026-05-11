@@ -24,6 +24,7 @@ Screen {{
     layout: vertical;
     overflow: hidden hidden;
     background: #000000;
+    layers: base overlay;
 }}
 
 ConversationArea {{
@@ -106,6 +107,7 @@ InputArea:focus {{
 }}
 
 CompletionList {{
+    layer: overlay;
     display: none;
     height: auto;
     max-height: 10;

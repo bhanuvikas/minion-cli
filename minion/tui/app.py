@@ -398,6 +398,8 @@ class MinionApp(App):
         self._terminal_width = event.size.width
         self.status.set_width(event.size.width)
         self._refresh_status()
+        if self._completion_list is not None and self._completion_list.display:
+            self.call_after_refresh(self._position_completion_list)
 
     # ── run_async override ────────────────────────────────────────────────────
 
@@ -588,8 +590,24 @@ class MinionApp(App):
                 display = f"{padded}  [dim]{desc}[/dim]" if desc else padded
                 self._completion_list.add_option(Option(display, id=cmd))
             self._completion_list.display = True
+            self.call_after_refresh(self._position_completion_list)
         else:
             self._completion_list.display = False
+
+    def _position_completion_list(self) -> None:
+        """Position the completion overlay just above InputSection after layout reflow."""
+        if self._completion_list is None or self._input_section is None:
+            return
+        try:
+            r = self._input_section.region          # screen coords of input section
+            n = self._completion_list.option_count
+            visible = min(n, 10)
+            h = visible + 2                          # border top + rows + border bottom
+            y = max(0, r.y - h)
+            self._completion_list.styles.offset = (r.x + 2, y)
+            self._completion_list.styles.width   = max(30, r.width - 4)
+        except Exception:
+            pass
 
     # ── Submit runner ─────────────────────────────────────────────────────────
 
