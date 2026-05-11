@@ -43,11 +43,6 @@ RichLog {{
     scrollbar-color-active: {DIM};
 }}
 
-StreamingZone {{
-    height: auto;
-    padding: 0 1;
-}}
-
 SlotsZone {{
     height: auto;
     padding: 0 1;

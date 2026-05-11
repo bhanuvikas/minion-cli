@@ -81,6 +81,9 @@ class ConversationBuffer:
         self._last_was_assistant: bool = False
         self._gap_emitted: bool = False
 
+        # ── Pre-finalize hook (set by MinionApp) ──────────────────────────────
+        self._pre_finalize_fn: Optional[Callable[[], None]] = None
+
         # ── Callbacks wired by MinionApp ──────────────────────────────────────
         self._write_ansi_fn:  Optional[Callable[[str], None]] = None
         self._refresh_fn:     Optional[Callable[[], None]]    = None
@@ -91,9 +94,11 @@ class ConversationBuffer:
         refresh_fn: Callable[[], None],
         # flush_fn kept for API compatibility — no-op in Textual (renders per frame)
         flush_fn: Optional[Callable[[], None]] = None,
+        pre_finalize_fn: Optional[Callable[[], None]] = None,
     ) -> None:
-        self._write_ansi_fn = write_ansi_fn
-        self._refresh_fn    = refresh_fn
+        self._write_ansi_fn    = write_ansi_fn
+        self._refresh_fn       = refresh_fn
+        self._pre_finalize_fn  = pre_finalize_fn
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -152,6 +157,8 @@ class ConversationBuffer:
             text = self._streaming_text
             self._is_streaming   = False
             self._streaming_text = ""
+        if self._pre_finalize_fn:
+            self._pre_finalize_fn()
         if text:
             self._emit(_r.assistant_turn(text, self._width))
         with self._lock:

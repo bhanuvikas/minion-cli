@@ -13,13 +13,13 @@ from minion.tui.app import (
     MinionApp,
     CompletionList,
     ConversationArea,
+    ConversationLog,
     InspectorZone,
     InputRow,
     InputSection,
     PermissionContent,
     SlotsZone,
     StatusLine,
-    StreamingZone,
 )
 
 
@@ -32,7 +32,7 @@ class TestCompose:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             assert app.query_one("#conv-area",          ConversationArea)
-            assert app.query_one("#streaming-zone",     StreamingZone)
+            assert app.query_one("#rich-log",           ConversationLog)
             assert app.query_one("#slots-zone",         SlotsZone)
             assert app.query_one("#inspector-zone",     InspectorZone)
             assert app.query_one("#input-section",      InputSection)
