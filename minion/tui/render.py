@@ -1,7 +1,7 @@
-"""Stateless ANSI rendering functions for TUI conversation output.
+"""Stateless Rich renderable factories for TUI conversation output.
 
-All functions return ANSI strings.  No trailing newlines are added — callers
-in conversation.py decide vertical spacing.
+All public functions return RenderableType objects — no ANSI strings, no width.
+Textual renders them at the widget's actual CSS width automatically.
 
 Colours here MUST stay in sync with tui/theme.py TUI_STYLE:
   #FFD700  you-prefix     (bold gold)
@@ -14,9 +14,15 @@ Colours here MUST stay in sync with tui/theme.py TUI_STYLE:
 
 from __future__ import annotations
 
-import io
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rich.console import Group
+    from rich.markdown import Markdown
+    from rich.text import Text
 
 # ── Colour constants (mirror TUI_STYLE) ───────────────────────────────────────
+
 YOU_STYLE    = "bold #FFD700"
 MINION_STYLE = "bold #1E90FF"
 SEP_STYLE    = "#888888"      # › separator
@@ -32,33 +38,28 @@ TOOL_ERR     = "bold red"
 
 # ── Low-level renderers ───────────────────────────────────────────────────────
 
-def render_rich(markup: str, width: int = 120) -> str:
-    """Render Rich markup to an ANSI string (no trailing newline)."""
-    from rich.console import Console
-    from ..theme import MINION_THEME as _THEME
-    buf = io.StringIO()
-    Console(
-        file=buf, force_terminal=True, color_system="truecolor",
-        width=width, highlight=False, markup=True, theme=_THEME,
-    ).print(markup, end="")
-    return buf.getvalue()
+def render_rich(markup: str) -> "Text":
+    """Parse Rich markup into a Text object (no Console, no width).
+
+    Custom theme styles (muted, primary, …) are resolved at render time by
+    Textual's console, which has MINION_THEME pushed in MinionApp.on_mount().
+    """
+    from rich.text import Text
+    try:
+        return Text.from_markup(markup)
+    except Exception:
+        return Text(markup)
 
 
-def render_markdown(text: str, width: int = 120) -> str:
-    """Render Markdown to ANSI via Rich (Rich adds its own trailing newlines)."""
-    from rich.console import Console
+def render_markdown(text: str) -> "Markdown":
+    """Wrap text in a Rich Markdown object (no Console, no width)."""
     from rich.markdown import Markdown
-    buf = io.StringIO()
-    Console(
-        file=buf, force_terminal=True, color_system="truecolor",
-        width=width, highlight=False,
-    ).print(Markdown(text), end="")
-    return buf.getvalue()
+    return Markdown(text)
 
 
 # ── Turn renderers ────────────────────────────────────────────────────────────
 
-def user_turn(text: str, width: int = 120) -> str:
+def user_turn(text: str) -> "Group":
     """Render a user turn: dim rule + gold accent bar + message.
 
     Layout:
@@ -66,72 +67,64 @@ def user_turn(text: str, width: int = 120) -> str:
         ▌ you › message text here
     Multi-line inputs are indented to align under the first line.
     """
-    from rich.console import Console
+    from rich.console import Group
     from rich.rule import Rule
-    _rbuf = io.StringIO()
-    Console(file=_rbuf, force_terminal=True, color_system="truecolor",
-            width=width, highlight=False).print(Rule(style=RULE_STYLE))
-    rule = _rbuf.getvalue().rstrip("\n")
+    from rich.text import Text
     lines = text.strip().split("\n")
-    first = f"[{ACCENT_STYLE}]▌[/] [{YOU_STYLE}]you[/] [{SEP_STYLE}]›[/] " + lines[0]
+    msg = Text()
+    msg.append("▌", style=ACCENT_STYLE)
+    msg.append(" ")
+    msg.append("you", style=YOU_STYLE)
+    msg.append(" › ", style=SEP_STYLE)
+    msg.append(lines[0])
     for line in lines[1:]:
-        first += "\n  " + " " * 6 + line   # align continuation under first-line text
-    try:
-        msg = render_rich(first, width)
-    except Exception:
-        msg = f"▌ you › {text}"
-    return rule + "\n" + msg
+        msg.append("\n        " + line)   # 8-space indent aligns with first line
+    return Group(Rule(style=RULE_STYLE), msg)
 
 
-def assistant_turn(text: str, width: int = 120) -> str:
-    """Render a complete assistant turn (blue ▌ bar + prefix + rendered markdown).
-
-    Returns the combined string; trailing newlines come from Rich's markdown
-    renderer and are preserved as-is.
-    """
-    try:
-        prefix = render_rich(
-            f"[{ACCENT_BLUE}]▌[/] [{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/]", width
-        )
-        md     = render_markdown(text, width)
-        # Strip prefix's own trailing newline (end="" doesn't always prevent it)
-        # and markdown's leading newline, then join with a space.
-        return prefix.rstrip("\n") + " " + md.lstrip("\n")
-    except Exception:
-        return render_rich(
-            f"[{ACCENT_BLUE}]▌[/] [{MINION_STYLE}]minion[/] [{SEP_STYLE}]›[/] {text}", width
-        )
+def assistant_turn(text: str) -> "Group":
+    """Render a complete assistant turn (blue ▌ bar + prefix + rendered markdown)."""
+    from rich.console import Group
+    from rich.markdown import Markdown
+    from rich.text import Text
+    # end="" so the prefix shares the first line with the Markdown body
+    prefix = Text(end="")
+    prefix.append("▌", style=ACCENT_BLUE)
+    prefix.append(" ")
+    prefix.append("minion", style=MINION_STYLE)
+    prefix.append(" › ", style=SEP_STYLE)
+    return Group(prefix, Markdown(text))
 
 
-def tool_call_line(name: str, key_arg: str = "", width: int = 120) -> str:
+def tool_call_line(name: str, key_arg: str = "") -> "Text":
     """Render the "⚙  name  arg" pending line."""
-    detail = f"  {key_arg}" if key_arg else ""
-    markup = f"  [{TOOL_ICON}]⚙[/]  [bold]{name}[/][{TOOL_DETAIL}]{detail}[/]"
-    try:
-        return render_rich(markup, width)
-    except Exception:
-        return f"  ⚙  {name}{detail}"
+    from rich.text import Text
+    t = Text()
+    t.append("  ")
+    t.append("⚙", style=TOOL_ICON)
+    t.append("  ")
+    t.append(name, style="bold")
+    if key_arg:
+        t.append("  " + key_arg, style=TOOL_DETAIL)
+    return t
 
 
-def tool_result_line(success: bool, summary: str = "", width: int = 120) -> str:
+def tool_result_line(success: bool, summary: str = "") -> "Text":
     """Render the "   └─ ✓/✗  summary" result line."""
-    icon   = "✓" if success else "✗"
-    color  = TOOL_OK if success else TOOL_ERR
-    markup = f"     └─ [{color}]{icon}[/]"
+    from rich.text import Text
+    icon  = "✓" if success else "✗"
+    color = TOOL_OK if success else TOOL_ERR
+    t = Text()
+    t.append("     └─ ")
+    t.append(icon, style=color)
     if summary:
-        markup += f"  [{TOOL_DETAIL}]{summary}[/]"
-    try:
-        return render_rich(markup, width)
-    except Exception:
-        return f"     └─ {icon} {summary}"
+        t.append("  " + summary, style=TOOL_DETAIL)
+    return t
 
 
-def system_message(rich_markup: str, width: int = 120) -> str:
-    """Render a system/status message from Rich markup (no trailing newline)."""
-    try:
-        return render_rich(rich_markup, width)
-    except Exception:
-        return rich_markup
+def system_message(rich_markup: str) -> "Text":
+    """Parse Rich markup into a Text object for system/status messages."""
+    return render_rich(rich_markup)
 
 
 # ── Inspector transcript rendering ────────────────────────────────────────────
@@ -150,7 +143,7 @@ def render_message_blocks(
       - role=asst   / type=blocks → text blocks + tool_use blocks (⚙ icon)
       - role=user   / type=blocks → tool_result blocks (✓ icon)
     """
-    from ..output.display_utils import _trunc, format_tool_args, tool_name_style, tool_slot_header_frags
+    from ..output.display_utils import _trunc, tool_slot_header_frags
     from ..theme import GREEN as _GREEN
 
     lines: list[list[tuple[str, str]]] = []

@@ -241,16 +241,21 @@ def get_greeting_renderables(
         max_val=40,
     )
 
+    # Text(" ") gives a 1-line-tall blank Static widget in Textual.
+    # Plain "" renders as zero height — no visible gap appears.
+    def _blank() -> Text:
+        return Text(" ")
+
     return [
-        "",
+        _blank(),
         Align(art, align="center"),
         Align(_build_greeting_text(), align="center"),
-        "",
+        _blank(),
         Rule(style=SILVER),
         _build_info_panel_renderable(session_rows),
-        "",
+        _blank(),
         Rule(style=SILVER),
-        "",
+        _blank(),
     ]
 
 

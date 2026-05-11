@@ -1,7 +1,7 @@
 """MinionApp — the Textual Application that owns the terminal in TUI mode.
 
 Layout (vertical stack):
-  ConversationArea  — ConversationLog for all turns including live streaming
+  ConversationArea  — VerticalScroll; each content block is a child Static widget
   SlotsZone         — live parallel agent/tool status (hidden when idle)
   InspectorZone     — subagent transcript viewer (hidden by default)
   InputSection      — switches between InputRow (normal) and PermissionContent
@@ -17,20 +17,18 @@ Non-TTY or MINION_NO_TUI=1: this module is not used; the console path
 from __future__ import annotations
 
 import asyncio
-import io
 import sys
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from rich.text import Text
+from rich.console import RenderableType
 from textual.app import App, ComposeResult
-from textual.geometry import Size
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.events import Key
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import OptionList, RichLog, Static, TextArea
+from textual.widgets import OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .agent_registry import get_registry
@@ -68,51 +66,25 @@ class TuiUpdateCompletion(Message):
 
 # ── Custom widget classes ─────────────────────────────────────────────────────
 
-class ConversationLog(RichLog):
-    """RichLog with checkpoint-based line removal for thinking/streaming animation."""
+class ConversationArea(VerticalScroll):
+    """Scrollable conversation — each content block is a child Static widget.
 
-    def checkpoint(self) -> int:
-        """Return the current line count as a revert point."""
-        return len(self.lines)
+    append_block() mounts a new Static and scrolls to bottom.
+    Thinking / streaming widgets are mounted and removed in-place so they
+    always appear immediately after the last committed message.
+    """
 
-    def pop_to(self, n: int) -> None:
-        """Remove all lines after index n."""
-        if n >= len(self.lines):
-            return
-        self.lines = self.lines[:n]
-        self._line_cache.clear()   # stale cache entries must be evicted or old strips re-appear
-        self.virtual_size = Size(self.virtual_size.width, len(self.lines))
-        self.refresh()
-
-
-class ConversationArea(Widget):
-    """Hosts the ConversationLog — completed turns and live streaming/thinking."""
-
-    def compose(self) -> ComposeResult:
-        yield ConversationLog(markup=True, highlight=False, auto_scroll=True, id="rich-log")
-
-    def write_ansi(self, ansi: str) -> None:
-        rl = self.query_one(ConversationLog)
-        # Strip the one trailing \n that _emit guarantees on every call so it
-        # doesn't produce a spurious blank line.  Intentional blank lines
-        # (extra \n in the middle or from append_user's trailing "\n\n") are
-        # preserved because we split and write each line separately — that way
-        # blank lines become explicit rl.write("") calls which reliably
-        # produce Strip.blank entries in the RichLog.
-        if ansi.endswith("\n"):
-            ansi = ansi[:-1]
-        for line in ansi.split("\n"):
-            rl.write(Text.from_ansi(line), expand=True)
-
-    def write_markup(self, markup: str) -> None:
-        self.query_one(ConversationLog).write(markup)
+    def append_block(self, renderable: RenderableType) -> Static:
+        """Mount a new Static block and scroll to the bottom."""
+        widget = Static(renderable)
+        self.mount(widget)
+        self.scroll_end(animate=False, x_axis=False)
+        return widget
 
     def clear_log(self) -> None:
-        self.query_one(ConversationLog).clear()
-
-
-class StreamingZone(Static):
-    """Live in-progress assistant response / thinking indicator."""
+        """Remove all child widgets and reset scroll position."""
+        self.remove_children()
+        self.scroll_home(animate=False)
 
 
 class SlotsZone(Static):
@@ -258,12 +230,9 @@ class MinionApp(App):
         self._think_timer    = None
         self._current_task: Optional[asyncio.Task] = None
 
-        # Streaming-to-RichLog state
-        self._pre_thinking_cp:             int  = 0
-        self._streaming_lines_cp:          int  = 0
-        self._streaming_started:           bool = False
-        self._streaming_synced_text:       str  = ""
-        self._thinking_written_to_richlog: bool = False
+        # Live animation widgets — mounted as children of ConversationArea
+        self._thinking_widget:  Optional[Static] = None
+        self._streaming_widget: Optional[Static] = None
 
         self._on_submit: Optional[Callable[[str], Awaitable[None]]] = None
         self._on_quit:   Optional[Callable[[], Awaitable[None]]]    = None
@@ -289,7 +258,7 @@ class MinionApp(App):
 
         # Wire conversation callbacks
         self.conversation.set_callbacks(
-            write_ansi_fn=self._write_ansi,
+            write_block_fn=self._write_block,
             refresh_fn=self._refresh_streaming,
             pre_finalize_fn=self._pre_finalize_streaming,
         )
@@ -348,10 +317,15 @@ class MinionApp(App):
         self._status_line        = self.query_one("#status-line",        StatusLine)
         self._input_area         = self.query_one("#input-area",         InputArea)
 
+        # Push MINION_THEME onto Textual's shared console so that custom style
+        # names (muted, primary, …) resolve correctly when Static widgets render
+        # Text objects that contain those markup tags.
+        from ..theme.palette import MINION_THEME as _MT
+        self.console.push_theme(_MT)
+
         import shutil as _shutil
         cols = _shutil.get_terminal_size().columns or 120
         self._terminal_width = cols
-        self.conversation.set_width(cols)
         self.status.set_width(cols)
 
         # Initially hidden zones (PermissionContent starts hidden via CSS)
@@ -368,7 +342,6 @@ class MinionApp(App):
 
     def on_resize(self, event) -> None:
         self._terminal_width = event.size.width
-        self.conversation.set_width(event.size.width)
         self.status.set_width(event.size.width)
         self._refresh_status()
 
@@ -404,6 +377,8 @@ class MinionApp(App):
 
     def action_clear_conversation(self) -> None:
         self.conversation.clear()
+        self._thinking_widget  = None
+        self._streaming_widget = None
         if self._conv_area is not None:
             self._conv_area.clear_log()
 
@@ -565,37 +540,25 @@ class MinionApp(App):
     # ── Thinking animation ────────────────────────────────────────────────────
 
     def _tick_thinking(self) -> None:
-        """Animate the thinking indicator in ConversationLog (runs on event loop)."""
-        if self._streaming_started:
-            return  # streaming phase owns the RichLog from here on
+        """Animate the thinking widget (runs on event loop at 0.25s intervals)."""
         if not self.conversation._is_thinking:
             return
-        if self._conv_area is None:
+        if self.conversation._is_streaming:
+            return  # streaming phase owns its own widget
+        if self._thinking_widget is None:
             return
-        try:
-            rl = self._conv_area.query_one(ConversationLog)
-            markup = self.conversation.get_streaming_markup()
-            rl.pop_to(self._pre_thinking_cp)
-            rl.write(Text.from_markup(markup))
-        except Exception:
-            pass
+        self._thinking_widget.update(self.conversation.get_streaming_renderable())
 
     def _set_thinking(self, thinking: bool) -> None:
         self._thinking = thinking
         self.conversation.set_thinking(thinking)
         self.status.set_thinking(thinking)
+        self._refresh_status()
         if thinking:
             if self._conv_area is not None:
-                try:
-                    rl = self._conv_area.query_one(ConversationLog)
-                    self._pre_thinking_cp             = rl.checkpoint()
-                    self._streaming_started           = False
-                    self._streaming_synced_text       = ""
-                    self._streaming_lines_cp          = 0
-                    self._thinking_written_to_richlog = True
-                    rl.write(Text.from_markup(self.conversation.get_streaming_markup()))
-                except Exception:
-                    pass
+                self._thinking_widget = self._conv_area.append_block(
+                    self.conversation.get_streaming_renderable()
+                )
             if self._think_timer is not None:
                 try:
                     self._think_timer.resume()
@@ -607,117 +570,99 @@ class MinionApp(App):
                     self._think_timer.pause()
                 except Exception:
                     pass
+            self._dismiss_thinking()
+
+    # ── Transient widget helpers ──────────────────────────────────────────────
+
+    def _dismiss_thinking(self) -> None:
+        """Remove the thinking indicator widget if present."""
+        if self._thinking_widget is not None:
+            try:
+                self._thinking_widget.remove()
+            except Exception:
+                pass
+            self._thinking_widget = None
+
+    def _dismiss_streaming(self) -> None:
+        """Remove the streaming preview widget if present."""
+        if self._streaming_widget is not None:
+            try:
+                self._streaming_widget.remove()
+            except Exception:
+                pass
+            self._streaming_widget = None
 
     # ── Write paths ───────────────────────────────────────────────────────────
 
-    def _write_ansi(self, ansi: str) -> None:
-        """Write ANSI content to the RichLog. Thread-safe."""
+    def _write_block(self, block) -> None:
+        """Append a Rich renderable block as a new Static widget. Thread-safe.
+
+        Called by ConversationBuffer._emit() from both the event loop (streaming)
+        and worker threads (tool calls, system messages).
+        """
         if self._conv_area is None:
-            sys.stdout.write(ansi)
-            sys.stdout.flush()
+            from rich.console import Console
+            Console().print(block)
             return
+
+        def _do() -> None:
+            self._dismiss_thinking()
+            if self._conv_area is not None:
+                self._conv_area.append_block(block)
+
         try:
             asyncio.get_running_loop()
-            # On the event loop — direct call
-            self._conv_area.write_ansi(ansi)
+            _do()
         except RuntimeError:
-            # Worker thread
-            self.call_from_thread(self._conv_area.write_ansi, ansi)
+            self.call_from_thread(_do)
 
     def _print_ansi_to_scrollback(self, ansi: str) -> None:
         """External path: marks conversation.mark_printed() then writes."""
+        from rich.text import Text
         self.conversation.mark_printed()
-        self._write_ansi(ansi)
+        block = Text.from_ansi(ansi.rstrip("\n")) if ansi.strip() else Text(" ")
+        self._write_block(block)
 
     def _write_markup(self, markup: str) -> None:
-        """Render Rich markup to ANSI and write directly to RichLog (no mark_printed)."""
-        from rich.console import Console as _RC
-        buf = io.StringIO()
-        c = _RC(
-            file=buf,
-            force_terminal=True,
-            color_system="truecolor",
-            width=self._terminal_width,
-            highlight=False,
-        )
-        c.print(markup)
-        self._write_ansi(buf.getvalue())
+        """Parse Rich markup and write to the conversation."""
+        from .render import render_rich as _render_rich
+        self._write_block(_render_rich(markup))
 
     # ── Refresh helpers ───────────────────────────────────────────────────────
 
     def _refresh_streaming(self) -> None:
-        """Sync in-progress streaming text into ConversationLog (thinking+streaming)."""
+        """Create or update the streaming preview widget. Thread-safe."""
         if not self.conversation._is_streaming:
             return
-        if self._conv_area is None:
-            return
 
-        def _do_sync() -> None:
-            try:
-                rl = self._conv_area.query_one(ConversationLog)  # type: ignore[union-attr]
-            except Exception:
-                return
+        renderable = self.conversation.get_streaming_renderable()
 
-            if not self._streaming_started:
-                # First chunk: pop thinking indicator and record start point
-                if self._thinking_written_to_richlog:
-                    rl.pop_to(self._pre_thinking_cp)
-                self._streaming_started     = True
-                self._streaming_synced_text = ""
-                self._streaming_lines_cp    = rl.checkpoint()
-
-            with self.conversation._lock:
-                full_text = self.conversation._streaming_text
-
-            new_text = full_text[len(self._streaming_synced_text):]
-
-            if "\n" in new_text:
-                new_lines = new_text.split("\n")
-                # Pop previous partial line
-                rl.pop_to(self._streaming_lines_cp)
-                # Write all newly completed lines
-                for line in new_lines[:-1]:
-                    rl.write(Text(line), expand=True)
-                self._streaming_synced_text = full_text[: len(full_text) - len(new_lines[-1])]
-                self._streaming_lines_cp    = rl.checkpoint()
-                partial = new_lines[-1]
-            else:
-                # No new complete lines — just refresh the partial line
-                rl.pop_to(self._streaming_lines_cp)
-                partial = full_text[len(self._streaming_synced_text):]
-
-            if partial:
-                rl.write(Text("▌ minion › " + partial, style="bold #1E90FF"), expand=True)
-
-        try:
-            asyncio.get_running_loop()
-            _do_sync()
-        except RuntimeError:
-            self.call_from_thread(_do_sync)
-
-    def _pre_finalize_streaming(self) -> None:
-        """Pop all thinking/streaming lines from ConversationLog before final render."""
-        if not self._thinking_written_to_richlog:
-            return
-
-        def _do_pop() -> None:
+        def _do() -> None:
             if self._conv_area is None:
                 return
-            try:
-                rl = self._conv_area.query_one(ConversationLog)
-                rl.pop_to(self._pre_thinking_cp)
-            except Exception:
-                pass
-            self._thinking_written_to_richlog = False
-            self._streaming_started           = False
-            self._streaming_synced_text       = ""
-            self._streaming_lines_cp          = 0
+            self._dismiss_thinking()
+            if self._streaming_widget is None:
+                self._streaming_widget = self._conv_area.append_block(renderable)
+            else:
+                self._streaming_widget.update(renderable)
+                self._conv_area.scroll_end(animate=False, x_axis=False)
 
         try:
             asyncio.get_running_loop()
-            _do_pop()
+            _do()
         except RuntimeError:
-            self.call_from_thread(_do_pop)
+            self.call_from_thread(_do)
+
+    def _pre_finalize_streaming(self) -> None:
+        """Remove the streaming preview widget before the final render is written."""
+        def _do() -> None:
+            self._dismiss_streaming()
+
+        try:
+            asyncio.get_running_loop()
+            _do()
+        except RuntimeError:
+            self.call_from_thread(_do)
 
     def _refresh_status(self) -> None:
         if self._status_line is None:
@@ -774,7 +719,8 @@ class MinionApp(App):
         self.refresh()
 
     def scroll_to_bottom(self) -> None:
-        pass  # RichLog auto-scrolls
+        if self._conv_area is not None:
+            self._conv_area.scroll_end(animate=False, x_axis=False)
 
     async def flush_writes_async(self) -> None:
         pass  # no-op — Textual renders per frame
@@ -796,44 +742,22 @@ class MinionApp(App):
         self.print_renderable(rich_text)
 
     def print_renderable(self, renderable) -> None:
-        """Render any Rich renderable and write it to the RichLog."""
-        from rich.console import Console as _RC
-        try:
-            from ..theme import MINION_THEME as _THEME
-            theme_kwarg: dict = {"theme": _THEME}
-        except Exception:
-            theme_kwarg = {}
-        buf = io.StringIO()
-        c = _RC(
-            file=buf,
-            force_terminal=True,
-            color_system="truecolor",
-            width=self._terminal_width,
-            highlight=False,
-            **theme_kwarg,
-        )
-        c.print(renderable)
-        self._print_ansi_to_scrollback(buf.getvalue())
+        """Write any Rich renderable directly to the conversation."""
+        self.conversation.mark_printed()
+        self._write_block(renderable)
 
     # ── Banner ────────────────────────────────────────────────────────────────
 
     def _write_banner(self) -> None:
-        """Write the greeting banner to the RichLog on startup."""
+        """Mount greeting banner blocks into ConversationArea on startup."""
         try:
             from rich.rule import Rule as _Rule
-            from rich.text import Text as _Text
             from ..theme.banner import get_greeting_renderables as _get_renderables
             from ..theme.palette import SILVER as _SILVER
 
             if self._conv_area is None:
                 return
-            rl = self._conv_area.query_one(ConversationLog)
 
-            # expand=True is essential: without it, Table.grid renders at minimum
-            # measured width instead of filling the content area. expand=True is
-            # stored in the DeferredRender queue if _size_known is still False
-            # (writes in on_mount are deferred until the RichLog's first Resize),
-            # so the correct width is used whenever the size becomes available.
             for r in _get_renderables(
                 model=self.status._model,
                 provider=self.status._provider,
@@ -845,14 +769,14 @@ class MinionApp(App):
                 a2a_count=self.status._a2a_count,
                 version=self.status._version,
             ):
-                rl.write(r, expand=True)
+                self._conv_area.append_block(r)
 
-            # Startup warnings (MCP connection errors, MINION.md tip, etc.)
             if self._startup_warnings:
+                from .render import render_rich as _render_rich
+                from rich.text import Text as _Text
                 for w in self._startup_warnings:
-                    rl.write(w, expand=True)
-                rl.write("", expand=True)
-                rl.write(_Rule(style=_SILVER), expand=True)
-                rl.write("", expand=True)
+                    self._conv_area.append_block(_render_rich(w))
+                self._conv_area.append_block(_Text(" "))
+                self._conv_area.append_block(_Rule(style=_SILVER))
         except Exception:
             pass

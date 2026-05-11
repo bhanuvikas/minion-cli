@@ -2,7 +2,7 @@
 
 Responsibilities:
   • Track the in-progress streaming assistant turn (shown in StreamingZone).
-  • Route completed turns to the RichLog via write_ansi_fn callback.
+  • Route completed turns to ConversationArea via write_block_fn callback.
   • Enforce consistent vertical spacing between turn types.
 
 Spacing contract
@@ -13,7 +13,7 @@ Spacing contract
   system/ansi no extra spacing — content controls its own margins
 
 Rendering is fully delegated to tui/render.py.
-This module contains NO Rich/ANSI rendering logic.
+This module contains NO ANSI rendering logic.
 """
 
 from __future__ import annotations
@@ -59,17 +59,16 @@ from . import render as _r
 
 
 class ConversationBuffer:
-    """Routes completed turns to the RichLog; holds streaming turn in-memory.
+    """Routes completed turns to ConversationArea; holds streaming turn in-memory.
 
     Wire up set_callbacks() before first use.  MinionApp calls mark_printed()
-    whenever it writes to the RichLog via print_renderable() so that
+    whenever it writes to the conversation via print_renderable() so that
     finalize_turn() can insert a blank line between tool output and the
     assistant response.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._width: int = 120
 
         # ── Streaming state (rendered live in StreamingZone) ──────────────────
         self._streaming_text: str = ""
@@ -85,31 +84,32 @@ class ConversationBuffer:
         self._pre_finalize_fn: Optional[Callable[[], None]] = None
 
         # ── Callbacks wired by MinionApp ──────────────────────────────────────
-        self._write_ansi_fn:  Optional[Callable[[str], None]] = None
-        self._refresh_fn:     Optional[Callable[[], None]]    = None
+        self._write_block_fn: Optional[Callable] = None
+        self._refresh_fn:     Optional[Callable[[], None]] = None
 
     def set_callbacks(
         self,
-        write_ansi_fn: Callable[[str], None],
+        write_block_fn: Callable,
         refresh_fn: Callable[[], None],
         # flush_fn kept for API compatibility — no-op in Textual (renders per frame)
         flush_fn: Optional[Callable[[], None]] = None,
         pre_finalize_fn: Optional[Callable[[], None]] = None,
     ) -> None:
-        self._write_ansi_fn    = write_ansi_fn
+        self._write_block_fn   = write_block_fn
         self._refresh_fn       = refresh_fn
         self._pre_finalize_fn  = pre_finalize_fn
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _emit(self, ansi: str) -> None:
-        """Push ANSI to the RichLog. Guarantees exactly one trailing newline."""
-        if not ansi:
-            return
-        if not ansi.endswith("\n"):
-            ansi += "\n"
-        if self._write_ansi_fn:
-            self._write_ansi_fn(ansi)
+    def _emit(self, block) -> None:
+        """Route a Rich renderable block to the write callback."""
+        if self._write_block_fn:
+            self._write_block_fn(block)
+
+    def _blank(self):
+        """Return a single blank-row renderable."""
+        from rich.text import Text
+        return Text(" ")
 
     def _refresh(self) -> None:
         if self._refresh_fn:
@@ -118,15 +118,16 @@ class ConversationBuffer:
     # ── External-print notification ───────────────────────────────────────────
 
     def mark_printed(self) -> None:
-        """Called by MinionApp whenever print_renderable() writes to the RichLog."""
+        """Called by MinionApp whenever print_renderable() writes to the conversation."""
         self._had_external_print = True
 
     # ── Append API ────────────────────────────────────────────────────────────
 
     def append_user(self, text: str) -> None:
         """Emit a user turn with blank line before and after."""
-        ansi = _r.user_turn(text, self._width)
-        self._emit("\n" + ansi + "\n\n")
+        self._emit(self._blank())
+        self._emit(_r.user_turn(text))
+        self._emit(self._blank())
         with self._lock:
             self._last_was_assistant = False
             self._had_external_print = False
@@ -142,7 +143,7 @@ class ConversationBuffer:
             self._last_was_assistant = False
             self._gap_emitted    = False
         if had_print and not gap_already:
-            self._emit("\n")
+            self._emit(self._blank())
         self._refresh()
 
     def stream_chunk(self, chunk: str) -> None:
@@ -152,7 +153,7 @@ class ConversationBuffer:
         self._refresh()
 
     def finalize_turn(self) -> None:
-        """Commit the complete assistant response to the RichLog."""
+        """Commit the complete assistant response to the conversation."""
         with self._lock:
             text = self._streaming_text
             self._is_streaming   = False
@@ -160,7 +161,7 @@ class ConversationBuffer:
         if self._pre_finalize_fn:
             self._pre_finalize_fn()
         if text:
-            self._emit(_r.assistant_turn(text, self._width))
+            self._emit(_r.assistant_turn(text))
         with self._lock:
             self._last_was_assistant = True
         self._refresh()
@@ -171,14 +172,21 @@ class ConversationBuffer:
             was_assist = self._last_was_assistant
             self._last_was_assistant = False
             self._had_external_print = True
-        prefix = "\n" if was_assist else ""
-        self._emit(prefix + _r.system_message(rich_markup, self._width))
+        if was_assist:
+            self._emit(self._blank())
+        self._emit(_r.system_message(rich_markup))
 
     def append_ansi(self, ansi: str) -> None:
         """Emit a pre-rendered ANSI string (slash command output, etc.)."""
+        from rich.text import Text
         with self._lock:
             self._last_was_assistant = False
-        self._emit(ansi)
+        block = Text.from_ansi(ansi.rstrip("\n")) if ansi.strip() else self._blank()
+        self._emit(block)
+
+    def append_block(self, block) -> None:
+        """Emit any Rich renderable directly. Used by TuiRenderer for custom blocks."""
+        self._emit(block)
 
     # ── Tool call API ─────────────────────────────────────────────────────────
 
@@ -187,11 +195,11 @@ class ConversationBuffer:
             idx = getattr(self, "_next_tool_idx", 0)
             setattr(self, "_next_tool_idx", idx + 1)
             self._had_external_print = True
-        self._emit(_r.tool_call_line(name, key_arg, self._width))
+        self._emit(_r.tool_call_line(name, key_arg))
         return idx
 
     def resolve_tool_call(self, idx: int, success: bool, summary: str = "") -> None:
-        self._emit(_r.tool_result_line(success, summary, self._width))
+        self._emit(_r.tool_result_line(success, summary))
 
     def has_pending_tools(self) -> bool:
         return False
@@ -204,7 +212,7 @@ class ConversationBuffer:
 
     def emit_spacer(self) -> None:
         """Emit a blank line and mark gap so start_assistant_turn() skips its own."""
-        self._emit("\n")
+        self._emit(self._blank())
         with self._lock:
             self._gap_emitted = True
 
@@ -218,11 +226,10 @@ class ConversationBuffer:
             self._gap_emitted        = False
 
     def scroll_to_bottom(self) -> None:
-        pass  # RichLog handles auto-scroll
+        pass  # ConversationArea handles auto-scroll
 
     def set_width(self, width: int) -> None:
-        with self._lock:
-            self._width = max(40, width)
+        pass  # vestigial — width is now determined by Textual CSS layout
 
     # ── StreamingZone render ──────────────────────────────────────────────────
 
@@ -231,39 +238,39 @@ class ConversationBuffer:
         with self._lock:
             return self._is_streaming or self._is_thinking
 
-    def get_streaming_markup(self) -> str:
-        """Return Rich markup string for the live StreamingZone Static widget."""
+    def get_streaming_renderable(self):
+        """Return a Rich renderable for the live StreamingZone Static widget."""
+        from rich.text import Text
         with self._lock:
             text         = self._streaming_text
-            width        = self._width
             is_thinking  = self._is_thinking
             is_streaming = self._is_streaming
 
         if not is_thinking and not is_streaming:
-            return " "   # single space keeps the zone at height=1
+            return Text(" ")   # single space keeps the zone at height=1
 
         if is_thinking and not is_streaming:
             t      = _time.monotonic()
             frame  = _THINK_FRAMES[int(t * 4) % len(_THINK_FRAMES)]
             phrase = _THINK_PHRASES[int(t * 0.5) % len(_THINK_PHRASES)]
-            return f"[bold #1E90FF]{frame}[/]  [italic #1E90FF]{phrase}[/]"
+            result = Text()
+            result.append(frame, style="bold #1E90FF")
+            result.append("  ")
+            result.append(phrase, style="italic #1E90FF")
+            return result
 
-        # Normal streaming phase
-        prefix = "[bold #1E90FF]▌ minion ›[/] "
+        # Normal streaming phase — end="" so prefix shares first line with Markdown
+        prefix = Text(end="")
+        prefix.append("▌ minion ›", style="bold #1E90FF")
+        prefix.append(" ")
         if not text:
-            return prefix + "[#C0C0C0]…[/]"
+            prefix.append("…", style="#C0C0C0")
+            return prefix
 
-        visible = "\n".join(text.split("\n")[-12:])
-        try:
-            ansi = _r.render_markdown(visible, width).rstrip("\n")
-            # Return as plain text (ANSI may not render in Static markup mode)
-            # Fall back to stripping ANSI for simplicity
-            import re as _re
-            plain = _re.sub(r"\x1b\[[0-9;]*m", "", ansi)
-            return prefix + plain
-        except Exception:
-            return prefix + visible
+        from rich.console import Group
+        from rich.markdown import Markdown
+        return Group(prefix, Markdown("\n".join(text.split("\n")[-12:])))
 
     @property
     def is_empty(self) -> bool:
-        return True  # history lives in the RichLog widget
+        return True  # history lives in the ConversationArea widget

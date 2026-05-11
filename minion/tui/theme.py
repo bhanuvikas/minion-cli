@@ -28,19 +28,17 @@ Screen {{
 
 ConversationArea {{
     height: 1fr;
-    layout: vertical;
-}}
-
-RichLog {{
-    height: 1fr;
-    background: transparent;
-    overflow-x: hidden;
     padding: 0 1;
     scrollbar-size-vertical: 1;
     scrollbar-background: #111111;
     scrollbar-color: #2a2a2a;
     scrollbar-color-hover: #444444;
     scrollbar-color-active: {DIM};
+}}
+
+ConversationArea > Static {{
+    height: auto;
+    width: 1fr;
 }}
 
 SlotsZone {{

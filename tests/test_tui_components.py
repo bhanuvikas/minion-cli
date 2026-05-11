@@ -2,7 +2,7 @@
 
 All tests here are pure Python — no Textual runtime, no real TTY.
 Covers:
-  - ConversationBuffer  (get_streaming_markup, append_*, stream_chunk, finalize_turn)
+  - ConversationBuffer  (get_streaming_renderable, append_*, stream_chunk, finalize_turn)
   - SlotsManager        (pre_register, make_callback, get_rich_text, clear)
   - StatusBar           (get_rich_markup)
   - PermissionPanel     (get_rich_markup, confirm_by_index, move_cursor, deny)
@@ -24,36 +24,51 @@ class TestConversationBufferStreamingMarkup:
         self.buf = ConversationBuffer()
 
     def test_idle_returns_single_space(self):
-        assert self.buf.get_streaming_markup() == " "
+        from rich.text import Text
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Text)
+        assert result.plain == " "
 
     def test_thinking_returns_blue_animation_markup(self):
+        from rich.text import Text
         self.buf.set_thinking(True)
-        markup = self.buf.get_streaming_markup()
-        assert "[bold #1E90FF]" in markup
-        assert "[italic #1E90FF]" in markup
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Text)
+        assert result.plain.strip()  # has animation content
 
     def test_streaming_with_text_shows_minion_prefix(self):
+        from rich.console import Group
         self.buf._is_streaming = True
         self.buf._streaming_text = "Hello world"
-        markup = self.buf.get_streaming_markup()
-        assert "▌ minion ›" in markup
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Group)
+        prefix = result.renderables[0]
+        assert "▌ minion ›" in prefix.plain
 
     def test_streaming_with_text_includes_content(self):
+        from rich.console import Group
+        from rich.markdown import Markdown
         self.buf._is_streaming = True
         self.buf._streaming_text = "Hello world"
-        markup = self.buf.get_streaming_markup()
-        assert "Hello" in markup
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Group)
+        assert isinstance(result.renderables[1], Markdown)
 
     def test_streaming_empty_text_shows_ellipsis(self):
+        from rich.text import Text
         self.buf._is_streaming = True
         self.buf._streaming_text = ""
-        markup = self.buf.get_streaming_markup()
-        assert "…" in markup
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Text)
+        assert "…" in result.plain
 
     def test_set_thinking_false_returns_single_space(self):
+        from rich.text import Text
         self.buf.set_thinking(True)
         self.buf.set_thinking(False)
-        assert self.buf.get_streaming_markup() == " "
+        result = self.buf.get_streaming_renderable()
+        assert isinstance(result, Text)
+        assert result.plain == " "
 
     def test_stream_chunk_accumulates(self):
         self.buf._is_streaming = True
@@ -62,8 +77,8 @@ class TestConversationBufferStreamingMarkup:
         assert self.buf._streaming_text == "Hello World"
 
     def test_finalize_turn_clears_streaming_text(self):
-        writes: list[str] = []
-        self.buf.set_callbacks(write_ansi_fn=writes.append, refresh_fn=lambda: None)
+        writes: list = []
+        self.buf.set_callbacks(write_block_fn=writes.append, refresh_fn=lambda: None)
         self.buf._is_streaming = True
         self.buf._streaming_text = "Some text"
         self.buf.finalize_turn()
@@ -71,30 +86,30 @@ class TestConversationBufferStreamingMarkup:
         assert not self.buf._is_streaming
 
     def test_finalize_turn_with_text_calls_write_fn(self):
-        writes: list[str] = []
-        self.buf.set_callbacks(write_ansi_fn=writes.append, refresh_fn=lambda: None)
+        writes: list = []
+        self.buf.set_callbacks(write_block_fn=writes.append, refresh_fn=lambda: None)
         self.buf._is_streaming = True
         self.buf._streaming_text = "Response text"
         self.buf.finalize_turn()
         assert len(writes) == 1
 
     def test_finalize_turn_empty_text_does_not_write(self):
-        writes: list[str] = []
-        self.buf.set_callbacks(write_ansi_fn=writes.append, refresh_fn=lambda: None)
+        writes: list = []
+        self.buf.set_callbacks(write_block_fn=writes.append, refresh_fn=lambda: None)
         self.buf._is_streaming = True
         self.buf._streaming_text = ""
         self.buf.finalize_turn()
         assert len(writes) == 0
 
     def test_append_user_calls_write_fn(self):
-        writes: list[str] = []
-        self.buf.set_callbacks(write_ansi_fn=writes.append, refresh_fn=lambda: None)
+        writes: list = []
+        self.buf.set_callbacks(write_block_fn=writes.append, refresh_fn=lambda: None)
         self.buf.append_user("hello user")
-        assert len(writes) == 1
+        assert len(writes) == 3  # blank, user_turn Group, blank
 
     def test_append_system_calls_write_fn(self):
-        writes: list[str] = []
-        self.buf.set_callbacks(write_ansi_fn=writes.append, refresh_fn=lambda: None)
+        writes: list = []
+        self.buf.set_callbacks(write_block_fn=writes.append, refresh_fn=lambda: None)
         self.buf.append_system("[bold]system message[/]")
         assert len(writes) == 1
 
@@ -112,10 +127,6 @@ class TestConversationBufferStreamingMarkup:
         assert not self.buf._is_thinking
         assert not self.buf._had_external_print
         assert not self.buf._last_was_assistant
-
-    def test_set_width_clamps_minimum(self):
-        self.buf.set_width(10)
-        assert self.buf._width >= 40
 
     def test_is_streaming_true_when_thinking(self):
         self.buf.set_thinking(True)

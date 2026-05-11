@@ -72,18 +72,18 @@ class TuiRenderer(OutputRenderer):
         self._app.invalidate()
 
     def on_tool_result(self, result: str, latency_ms: int = 0) -> None:
-        # Pre-render the ✓ line to ANSI so it lands in the scrollback buffer verbatim
         from .formatter import format_tool_result
-        from ..tui.render import render_rich as _render_rich
         from ..theme import GREEN as _GREEN
+        from rich.text import Text
         is_success = (
             latency_ms > 0
             and not result.startswith("Error:")
             and result != "User declined tool execution."
         )
         if is_success:
-            done_line = _render_rich(f"   [bold {_GREEN}]✓  done ({latency_ms / 1000:.1f}s)[/]")
-            self._app.conversation.append_ansi(done_line + "\n")
+            done = Text()
+            done.append(f"   ✓  done ({latency_ms / 1000:.1f}s)", style=f"bold {_GREEN}")
+            self._app.conversation.append_block(done)
         self._app.conversation.append_system(format_tool_result(result))
         self._app.invalidate()
 
