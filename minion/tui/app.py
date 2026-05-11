@@ -102,6 +102,8 @@ class PermissionContent(Static):
 class InputArea(TextArea):
     """Multiline input box with submit, newline-insert, and history navigation."""
 
+    cursor_type = "line"
+
     BINDINGS = [
         Binding("enter",  "submit_input",         "Submit",    priority=True, show=False),
         Binding("ctrl+j", "insert_newline",        "New line",  show=False),

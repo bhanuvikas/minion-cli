@@ -54,11 +54,18 @@ InspectorZone {{
 
 InputSection {{
     height: auto;
-    border-top: solid #2A2A2A;
+    margin-top: 1;
+    border-top: solid {SILVER};
+    border-bottom: solid {SILVER};
 }}
 
 InputSection.permission-active {{
     border-top: solid {BLUE};
+    border-bottom: solid {BLUE};
+}}
+
+InputArea > .text-area--cursor-line {{
+    background: transparent;
 }}
 
 PermissionContent {{
