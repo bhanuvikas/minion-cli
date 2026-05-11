@@ -105,10 +105,14 @@ class InputArea(TextArea):
     cursor_type = "line"
 
     BINDINGS = [
-        Binding("enter",  "submit_input",         "Submit",    priority=True, show=False),
-        Binding("ctrl+j", "insert_newline",        "New line",  show=False),
-        Binding("up",     "navigate_history_up",   "Hist ↑",    show=False),
-        Binding("down",   "navigate_history_down", "Hist ↓",    show=False),
+        Binding("enter",         "submit_input",         "Submit",      priority=True, show=False),
+        Binding("shift+enter",   "insert_newline",        "New line",    show=False),
+        Binding("ctrl+j",        "insert_newline",        "New line",    show=False),
+        Binding("up",            "navigate_history_up",   "Hist ↑",      show=False),
+        Binding("down",          "navigate_history_down", "Hist ↓",      show=False),
+        # Word deletion: alt+backspace = Option+Delete on macOS; ctrl+w = Unix
+        Binding("alt+backspace", "delete_word_left",      "Del word",    show=False),
+        Binding("ctrl+w",        "delete_word_left",      "Del word",    show=False),
     ]
 
     def on_mount(self) -> None:
@@ -252,10 +256,11 @@ class MinionApp(App):
     CSS = MINION_TCSS
 
     BINDINGS = [
-        Binding("ctrl+c", "cancel_or_quit",     "Cancel/Quit", show=False),
-        Binding("ctrl+l", "clear_conversation",  "Clear",       show=False),
-        Binding("ctrl+o", "toggle_inspector",    "Inspector",   show=False),
-        Binding("ctrl+e", "expand_inspector",    "Expand",      show=False),
+        Binding("ctrl+c", "cancel_or_quit",       "Cancel/Quit", show=False),
+        Binding("ctrl+l", "clear_conversation",    "Clear",       show=False),
+        Binding("ctrl+o", "toggle_inspector",      "Inspector",   show=False),
+        Binding("ctrl+e", "expand_inspector",      "Expand",      show=False),
+        Binding("ctrl+y", "copy_last_response",    "Copy",        show=False),
     ]
 
     def __init__(
@@ -448,6 +453,18 @@ class MinionApp(App):
         self.status.set_inspector_hint(self.inspector.hint())
         self._refresh_inspector()
         self._refresh_status()
+
+    def action_copy_last_response(self) -> None:
+        """Copy the last assistant response to the clipboard (OSC 52 / terminal clipboard)."""
+        text = self.conversation.last_assistant_text
+        if not text:
+            self.notify("No response to copy yet.", severity="warning", timeout=2)
+            return
+        try:
+            self.copy_to_clipboard(text)
+            self.notify("Last response copied to clipboard.", timeout=2)
+        except Exception:
+            self.notify("Copy not supported by your terminal.", severity="warning", timeout=3)
 
     # ── Key handler for permission + inspector navigation ─────────────────────
 
@@ -820,9 +837,16 @@ class MinionApp(App):
             ):
                 self._conv_area.append_block(r)
 
-            if self._startup_warnings:
-                from ..theme.banner import get_startup_warning_renderables as _get_warn
-                for r in _get_warn(self._startup_warnings):
-                    self._conv_area.append_block(r)
+            # Build warnings list: existing startup warnings + selection tip.
+            # All items use the same "  [bold YELLOW]Tip[/]  message" markup
+            # so they render consistently inside get_startup_warning_renderables().
+            from .terminal import get_selection_tip as _get_tip
+            from ..theme.palette import YELLOW as _YELLOW
+            _tip_markup = f"  [bold {_YELLOW}]Tip[/]  {_get_tip()}"
+            _all_warnings = list(self._startup_warnings) + [_tip_markup]
+
+            from ..theme.banner import get_startup_warning_renderables as _get_warn
+            for r in _get_warn(_all_warnings):
+                self._conv_area.append_block(r)
         except Exception:
             pass

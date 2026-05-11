@@ -75,6 +75,9 @@ class ConversationBuffer:
         self._is_streaming: bool = False
         self._is_thinking: bool = False   # true between submit and first token
 
+        # ── Last committed assistant text (for clipboard copy) ────────────────
+        self._last_assistant_text: str = ""
+
         # ── Spacing trackers ──────────────────────────────────────────────────
         self._had_external_print: bool = False
         self._last_was_assistant: bool = False
@@ -158,6 +161,8 @@ class ConversationBuffer:
             text = self._streaming_text
             self._is_streaming   = False
             self._streaming_text = ""
+            if text:
+                self._last_assistant_text = text
         if self._pre_finalize_fn:
             self._pre_finalize_fn()
         if text:
@@ -215,6 +220,12 @@ class ConversationBuffer:
         self._emit(self._blank())
         with self._lock:
             self._gap_emitted = True
+
+    @property
+    def last_assistant_text(self) -> str:
+        """Last committed assistant response text (for clipboard copy)."""
+        with self._lock:
+            return self._last_assistant_text
 
     def clear(self) -> None:
         with self._lock:
