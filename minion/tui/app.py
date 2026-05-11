@@ -133,6 +133,9 @@ class InputArea(TextArea):
         if word in _CMDS:
             self._highlights[0].append((0, len(word), "slash.cmd"))
 
+    # Set before load_text() so the resulting Changed event doesn't re-open the dropdown.
+    _suppress_next_completion: bool = False
+
     def _apply_completion(self, cl: "CompletionList") -> str:
         """Apply the highlighted option (or first option) from cl; return the cmd."""
         idx = cl.highlighted if cl.highlighted is not None else 0
@@ -142,8 +145,11 @@ class InputArea(TextArea):
         except Exception:
             cmd = ""
         if cmd:
-            self.clear()
-            self.insert(cmd)
+            # load_text fires exactly one Changed event; suppress it so the
+            # dropdown doesn't reopen after we close it.
+            self._suppress_next_completion = True
+            self.load_text(cmd)
+            self.move_cursor((0, len(cmd)))
         cl.display = False
         return cmd
 
@@ -200,6 +206,9 @@ class InputArea(TextArea):
             event.prevent_default()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._suppress_next_completion:
+            self._suppress_next_completion = False
+            return
         text = event.text_area.text
         try:
             cl = self.app.query_one(CompletionList)
