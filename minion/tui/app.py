@@ -764,6 +764,12 @@ class MinionApp(App):
             self._input_row.display = False
         if self._input_section is not None:
             self._input_section.add_class("permission-active")
+        # PermissionContent expands InputSection, shrinking ConversationArea (1fr).
+        # Scroll to bottom after the layout reflows so recent messages stay visible.
+        if self._conv_area is not None:
+            self.call_after_refresh(
+                self._conv_area.scroll_end, animate=False, x_axis=False
+            )
 
     def hide_permission(self) -> None:
         from .permission import _DIFF_TOOLS as _DT
