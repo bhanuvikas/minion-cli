@@ -356,8 +356,8 @@ async def _run_repl_tui(
             if _exit_requested[0]:
                 await tui_app.flush_and_exit()
                 return
-            ansi = _buf.getvalue().strip()
-            if ansi:
+            ansi = _buf.getvalue().strip("\n")  # strip blank lines only; preserve indent
+            if ansi.strip():
                 tui_app.conversation.append_ansi(ansi + "\n")
                 tui_app.scroll_to_bottom()
             tui_app.set_thinking(False)
