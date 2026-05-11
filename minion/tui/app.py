@@ -111,20 +111,48 @@ class InputArea(TextArea):
         Binding("down",   "navigate_history_down", "Hist ↓",    show=False),
     ]
 
+    def on_mount(self) -> None:
+        from rich.style import Style
+        from textual.widgets.text_area import TextAreaTheme
+        # Register a minimal theme that maps our custom capture name to gold.
+        # All other theme fields left None so CSS controls cursor/selection/etc.
+        self.register_theme(TextAreaTheme(
+            name="minion-input",
+            syntax_styles={"slash.cmd": Style(color="#FFD700", bold=True)},
+        ))
+        self.theme = "minion-input"
+
+    def _build_highlight_map(self) -> None:
+        # super() clears _highlights and returns early (no language/tree-sitter).
+        super()._build_highlight_map()
+        text = self.text
+        if not text.startswith("/") or "\n" in text:
+            return
+        word = text.split()[0] if text.split() else text.rstrip()
+        from ..repl import REPL_COMMANDS as _CMDS
+        if word in _CMDS:
+            self._highlights[0].append((0, len(word), "slash.cmd"))
+
+    def _apply_completion(self, cl: "CompletionList") -> str:
+        """Apply the highlighted option (or first option) from cl; return the cmd."""
+        idx = cl.highlighted if cl.highlighted is not None else 0
+        try:
+            opt = cl.get_option_at_index(idx)
+            cmd = str(getattr(opt, "id", "") or "")
+        except Exception:
+            cmd = ""
+        if cmd:
+            self.clear()
+            self.insert(cmd)
+        cl.display = False
+        return cmd
+
     def action_submit_input(self) -> None:
-        # Apply completion if overlay is visible
         try:
             cl = self.app.query_one(CompletionList)
             if cl.display:
-                highlighted = cl.highlighted
-                if highlighted is not None:
-                    opt = cl.get_option_at_index(highlighted)
-                    cmd = str(getattr(opt, "id", "") or "")
-                    if cmd:
-                        self.clear()
-                        self.insert(cmd)
-                        cl.display = False
-                        return
+                # Apply highlighted or first option, then fall through to submit.
+                self._apply_completion(cl)
         except Exception:
             pass
         text = self.text.strip()
@@ -135,9 +163,23 @@ class InputArea(TextArea):
         self.insert("\n")
 
     def action_navigate_history_up(self) -> None:
+        try:
+            cl = self.app.query_one(CompletionList)
+            if cl.display:
+                cl.action_cursor_up()
+                return
+        except Exception:
+            pass
         self.app.post_message(TuiHistoryNav(direction=-1))
 
     def action_navigate_history_down(self) -> None:
+        try:
+            cl = self.app.query_one(CompletionList)
+            if cl.display:
+                cl.action_cursor_down()
+                return
+        except Exception:
+            pass
         self.app.post_message(TuiHistoryNav(direction=1))
 
     def on_key(self, event: Key) -> None:
@@ -151,14 +193,8 @@ class InputArea(TextArea):
             cl.display = False
             event.prevent_default()
         elif event.key == "tab":
-            highlighted = cl.highlighted
-            if highlighted is not None:
-                opt = cl.get_option_at_index(highlighted)
-                cmd = str(getattr(opt, "id", "") or "")
-                if cmd:
-                    self.clear()
-                    self.insert(cmd)
-            cl.display = False
+            # Tab applies the selection but does NOT submit.
+            self._apply_completion(cl)
             event.prevent_default()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:

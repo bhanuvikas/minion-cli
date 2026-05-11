@@ -76,7 +76,21 @@ def user_turn(text: str) -> "Group":
     msg.append(" ")
     msg.append("you", style=YOU_STYLE)
     msg.append(" › ", style=SEP_STYLE)
-    msg.append(lines[0])
+    first = lines[0]
+    # Highlight a valid slash command (first word) in gold.
+    if first.startswith("/"):
+        word = first.split()[0] if first.split() else first
+        try:
+            from ..repl.state import REPL_COMMANDS as _CMDS
+            if word in _CMDS:
+                msg.append(word, style=YOU_STYLE)
+                msg.append(first[len(word):])
+            else:
+                msg.append(first)
+        except Exception:
+            msg.append(first)
+    else:
+        msg.append(first)
     for line in lines[1:]:
         msg.append("\n        " + line)   # 8-space indent aligns with first line
     return Group(Rule(style=RULE_STYLE), msg)
