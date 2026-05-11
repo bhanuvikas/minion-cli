@@ -751,9 +751,7 @@ class MinionApp(App):
     def _write_banner(self) -> None:
         """Mount greeting banner blocks into ConversationArea on startup."""
         try:
-            from rich.rule import Rule as _Rule
             from ..theme.banner import get_greeting_renderables as _get_renderables
-            from ..theme.palette import SILVER as _SILVER
 
             if self._conv_area is None:
                 return
@@ -772,11 +770,8 @@ class MinionApp(App):
                 self._conv_area.append_block(r)
 
             if self._startup_warnings:
-                from .render import render_rich as _render_rich
-                from rich.text import Text as _Text
-                for w in self._startup_warnings:
-                    self._conv_area.append_block(_render_rich(w))
-                self._conv_area.append_block(_Text(" "))
-                self._conv_area.append_block(_Rule(style=_SILVER))
+                from ..theme.banner import get_startup_warning_renderables as _get_warn
+                for r in _get_warn(self._startup_warnings):
+                    self._conv_area.append_block(r)
         except Exception:
             pass

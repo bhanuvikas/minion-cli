@@ -94,24 +94,6 @@ _CMD_KEY_W = 10  # "/compact" (8) + 2 trailing spaces
 _SEP_W     = 3   # fixed width of the │ separator column
 
 
-def _print_logo() -> None:
-    """Section 1: figlet logo + greeting line."""
-    from rich.align import Align
-
-    art = _build_title()
-    art.justify = None
-    console.print()
-    console.print(Align(art, align="center"))
-
-    greeting = Text()
-    greeting.append("Bello! ", style=f"bold {YELLOW}")
-    greeting.append("I'm ", style="white")
-    greeting.append("Minion", style=f"bold {BLUE}")
-    greeting.append(". What do you want me to do?", style="white")
-    console.print(Align(greeting, align="center"))
-    console.print()
-
-
 def _build_session_rows(
     version: str,
     model: str,
@@ -218,8 +200,8 @@ def get_greeting_renderables(
 ) -> list:
     """Return Rich renderables for the greeting banner.
 
-    Use in TUI mode: write each item directly to RichLog so Textual renders
-    them at the correct content width (Rule and Table expand automatically).
+    Consumed by both console mode (via print_greeting) and TUI mode (via
+    _write_banner) — single source of truth for banner layout.
     """
     from rich.align import Align
     from rich.rule import Rule
@@ -227,6 +209,12 @@ def get_greeting_renderables(
 
     art = _build_title()
     art.justify = None
+
+    # Compute max_val from terminal width — same formula used for both modes.
+    term_w  = console.size.width
+    left_w  = max(30, (term_w - _SEP_W) // 2)
+    right_w = max(20, term_w - _SEP_W - left_w)
+    max_val = max(8, right_w - 11 - 1)
 
     session_rows = _build_session_rows(
         version=version or __version__,
@@ -238,11 +226,9 @@ def get_greeting_renderables(
         agent_count=agent_count,
         memory_enabled=memory_enabled,
         mcp_count=mcp_count,
-        max_val=40,
+        max_val=max_val,
     )
 
-    # Text(" ") gives a 1-line-tall blank Static widget in Textual.
-    # Plain "" renders as zero height — no visible gap appears.
     def _blank() -> Text:
         return Text(" ")
 
@@ -259,45 +245,20 @@ def get_greeting_renderables(
     ]
 
 
-def _print_info_panel(
-    left_w: int,
-    right_w: int,
-    session_rows: list[tuple[str, str, str]],
-) -> None:
-    """Section 2: two-column commands / session grid."""
-    from rich.table import Table
+def get_startup_warning_renderables(warnings: list[str]) -> list:
+    """Return Rich renderables for startup warnings.
 
-    dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
-    dots_sess = (". " * (right_w // 2))[:right_w - 3]  # -2 indent, -1 safety
-
-    max_desc = max(10, left_w - _CMD_KEY_W - 1)
-    cmd_text = Text()
-    cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
-    cmd_text.append("description\n", style=GREY)
-    cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
-    for i, (cmd, desc) in enumerate(BANNER_COMMANDS):
-        cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
-        desc_out = desc if len(desc) <= max_desc else desc[:max_desc - 1] + "…"
-        suffix = "\n" if i < len(BANNER_COMMANDS) - 1 else ""
-        cmd_text.append(desc_out + suffix, style="white")
-
-    sess_text = Text()
-    sess_text.append("  session\n", style=f"bold {YELLOW}")
-    sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
-    for i, (key, val, val_style) in enumerate(session_rows):
-        sess_text.append(f"  {key:<9}", style=GREY)
-        suffix = "\n" if i < len(session_rows) - 1 else ""
-        sess_text.append(val + suffix, style=val_style)
-
-    n_sep = max(2 + len(BANNER_COMMANDS), 2 + len(session_rows))
-    sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {SILVER}", justify="center")
-
-    outer = Table.grid(expand=True)
-    outer.add_column(ratio=50)
-    outer.add_column(width=_SEP_W, justify="center")
-    outer.add_column(ratio=50)
-    outer.add_row(cmd_text, sep_text, sess_text)
-    console.print(outer)
+    Consumed by both console mode (via print_startup_warnings) and TUI mode
+    (via _write_banner) — single source of truth for warning layout.
+    Returns an empty list when there are no warnings.
+    """
+    if not warnings:
+        return []
+    from rich.rule import Rule
+    items: list = [Text.from_markup(w) for w in warnings]
+    items.append(Text(" "))
+    items.append(Rule(style=SILVER))
+    return items
 
 
 def print_greeting(
@@ -311,46 +272,26 @@ def print_greeting(
     mcp_count: int = 0,
     a2a_count: int = 0,
 ) -> None:
-    from .. import __version__
-    from rich.rule import Rule
-
-    term_w  = console.size.width
-    left_w  = max(30, (term_w - _SEP_W) // 2)
-    right_w = max(20, term_w - _SEP_W - left_w)
-
-    _print_logo()
-    console.print(Rule(style=SILVER))
-
-    session_rows = _build_session_rows(
-        version=version or __version__,
+    for r in get_greeting_renderables(
+        version=version,
         model=model,
         provider=provider,
         project_name=project_name,
-        a2a_count=a2a_count,
         cwd=cwd,
         agent_count=agent_count,
         memory_enabled=memory_enabled,
         mcp_count=mcp_count,
-        max_val=max(8, right_w - 11 - 1),
-    )
-    _print_info_panel(left_w=left_w, right_w=right_w, session_rows=session_rows)
-
-    console.print()
-    console.print(Rule(style=SILVER))
-    console.print()
+        a2a_count=a2a_count,
+    ):
+        console.print(r)
 
 
 def print_startup_warnings(warnings: list[str]) -> None:
-    """Section 3: startup warnings collected by loaders, followed by a closing rule.
+    """Print startup warnings collected by loaders, followed by a closing rule.
 
     No-op when warnings is empty. Each entry is a Rich markup string.
     Add new warning sources by appending to the startup_warnings list before
     print_greeting() is called, or pass extra warnings directly to this function.
     """
-    if not warnings:
-        return
-    from rich.rule import Rule
-    for w in warnings:
-        console.print(w)
-    console.print()
-    console.print(Rule(style=SILVER))
+    for r in get_startup_warning_renderables(warnings):
+        console.print(r)
