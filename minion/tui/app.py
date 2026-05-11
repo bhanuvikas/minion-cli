@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from rich.console import RenderableType
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.events import Key
@@ -628,7 +628,10 @@ class MinionApp(App):
         finally:
             self._set_thinking(False)
             if self._input_area is not None:
-                self.set_focus(self._input_area)
+                try:
+                    self.set_focus(self._input_area)
+                except ScreenStackError:
+                    pass  # app shutting down — screen stack already cleared
 
     # ── Thinking animation ────────────────────────────────────────────────────
 
