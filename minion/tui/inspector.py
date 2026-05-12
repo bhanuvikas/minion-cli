@@ -1,44 +1,51 @@
-"""InspectorPanel — read-only subagent transcript viewer (Ctrl+O).
+"""InspectorScreen — Textual ModalScreen for subagent transcript viewer.
 
-Renders a bordered box using Rich Text:
-
-  ┌─ Inspector ────────────────────────────────────────────┐
-  │   [coder ✓]    coder ●                                 │
-  │                                                         │
-  │   ── Turn 1 ──────────────────────────────────         │
-  │      I'll create hello.py for you.                      │
-  │      ⚙  write_file  path='hello.py'                     │
-  │         ✓  Wrote 24 chars (1 lines) to 'hello.py'.     │
-  │                                                         │
-  │   ←/→ switch  ·  ↑↓ scroll  ·  ctrl+e expand  ·  ctrl+o close  │
-  └──────────────────────────────────────────────────────────┘
+Opened via ctrl+o; pushed as a modal overlay over the main screen.
+Provides clickable agent tabs and a scrollable transcript styled to match
+the main ConversationArea conventions.
 """
 
 from __future__ import annotations
 
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, VerticalScroll, Vertical
+from textual.message import Message
+from textual.screen import ModalScreen
+from textual.widgets import Static
 
 from .agent_registry import SubagentRegistry, SubagentState
 from .render import render_message_blocks
+from .theme import GOLD, BLUE, GREEN, SILVER, DIM
 
-_STATUS_ICON = {"pending": "○", "running": "●", "complete": "✓", "error": "✗"}
-_STATUS_STYLE_RICH = {
-    "pending": "#C0C0C0",
-    "running": "#C0C0C0",
-    "complete": "#4CAF50",
+_STATUS_ICON: dict[str, str] = {
+    "pending":  "○",
+    "running":  "●",
+    "complete": "✓",
+    "error":    "✗",
+}
+_STATUS_COLOR: dict[str, str] = {
+    "pending":  DIM,
+    "running":  SILVER,
+    "complete": GREEN,
     "error":    "red",
 }
 
-_DEFAULT_WIDTH  = 120
-_DEFAULT_HEIGHT = 40
-
-
-def _frags_len(frags: list[tuple[str, str]]) -> int:
-    return sum(len(t) for _, t in frags)
+# Maps prompt_toolkit class: names (from render_message_blocks) to Rich styles.
+_CLASS_TO_RICH: dict[str, str] = {
+    "minion-prefix":   f"bold {BLUE}",
+    "conv-text":       "",
+    "inspector-agent": f"bold #E8E8E8",
+    "slot-detail":     DIM,
+    "slot-done":       GREEN,
+    "slot-error":      "bold red",
+    "slot-running":    SILVER,
+    "inspector-hint":  "#444444",
+}
 
 
 def _frags_to_text(frags: list[tuple[str, str]]) -> Text:
-    """Convert (class:name, text) fragment list to Rich Text."""
     t = Text()
     for style, chunk in frags:
         if style.startswith("class:"):
@@ -47,181 +54,269 @@ def _frags_to_text(frags: list[tuple[str, str]]) -> Text:
     return t
 
 
-_CLASS_TO_RICH: dict[str, str] = {
-    "slot-detail":       "#C0C0C0",
-    "slot-done":         "#4CAF50",
-    "slot-error":        "bold red",
-    "slot-running":      "#C0C0C0",
-    "inspector-title":   "bold",
-    "inspector-tab-sel": "bold #FFD700 on #2a1f00",
-    "inspector-tab":     "#555555",
-    "inspector-hint":    "#444444",
-    "inspector-agent":   "bold #E8E8E8",
-}
+def _render_agent_transcript(state: SubagentState) -> list[Text]:
+    """Convert a SubagentState's messages to Rich Text lines for mounting."""
+    if not state.messages:
+        if state.status in ("pending", "running"):
+            return [Text("  ● running…", style=SILVER)]
+        if state.status == "error":
+            return [Text(f"  ✗  Error: {state.error or 'unknown'}", style="bold red")]
+        return [Text("  (no transcript available)", style=DIM)]
+
+    lines = render_message_blocks(state.messages, state.label, expanded=False)
+    result: list[Text] = []
+    for frags in lines:
+        result.append(_frags_to_text(frags) if frags else Text(" "))
+
+    if state.status == "error" and state.error:
+        result.append(Text(f"  ✗  Error: {state.error}", style="bold red"))
+
+    return result
 
 
-class InspectorPanel:
-    """Reads from SubagentRegistry; renders a bordered box as Rich Text."""
+# ── Widgets ───────────────────────────────────────────────────────────────────
+
+class InspectorTab(Static):
+    """A single clickable tab button in the inspector's tab bar."""
+
+    class Selected(Message):
+        def __init__(self, index: int) -> None:
+            self.index = index
+            super().__init__()
+
+    def __init__(self, label: str, status: str, index: int, selected: bool) -> None:
+        self._tab_label    = label
+        self._tab_status   = status
+        self._tab_index    = index
+        self._tab_selected = selected
+        # Pass rendered text upfront so the widget shows immediately on mount.
+        super().__init__(self._make_text())
+
+    def _make_text(self) -> Text:
+        icon  = _STATUS_ICON.get(self._tab_status, "?")
+        color = _STATUS_COLOR.get(self._tab_status, SILVER)
+        t = Text()
+        if self._tab_selected:
+            t.append(f" {self._tab_label} ", style=f"bold {GOLD}")
+            t.append(icon, style=f"bold {color}")
+        else:
+            t.append(f" {self._tab_label} ", style="#888888")
+            t.append(icon, style=color)
+        return t
+
+    def on_mount(self) -> None:
+        if self._tab_selected:
+            self.add_class("selected")
+
+    def _redraw(self) -> None:
+        self.update(self._make_text())
+        if self._tab_selected:
+            self.add_class("selected")
+        else:
+            self.remove_class("selected")
+
+    def on_click(self) -> None:
+        self.post_message(InspectorTab.Selected(self._tab_index))
+
+
+class TranscriptArea(VerticalScroll):
+    """Scrollable area for a subagent's conversation transcript."""
+
+
+# ── Modal Screen ──────────────────────────────────────────────────────────────
+
+class InspectorScreen(ModalScreen):
+    """Full-screen modal inspector for subagent transcripts.
+
+    Pushed onto the screen stack by MinionApp when the user presses ctrl+o.
+    Dismissed by ctrl+o, ctrl+w, or Escape.
+    """
+
+    CSS = """
+    InspectorScreen {
+        align: center middle;
+        background: #000000 40%;
+    }
+
+    #inspector-panel {
+        width: 90%;
+        height: 88%;
+        background: #0d0d0d;
+        border: round #3a3a3a;
+        border-title-align: left;
+        border-title-color: #C0C0C0;
+        border-title-style: bold;
+    }
+
+    #tab-bar {
+        height: auto;
+        min-height: 1;
+        background: #141414;
+        padding: 0 1;
+        align: left middle;
+    }
+
+    InspectorTab {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin-right: 1;
+    }
+
+    InspectorTab:hover {
+        background: #1e1e1e;
+    }
+
+    InspectorTab.selected {
+        background: #2a1f00;
+    }
+
+    #agent-info {
+        height: 1;
+        padding: 0 2;
+        background: #0a0a0a;
+    }
+
+    TranscriptArea {
+        height: 1fr;
+        padding: 1 2;
+        scrollbar-gutter: stable;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: #111111;
+        scrollbar-color: #2a2a2a;
+        scrollbar-color-hover: #444444;
+        scrollbar-color-active: #666666;
+    }
+
+    TranscriptArea > Static {
+        height: auto;
+        width: 1fr;
+    }
+
+    #inspector-footer {
+        height: 1;
+        padding: 0 2;
+        background: #0a0a0a;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close_inspector", "Close", show=False),
+        Binding("ctrl+o", "close_inspector", "Close", show=False),
+        Binding("left",   "prev_agent",      "Prev",  show=False),
+        Binding("right",  "next_agent",      "Next",  show=False),
+    ]
 
     def __init__(self, registry: SubagentRegistry) -> None:
-        self._reg      = registry
-        self._visible  = False
+        self._registry = registry
         self._sel_idx  = 0
-        self._scroll   = 0
-        self._expanded = False
-        self._app_ref  = None   # set by MinionApp after construction
+        super().__init__()
 
-    def set_app(self, app) -> None:
-        self._app_ref = app
+    # ── Compose ───────────────────────────────────────────────────────────────
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="inspector-panel"):
+            with Horizontal(id="tab-bar"):
+                for i, s in enumerate(self._registry.get_all()):
+                    yield InspectorTab(s.label, s.status, i, i == self._sel_idx)
+            yield Static(self._build_info(), id="agent-info")
+            with TranscriptArea(id="transcript-area"):
+                for line in self._transcript_lines():
+                    yield Static(line)
+            yield Static(self._build_footer(), id="inspector-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#inspector-panel").border_title = " Inspector "
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
+    def action_close_inspector(self) -> None:
+        self.dismiss()
+
+    def action_prev_agent(self) -> None:
+        n = len(self._registry.get_all())
+        if n:
+            self._sel_idx = (self._sel_idx - 1) % n
+            self._rebuild()
+
+    def action_next_agent(self) -> None:
+        n = len(self._registry.get_all())
+        if n:
+            self._sel_idx = (self._sel_idx + 1) % n
+            self._rebuild()
+
+    # ── Message handlers ──────────────────────────────────────────────────────
+
+    def on_inspector_tab_selected(self, message: InspectorTab.Selected) -> None:
+        self._sel_idx = message.index
+        self._rebuild()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    @property
-    def is_visible(self) -> bool:
-        return self._visible
+    def refresh_from_registry(self) -> None:
+        """Called by MinionApp when registry state changes while screen is open."""
+        states = self._registry.get_all()
+        if states:
+            self._sel_idx = min(self._sel_idx, len(states) - 1)
+        self._rebuild()
 
-    def toggle(self) -> None:
-        self.close() if self._visible else self.open()
+    # ── Rendering helpers ─────────────────────────────────────────────────────
 
-    def open(self) -> None:
-        if not self._reg.get_all():
-            return
-        self._sel_idx = min(self._sel_idx, len(self._reg.get_all()) - 1)
-        self._scroll  = 0
-        self._visible = True
-
-    def close(self) -> None:
-        self._visible = False
-
-    def move_agent(self, delta: int) -> None:
-        states = self._reg.get_all()
+    def _selected_state(self) -> SubagentState | None:
+        states = self._registry.get_all()
         if not states:
-            return
-        self._sel_idx = (self._sel_idx + delta) % len(states)
-        self._scroll  = 0
+            return None
+        return states[min(self._sel_idx, len(states) - 1)]
 
-    def scroll(self, delta: int) -> None:
-        self._scroll = max(0, self._scroll + delta)
+    def _build_info(self) -> Text:
+        s = self._selected_state()
+        if s is None:
+            return Text()
+        icon  = _STATUS_ICON.get(s.status, "?")
+        color = _STATUS_COLOR.get(s.status, SILVER)
+        t = Text()
+        t.append(f" {s.label}", style=f"bold {BLUE}")
+        t.append("  ")
+        t.append(icon, style=f"bold {color}")
+        t.append(f"  {s.status}", style=color)
+        if s.latency_ms > 0:
+            t.append(f"  ({s.latency_ms / 1000:.1f}s)", style=DIM)
+        if s.task:
+            task = s.task[:80] + "…" if len(s.task) > 80 else s.task
+            t.append(f"  ·  {task}", style=DIM)
+        return t
 
-    def toggle_expanded(self) -> None:
-        self._expanded = not self._expanded
-
-    def hint(self) -> str:
-        states = self._reg.get_all()
-        if not states:
-            return ""
-        label = states[min(self._sel_idx, len(states) - 1)].label
-        parts = [f"Viewing [{label}]", "ctrl+o close"]
+    def _build_footer(self) -> Text:
+        states = self._registry.get_all()
+        parts: list[str] = []
         if len(states) > 1:
             parts.append("←→ switch")
-        return "  ·  ".join(parts)
+        parts += ["↑↓ scroll", "ctrl+o / esc  close"]
+        t = Text()
+        t.append("  ·  ".join(parts), style=DIM)
+        return t
 
-    # ── Top-level render ─────────────────────────────────────────────────────
+    def _transcript_lines(self) -> list[Text]:
+        s = self._selected_state()
+        if s is None:
+            return [Text("  (no agents)", style=DIM)]
+        return _render_agent_transcript(s)
 
-    def get_rich_text(self) -> Text:
-        """Return a Rich Text object rendering the inspector box."""
-        states = self._reg.get_all()
-        if not states:
-            self._visible = False
-            return Text()
+    def _rebuild(self) -> None:
+        """Rebuild tabs, info bar, and transcript for the current selection."""
+        states = self._registry.get_all()
 
-        if self._app_ref is not None:
-            try:
-                term_w = self._app_ref.size.width
-                term_h = self._app_ref.size.height
-            except Exception:
-                term_w, term_h = _DEFAULT_WIDTH, _DEFAULT_HEIGHT
-        else:
-            term_w, term_h = _DEFAULT_WIDTH, _DEFAULT_HEIGHT
-
-        idx      = min(self._sel_idx, len(states) - 1)
-        selected = states[idx]
-
-        box_w        = term_w
-        inner_w      = box_w - 3
-        target_h     = max(14, (term_h * 3) // 4)
-        transcript_h = max(4, target_h - 2 - 4)
-
-        all_lines = self._render_transcript(selected)
-        total     = len(all_lines)
-        end       = min(total, max(total - self._scroll, transcript_h))
-        start     = max(0, end - transcript_h)
-        visible   = all_lines[start:end]
-
-        inner: list[list[tuple[str, str]]] = []
-        inner.append(self._tab_row(states, idx))
-        inner.append([])
-
-        for lf in visible:
-            inner.append(lf)
-
-        if total > transcript_h and start > 0:
-            inner.append([("class:inspector-hint",
-                           f" ↑ {start} more lines above  (↑ to scroll)")])
-
-        target_inner = 2 + transcript_h
-        while len(inner) < target_inner:
-            inner.append([])
-
-        inner.append([])
-        inner.append(self._hint_row(states))
-
-        # ── Box rendering ─────────────────────────────────────────────────────
-        result = Text()
-
-        title    = "─ Inspector "
-        top_fill = max(0, box_w - 2 - len(title))
-        result.append("┌" + title + "─" * top_fill + "┐\n", style="#C0C0C0")
-
-        for row in inner:
-            text_len = _frags_len(row)
-            pad      = max(0, inner_w - text_len)
-            result.append("│ ", style="#C0C0C0")
-            result.append_text(_frags_to_text(row))
-            result.append(" " * pad)
-            result.append("│\n", style="#C0C0C0")
-
-        result.append("└" + "─" * (box_w - 2) + "┘", style="#C0C0C0")
-        return result
-
-    # ── Tab row ───────────────────────────────────────────────────────────────
-
-    def _tab_row(self, states: list[SubagentState], sel_idx: int) -> list[tuple[str, str]]:
-        frags: list[tuple[str, str]] = [("class:inspector-title", " Inspector")]
+        tab_bar = self.query_one("#tab-bar", Horizontal)
+        tab_bar.remove_children()
         for i, s in enumerate(states):
-            icon = _STATUS_ICON.get(s.status, "?")
-            frags.append(("", "    "))
-            if i == sel_idx:
-                frags.append(("class:inspector-tab-sel", f" {s.label}  {icon} "))
-            else:
-                frags.append(("class:inspector-tab", f"{s.label}  "))
-                frags.append((_STATUS_STYLE_RICH.get(s.status, "class:inspector-tab"), icon))
-        return frags
+            tab_bar.mount(InspectorTab(s.label, s.status, i, i == self._sel_idx))
 
-    # ── Hint row ──────────────────────────────────────────────────────────────
+        self.query_one("#agent-info", Static).update(self._build_info())
 
-    def _hint_row(self, states: list[SubagentState]) -> list[tuple[str, str]]:
-        sep   = ("class:inspector-hint", "  ·  ")
-        parts: list[tuple[str, str]] = []
-        if len(states) > 1:
-            parts += [("class:inspector-hint", "←/→ switch agents"), sep]
-        parts += [("class:inspector-hint", "↑↓ scroll"), sep]
-        parts += [("class:inspector-hint",
-                   "ctrl+e collapse" if self._expanded else "ctrl+e expand"), sep]
-        parts += [("class:inspector-hint", "ctrl+o close")]
-        return parts
+        area = self.query_one("#transcript-area", TranscriptArea)
+        area.remove_children()
+        for line in self._transcript_lines():
+            area.mount(Static(line))
+        area.scroll_home(animate=False)
 
-    # ── Transcript ────────────────────────────────────────────────────────────
-
-    def _render_transcript(self, state: SubagentState) -> list[list[tuple[str, str]]]:
-        if not state.messages:
-            if state.status in ("pending", "running"):
-                return [[("class:slot-running", " running…")]]
-            if state.status == "error":
-                return [[("class:slot-error", f" Error: {state.error}")]]
-            return []
-
-        lines = render_message_blocks(state.messages, state.label, expanded=self._expanded)
-        if state.status == "error" and state.error:
-            lines.append([("class:slot-error", f" ✗  Error: {state.error}")])
-        return lines
+        self.query_one("#inspector-footer", Static).update(self._build_footer())

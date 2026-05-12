@@ -33,7 +33,7 @@ from textual.widgets.option_list import Option
 
 from .agent_registry import get_registry
 from .conversation import ConversationBuffer
-from .inspector import InspectorPanel
+from .inspector import InspectorScreen
 from .messages import InspectorUpdated, SlotsUpdated
 from .permission import PermissionPanel
 from .slots import SlotsManager
@@ -293,7 +293,6 @@ class MinionApp(App):
         Binding("ctrl+c", "cancel_or_quit",       "Cancel/Quit", show=False),
         Binding("ctrl+l", "clear_conversation",    "Clear",       show=False),
         Binding("ctrl+o", "toggle_inspector",      "Inspector",   show=False),
-        Binding("ctrl+e", "expand_inspector",      "Expand",      show=False),
         Binding("ctrl+y", "copy_last_response",    "Copy",        show=False),
     ]
 
@@ -340,9 +339,10 @@ class MinionApp(App):
 
         _reg = get_registry()
         _reg.set_post_message(self.post_message)
-        self.inspector = InspectorPanel(registry=_reg)
-        self.inspector.set_app(self)
         self.slots = SlotsManager(post_message_fn=self.post_message)
+
+        # Modal screen reference — set while the inspector is pushed, None otherwise.
+        self._inspector_screen: Optional[InspectorScreen] = None
 
         # Wire conversation callbacks
         self.conversation.set_callbacks(
@@ -353,7 +353,6 @@ class MinionApp(App):
 
         # Widget references populated in on_mount()
         self._conv_area:          Optional[ConversationArea]  = None
-        self._inspector_zone:     Optional[InspectorZone]     = None
         self._input_section:      Optional[InputSection]      = None
         self._permission_content: Optional[PermissionContent] = None
         self._input_row:          Optional[InputRow]          = None
@@ -385,7 +384,6 @@ class MinionApp(App):
 
     def compose(self) -> ComposeResult:
         yield ConversationArea(id="conv-area")
-        yield InspectorZone(" ", id="inspector-zone")
         yield InputSection(id="input-section")
         yield CompletionList(id="completion-list")
         yield StatusLine("", id="status-line")
@@ -394,7 +392,6 @@ class MinionApp(App):
 
     def on_mount(self) -> None:
         self._conv_area          = self.query_one("#conv-area",          ConversationArea)
-        self._inspector_zone     = self.query_one("#inspector-zone",     InspectorZone)
         self._input_section      = self.query_one("#input-section",      InputSection)
         self._permission_content = self.query_one("#permission-content", PermissionContent)
         self._input_row          = self.query_one("#input-row",          InputRow)
@@ -414,7 +411,6 @@ class MinionApp(App):
         self.status.set_width(cols)
 
         # Initially hidden zones (PermissionContent starts hidden via CSS)
-        self._inspector_zone.display  = False
         self._completion_list.display = False
 
         # Thinking animation timer (paused until first prompt)
@@ -471,20 +467,20 @@ class MinionApp(App):
     def action_toggle_inspector(self) -> None:
         if self.permission.is_visible:
             return
-        self.inspector.toggle()
-        self.status.set_inspector_hint(
-            self.inspector.hint() if self.inspector.is_visible else ""
-        )
-        self._refresh_inspector()
-        self._refresh_status()
-
-    def action_expand_inspector(self) -> None:
-        if not self.inspector.is_visible:
+        if self._inspector_screen is not None:
+            try:
+                self._inspector_screen.dismiss()
+            except Exception:
+                self._inspector_screen = None
             return
-        self.inspector.toggle_expanded()
-        self.status.set_inspector_hint(self.inspector.hint())
-        self._refresh_inspector()
-        self._refresh_status()
+        states = get_registry().get_all()
+        if not states:
+            return
+        screen = InspectorScreen(registry=get_registry())
+        self._inspector_screen = screen
+        def _on_dismiss(_result) -> None:
+            self._inspector_screen = None
+        self.push_screen(screen, _on_dismiss)
 
     def action_copy_last_response(self) -> None:
         """Copy the last assistant response to the clipboard (OSC 52 / terminal clipboard)."""
@@ -528,35 +524,6 @@ class MinionApp(App):
                 event.prevent_default()
             return
 
-        if self.inspector.is_visible:
-            handled = True
-            k = event.key
-            if k == "left":
-                self.inspector.move_agent(-1)
-                self.status.set_inspector_hint(self.inspector.hint())
-                self._refresh_inspector()
-                self._refresh_status()
-            elif k == "right":
-                self.inspector.move_agent(1)
-                self.status.set_inspector_hint(self.inspector.hint())
-                self._refresh_inspector()
-                self._refresh_status()
-            elif k == "up":
-                self.inspector.scroll(-1)
-                self._refresh_inspector()
-            elif k == "down":
-                self.inspector.scroll(1)
-                self._refresh_inspector()
-            elif k == "escape":
-                self.inspector.close()
-                self.status.set_inspector_hint("")
-                self._refresh_inspector()
-                self._refresh_status()
-            else:
-                handled = False
-            if handled:
-                event.prevent_default()
-
     # ── Message handlers ──────────────────────────────────────────────────────
 
     def on_slots_updated(self, _: SlotsUpdated) -> None:
@@ -565,7 +532,8 @@ class MinionApp(App):
         self._conv_area.update_slots(self.slots.get_rich_text(), self.slots.is_visible)
 
     def on_inspector_updated(self, _: InspectorUpdated) -> None:
-        self._refresh_inspector()
+        if self._inspector_screen is not None:
+            self._inspector_screen.refresh_from_registry()
 
     def on_tui_submit(self, message: TuiSubmit) -> None:
         """User submitted text from InputArea."""
@@ -793,15 +761,6 @@ class MinionApp(App):
         if self._status_line is None:
             return
         self._status_line.update(self.status.get_rich_markup())
-
-    def _refresh_inspector(self) -> None:
-        if self._inspector_zone is None:
-            return
-        if self.inspector.is_visible:
-            self._inspector_zone.update(self.inspector.get_rich_text())
-            self._inspector_zone.display = True
-        else:
-            self._inspector_zone.display = False
 
     def _refresh_permission(self) -> None:
         if self._permission_content is not None:

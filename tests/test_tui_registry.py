@@ -1,18 +1,15 @@
-"""Tests for tui/agent_registry.py, tui/inspector.py, tui/messages.py, tui/theme.py.
+"""Tests for tui/agent_registry.py, tui/messages.py, tui/theme.py.
 
 All pure unit tests — no Textual runtime, no real TTY.
 
-SubagentRegistry is the source of truth for the inspector panel: threads
+SubagentRegistry is the source of truth for the inspector modal: threads
 call register()/update() from parallel agent execution; the inspector reads
 get_all() to render per-agent transcripts.  Every update posts an
 InspectorUpdated message for thread-safe UI refresh.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
-from rich.text import Text
 
 
 # ── SubagentRegistry ──────────────────────────────────────────────────────────
@@ -165,154 +162,6 @@ class TestSubagentRegistry:
             t.join()
 
         assert len(self.reg) == 20
-
-
-# ── InspectorPanel ────────────────────────────────────────────────────────────
-
-class TestInspectorPanel:
-    def _make(self, *, with_agents: bool = True):
-        from minion.tui.agent_registry import SubagentRegistry
-        from minion.tui.inspector import InspectorPanel
-        reg = SubagentRegistry()
-        if with_agents:
-            reg.register("id1", "coder", "write hello.py", "coder")
-        panel = InspectorPanel(registry=reg)
-        return panel, reg
-
-    def _app_mock(self, *, width: int = 120, height: int = 40) -> MagicMock:
-        app = MagicMock()
-        app.size.width  = width
-        app.size.height = height
-        return app
-
-    # ── visibility / toggle ───────────────────────────────────────────────────
-
-    def test_not_visible_initially(self):
-        panel, _ = self._make()
-        assert not panel.is_visible
-
-    def test_toggle_opens_when_agents_exist(self):
-        panel, _ = self._make()
-        panel.toggle()
-        assert panel.is_visible
-
-    def test_toggle_closes_when_already_open(self):
-        panel, _ = self._make()
-        panel.open()
-        panel.toggle()
-        assert not panel.is_visible
-
-    def test_open_noop_when_no_agents(self):
-        panel, _ = self._make(with_agents=False)
-        panel.open()
-        assert not panel.is_visible
-
-    def test_close_sets_invisible(self):
-        panel, _ = self._make()
-        panel.open()
-        panel.close()
-        assert not panel.is_visible
-
-    # ── navigation ────────────────────────────────────────────────────────────
-
-    def test_move_agent_advances_selection(self):
-        panel, reg = self._make()
-        reg.register("id2", "tester", "run tests", "tester")
-        panel.open()
-        panel.move_agent(1)
-        assert panel._sel_idx == 1
-
-    def test_move_agent_wraps_around_backward(self):
-        panel, reg = self._make()
-        reg.register("id2", "tester", "run tests", "tester")
-        panel.open()
-        panel.move_agent(-1)   # 0 → len-1
-        assert panel._sel_idx == 1
-
-    def test_scroll_increases_offset(self):
-        panel, _ = self._make()
-        panel.scroll(5)
-        assert panel._scroll == 5
-
-    def test_scroll_clamps_at_zero(self):
-        panel, _ = self._make()
-        panel.scroll(-100)
-        assert panel._scroll == 0
-
-    def test_toggle_expanded_flips_flag(self):
-        panel, _ = self._make()
-        assert not panel._expanded
-        panel.toggle_expanded()
-        assert panel._expanded
-        panel.toggle_expanded()
-        assert not panel._expanded
-
-    # ── hint text ─────────────────────────────────────────────────────────────
-
-    def test_hint_includes_agent_label(self):
-        panel, _ = self._make()
-        panel.open()
-        assert "coder" in panel.hint()
-
-    def test_hint_includes_close_shortcut(self):
-        panel, _ = self._make()
-        panel.open()
-        assert "ctrl+o" in panel.hint()
-
-    def test_hint_includes_switch_instruction_with_multiple_agents(self):
-        panel, reg = self._make()
-        reg.register("id2", "tester", "run tests", "tester")
-        panel.open()
-        hint = panel.hint()
-        assert "←→" in hint or "switch" in hint
-
-    def test_hint_omits_switch_with_single_agent(self):
-        panel, _ = self._make()
-        panel.open()
-        hint = panel.hint()
-        assert "←→" not in hint
-
-    # ── get_rich_text ─────────────────────────────────────────────────────────
-
-    def test_get_rich_text_returns_text_object(self):
-        panel, reg = self._make()
-        reg.update("id1", "running")
-        panel.open()
-        panel.set_app(self._app_mock())
-        assert isinstance(panel.get_rich_text(), Text)
-
-    def test_get_rich_text_contains_inspector_title(self):
-        panel, _ = self._make()
-        panel.open()
-        panel.set_app(self._app_mock())
-        assert "Inspector" in str(panel.get_rich_text())
-
-    def test_get_rich_text_contains_agent_label(self):
-        panel, _ = self._make()
-        panel.open()
-        panel.set_app(self._app_mock())
-        assert "coder" in str(panel.get_rich_text())
-
-    def test_get_rich_text_empty_when_no_agents(self):
-        panel, _ = self._make(with_agents=False)
-        panel._visible = True   # force visible to reach render path
-        assert str(panel.get_rich_text()) == ""
-
-    def test_get_rich_text_shows_running_for_running_agent(self):
-        panel, reg = self._make()
-        reg.update("id1", "running")
-        panel.open()
-        panel.set_app(self._app_mock())
-        text = str(panel.get_rich_text())
-        assert "running" in text
-
-    def test_get_rich_text_has_box_borders(self):
-        panel, _ = self._make()
-        panel.open()
-        panel.set_app(self._app_mock())
-        text = str(panel.get_rich_text())
-        assert "┌" in text
-        assert "└" in text
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────

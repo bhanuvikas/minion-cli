@@ -13,7 +13,6 @@ from minion.tui.app import (
     MinionApp,
     CompletionList,
     ConversationArea,
-    InspectorZone,
     InputRow,
     InputSection,
     PermissionContent,
@@ -30,7 +29,6 @@ class TestCompose:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             assert app.query_one("#conv-area",          ConversationArea)
-            assert app.query_one("#inspector-zone",     InspectorZone)
             assert app.query_one("#input-section",      InputSection)
             assert app.query_one("#permission-content", PermissionContent)
             assert app.query_one("#input-row",          InputRow)
@@ -45,7 +43,6 @@ class TestCompose:
             assert app.conversation is not None
             assert app.permission   is not None
             assert app.status       is not None
-            assert app.inspector    is not None
             assert app.slots        is not None
 
 
@@ -59,13 +56,6 @@ class TestInitialVisibility:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             assert app.query_one("#conv-area", ConversationArea)._slots_widget is None
-
-    @pytest.mark.asyncio
-    async def test_inspector_zone_hidden_on_mount(self):
-        app = MinionApp(model_name="claude-test")
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert not app.query_one("#inspector-zone").display
 
     @pytest.mark.asyncio
     async def test_permission_content_hidden_on_mount(self):
