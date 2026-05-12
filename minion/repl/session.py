@@ -26,7 +26,7 @@ from ..output import ConsoleRenderer, TuiRenderer
 from ..runner import run_prompt_async
 from ..theme import SILVER, YELLOW, console
 from ..tracing import get_tracer
-from .agent_handlers import _handle_agent_direct, _handle_remote_command
+from .agent_handlers import _handle_remote_command
 from .commands import _get_last_response_text, _handle_slash_command
 from .input import _CaptureBuf, _INPUT_STYLE, _InputLexer, _SlashCompleter, _kb
 from .mcp import _extract_mcp_text, _handle_mcp_command, _inject_mcp_message
@@ -599,7 +599,44 @@ async def _run_console_loop(
                 continue
 
         if user_input.startswith("/agent "):
-            await asyncio.to_thread(_handle_agent_direct, user_input, agent_registry, client)
+            _parts = user_input.split(None, 2)
+            if len(_parts) < 3 or not _parts[2].strip():
+                from ..theme import print_error as _pe
+                _pe(
+                    f"Usage: /agent <role> <task>  (missing task for role '{_parts[1]}')"
+                    if len(_parts) == 2 else "Usage: /agent <role> <task>"
+                )
+                console.print()
+                continue
+            _role, _task = _parts[1], _parts[2].strip()
+
+            import uuid as _uuid
+            from ..agents.runner import run_agent as _run_agent
+            from ..agents.display import ParallelDisplay, set_agent_display_callback
+            from ..output.base import SlotSpec
+
+            _slot_id = str(_uuid.uuid4())
+            _display = ParallelDisplay()
+            _display.pre_register([
+                SlotSpec(key=_slot_id, tool_name="spawn_agent",
+                         inputs={"task": _task, "role": _role}, label=_role)
+            ])
+            _slot_cb = _display.make_callback(_slot_id)
+
+            def _run_in_thread() -> str:
+                set_agent_display_callback(_slot_cb)
+                _slot_cb("running")
+                try:
+                    return _run_agent(_task, _role, agent_registry, client, parent_depth=0)
+                finally:
+                    set_agent_display_callback(None)
+
+            console.print()
+            with _display:
+                _display.render_now()
+                await asyncio.to_thread(_run_in_thread)
+            # ParallelDisplay.__exit__ prints the final done/error state permanently
+
             console.print()
             continue
 

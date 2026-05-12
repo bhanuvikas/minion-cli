@@ -7,29 +7,7 @@ from typing import TYPE_CHECKING
 from ..theme import BLUE, YELLOW, console, print_error
 
 if TYPE_CHECKING:
-    from ..llm.base import LLMClient
     from ..a2a.manager import A2AManager
-
-
-def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
-    """Handle '/agent <role> <task>' — run a subagent role directly (console/sync path)."""
-    from ..agents.runner import run_agent
-
-    parts = raw.split(None, 2)  # ["/agent", "<role>", "<task>"]
-    if len(parts) < 3:
-        if len(parts) == 2:
-            print_error(f"Usage: /agent <role> <task>  (missing task for role '{parts[1]}')")
-        else:
-            print_error("Usage: /agent <role> <task>")
-        return
-
-    role_name = parts[1]
-    task = parts[2].strip()
-    if not task:
-        print_error("Task cannot be empty.")
-        return
-
-    run_agent(task, role_name, agent_registry, client, parent_depth=0)
 
 
 def _handle_remote_command(raw: str, a2a_manager: "A2AManager | None") -> None:
