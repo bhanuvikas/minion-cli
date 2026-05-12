@@ -58,6 +58,7 @@ def run_agent(
     mcp_manager=None,  # MCPManager | None — forwarded so subagents can call MCP tools
     _token_accumulator: "list[int] | None" = None,  # appended with subagent total_tokens when done
     confirm_callback=None,  # Callable[[str], bool] | None — overrides questionary for dangerous tools
+    confirmation_manager=None,  # ConfirmationManager | None — session-level TUI-aware manager
 ) -> str:
     """Spawn an isolated subagent and return its final text response.
 
@@ -125,6 +126,7 @@ def run_agent(
             agent_label=effective_role,    # labels LLM text and tool calls
             mcp_manager=mcp_manager,       # propagate MCP tools to subagents
             confirm_callback=confirm_callback,  # propagate approval callback (e.g. from parallel display)
+            confirmation_manager=confirmation_manager,  # propagate TUI-aware session manager
         )
         text = result or "(no response)"
         latency_ms = int((time.monotonic() - start) * 1000)
@@ -178,6 +180,7 @@ async def run_agent_async(
     parent_depth: int = 0,
     mcp_manager=None,
     confirm_callback=None,
+    confirmation_manager=None,
 ) -> str:
     """Async variant of run_agent(). Calls run_prompt_async() inside a task group."""
     from ..runner import run_prompt_async
@@ -215,6 +218,7 @@ async def run_agent_async(
             agent_label=effective_role,
             mcp_manager=mcp_manager,
             confirm_callback=confirm_callback,
+            confirmation_manager=confirmation_manager,
         )
         text = result or "(no response)"
         latency_ms = int((time.monotonic() - start) * 1000)

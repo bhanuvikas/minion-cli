@@ -35,7 +35,7 @@ def format_tool_call(
     from ..theme import YELLOW
 
     label        = "[muted][dry-run][/] " if dry_run else ""
-    agent_prefix = f"[muted][{agent_label}][/] " if agent_label else ""
+    agent_prefix = f"[muted]\\[{escape(agent_label)}][/] " if agent_label else ""
 
     badge_str = ""
     if mode_badge == "edits":

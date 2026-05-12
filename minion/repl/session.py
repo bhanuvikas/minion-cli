@@ -26,7 +26,7 @@ from ..output import ConsoleRenderer, TuiRenderer
 from ..runner import run_prompt_async
 from ..theme import SILVER, YELLOW, console
 from ..tracing import get_tracer
-from .agent_handlers import _handle_agent_direct, _handle_remote_command
+from .agent_handlers import _handle_agent_direct, _handle_agent_direct_async, _handle_remote_command
 from .commands import _get_last_response_text, _handle_slash_command
 from .input import _CaptureBuf, _INPUT_STYLE, _InputLexer, _SlashCompleter, _kb
 from .mcp import _extract_mcp_text, _handle_mcp_command, _inject_mcp_message
@@ -323,7 +323,8 @@ async def _run_repl_tui(
                 return
 
         if user_input.startswith("/agent "):
-            await asyncio.to_thread(_handle_agent_direct, user_input, agent_registry, client)
+            await _handle_agent_direct_async(user_input, agent_registry, client,
+                                             confirmation_manager=confirmation_manager)
             tui_app.set_thinking(False)
             return
 
