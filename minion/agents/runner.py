@@ -134,7 +134,12 @@ def run_agent(
 
         if display_callback:
             preview = text.split("\n")[0][:100]
-            display_callback("complete", latency_ms=latency_ms, preview=preview)
+            display_callback(
+                "complete",
+                latency_ms=latency_ms,
+                preview=preview,
+                total_tokens=conversation.total_tokens,
+            )
         else:
             console.print(
                 f"[muted]  ✓[/]  [bold]\\[{effective_role}][/] [muted]complete ({latency_ms / 1000:.1f}s)[/]"
@@ -216,7 +221,12 @@ async def run_agent_async(
 
         if display_callback:
             preview = text.split("\n")[0][:100]
-            display_callback("complete", latency_ms=latency_ms, preview=preview)
+            display_callback(
+                "complete",
+                latency_ms=latency_ms,
+                preview=preview,
+                total_tokens=conversation.total_tokens,
+            )
         else:
             console.print(
                 f"[muted]  ✓[/]  [bold]\\[{effective_role}][/] [muted]complete ({latency_ms / 1000:.1f}s)[/]"

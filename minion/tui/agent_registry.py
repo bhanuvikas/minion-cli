@@ -63,6 +63,7 @@ class SubagentRegistry:
                 state.status = "complete"
                 state.latency_ms = data.get("latency_ms", 0)
                 state.preview = data.get("preview", "")
+                state.output_tokens = data.get("total_tokens", state.output_tokens)
             elif event == "error":
                 state.status = "error"
                 state.error = data.get("error", "")

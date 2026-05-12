@@ -172,7 +172,7 @@ def render_message_blocks(
             text  = msg["text"].replace("\n", " ").strip()
             limit = 400 if expanded else 90
             _line(
-                ("class:minion-prefix", " minion ›  "),
+                ("class:minion-prefix", "minion ›  "),
                 ("class:conv-text",    _trunc(text, limit)),
             )
             _line(("", ""))
@@ -184,7 +184,7 @@ def render_message_blocks(
                     if txt:
                         limit = 400 if expanded else 93
                         _line(
-                            ("class:inspector-agent", f" {label} ›  "),
+                            ("class:inspector-agent", f"{label} ›  "),
                             ("",                      _trunc(txt, limit)),
                         )
                         _line(("", ""))
@@ -194,7 +194,18 @@ def render_message_blocks(
                         name, blk.get("input", {}),
                         expanded=expanded,
                     )
-                    _line(("class:slot-detail", " "), *frags)
+                    _line(*frags)
+
+        elif role == "assistant" and msg.get("type") == "text":
+            # Final plain-text assistant reply (end_turn via add_assistant()).
+            text = msg.get("text", "").replace("\n", " ").strip()
+            if text:
+                limit = 400 if expanded else 93
+                _line(
+                    ("class:inspector-agent", f"{label} ›  "),
+                    ("",                      _trunc(text, limit)),
+                )
+                _line(("", ""))
 
         elif role == "user" and msg.get("type") == "blocks":
             for blk in msg.get("blocks", []):

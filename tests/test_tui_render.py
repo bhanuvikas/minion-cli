@@ -107,7 +107,7 @@ class TestAssistantBlocks:
     def test_tool_use_block_renders_icon(self):
         lines = render_message_blocks([self._msg([self._tool_blk("read_file")])], "coder")
         assert len(lines) == 1
-        icon_text = lines[0][1][1]  # frag [0]=leading space, [1]=icon frag
+        icon_text = lines[0][0][1]  # frag [0]=icon frag (no leading space)
         assert "⚙" in icon_text
 
     def test_tool_use_block_shows_name(self):
@@ -124,14 +124,14 @@ class TestAssistantBlocks:
 
     def test_tool_use_icon_is_silver(self):
         lines = render_message_blocks([self._msg([self._tool_blk("read_file")])], "coder")
-        icon_style = lines[0][1][0]  # frag [0]=leading space, [1]=icon frag → style
+        icon_style = lines[0][0][0]  # frag [0]=icon frag → style (no leading space)
         assert "#C0C0C0" in icon_style
 
     def test_tool_use_no_args_no_key_value_frags(self):
         lines = render_message_blocks([self._msg([self._tool_blk("bash")])], "coder")
         row = lines[0]
-        # no key=value frags when inputs is empty — only icon + name frags
-        assert len(row) == 3  # leading space + icon + name
+        # no key=value frags when inputs is empty — only icon + name frags (no leading space)
+        assert len(row) == 2  # icon + name
 
     def test_unknown_block_type_ignored(self):
         lines = render_message_blocks(
