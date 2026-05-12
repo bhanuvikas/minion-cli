@@ -153,6 +153,26 @@ def frags_to_rich_markup(frags: list[tuple[str, str]]) -> str:
     )
 
 
+def tool_diff_markup(tool_name: str, inp: dict) -> str:
+    """Return a Rich markup diff string for write_file / edit_file tool inputs.
+
+    edit_file  → character-level diff between old_string and new_string.
+    write_file → all-additions diff (diff from empty string).
+    All other tools → empty string (caller should skip rendering).
+    """
+    from ..output.diff import format_diff_rich
+    if tool_name == "edit_file":
+        old = inp.get("old_string", "")
+        new = inp.get("new_string", "")
+        if old or new:
+            return format_diff_rich(old, new)
+    elif tool_name == "write_file":
+        content = inp.get("content", "")
+        if content:
+            return format_diff_rich("", content)
+    return ""
+
+
 def format_tool_args(inputs: dict, *, expanded: bool = False) -> str:
     """Return a formatted key=value snippet from tool inputs.
 

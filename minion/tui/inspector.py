@@ -85,6 +85,7 @@ def _inline_md_append(txt: str, t: Text) -> None:
         t.append(txt[pos:])
 
 
+
 def _render_agent_transcript(state: SubagentState) -> list:
     """Return a list of Rich renderables for the agent's conversation.
 
@@ -145,10 +146,16 @@ def _render_agent_transcript(state: SubagentState) -> list:
                 if blk.get("type") == "text":
                     _append_assistant_text(blk.get("text", ""))
                 elif blk.get("type") == "tool_use":
-                    frags = tool_slot_header_frags(
-                        blk.get("name", ""), blk.get("input", {}), expanded=True
-                    )
+                    name = blk.get("name", "")
+                    inp  = blk.get("input", {})
+                    frags = tool_slot_header_frags(name, inp, expanded=True)
                     result.append(_frags_to_text(list(frags)))
+                    from ..output.display_utils import tool_diff_markup
+                    diff_markup = tool_diff_markup(name, inp)
+                    if diff_markup:
+                        from .render import render_rich
+                        indented = "   " + diff_markup.rstrip("\n").replace("\n", "\n   ")
+                        result.append(render_rich(indented))
 
         elif role == "assistant" and msg.get("type") == "text":
             _append_assistant_text(msg.get("text", ""))
