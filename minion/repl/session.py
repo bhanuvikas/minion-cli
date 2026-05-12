@@ -369,7 +369,7 @@ async def _run_repl_tui(
                 finally:
                     set_agent_display_callback(None)
 
-            await asyncio.to_thread(_run_in_thread)
+            _agent_result = await asyncio.to_thread(_run_in_thread)
 
             # Flush slot summary to scrollback then clear the live zone
             from ..output.formatter import format_agent_slot_summary
@@ -379,6 +379,34 @@ async def _run_repl_tui(
                 tui_app.conversation.append_system(_line)
             tui_app.invalidate()
             _slots.clear()
+
+            # Feed the subagent result back to minion so it can interpret it
+            _handoff = (
+                f"The user directly invoked the [{_role}] subagent for the following task: {_task}\n\n"
+                f"Subagent output:\n{_agent_result}"
+            )
+            try:
+                await run_prompt_async(
+                    _handoff, client, conversation,
+                    state.system_prompt if state else "",
+                    system_dynamic="",
+                    mcp_manager=mcp_manager,
+                    enable_agents=state.agents_enabled if state else True,
+                    agent_registry=agent_registry,
+                    agent_depth=0,
+                    a2a_manager=a2a_manager_ref,
+                    auto_compact=_file_cfg.context.auto_compact,
+                    approval_mode=state.approval_mode if state else "off",
+                    permission_store=permission_store,
+                    stream_markdown=state.markdown_enabled if state else True,
+                    hook_runner=hook_runner,
+                    confirmation_manager=confirmation_manager,
+                    renderer=_renderer,
+                )
+            except Exception as _run_exc:
+                tui_app.conversation.append_system(f"Error: {_run_exc}")
+            finally:
+                tui_app.conversation.finalize_turn()
 
             tui_app.set_thinking(False)
             return
@@ -634,8 +662,30 @@ async def _run_console_loop(
             console.print()
             with _display:
                 _display.render_now()
-                await asyncio.to_thread(_run_in_thread)
+                _agent_result = await asyncio.to_thread(_run_in_thread)
             # ParallelDisplay.__exit__ prints the final done/error state permanently
+
+            # Feed the subagent result back to minion so it can interpret it
+            _handoff = (
+                f"The user directly invoked the [{_role}] subagent for the following task: {_task}\n\n"
+                f"Subagent output:\n{_agent_result}"
+            )
+            await run_prompt_async(
+                _handoff, client, conversation,
+                state.system_prompt if state else "",
+                system_dynamic="",
+                mcp_manager=mcp_manager,
+                enable_agents=state.agents_enabled if state else True,
+                agent_registry=agent_registry,
+                agent_depth=0,
+                a2a_manager=a2a_manager,
+                auto_compact=_file_cfg.context.auto_compact,
+                approval_mode=state.approval_mode if state else "off",
+                permission_store=permission_store,
+                stream_markdown=state.markdown_enabled if state else True,
+                hook_runner=hook_runner,
+                renderer=_renderer,
+            )
 
             console.print()
             continue
