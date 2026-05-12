@@ -32,38 +32,6 @@ def _handle_agent_direct(raw: str, agent_registry, client: "LLMClient") -> None:
     run_agent(task, role_name, agent_registry, client, parent_depth=0)
 
 
-async def _handle_agent_direct_async(
-    raw: str,
-    agent_registry,
-    client: "LLMClient",
-    confirmation_manager=None,
-) -> None:
-    """Handle '/agent <role> <task>' from the TUI event loop.
-
-    Uses run_agent_async() so the LLM call runs on the existing event loop
-    instead of spinning up a nested asyncio.run() in a thread, which breaks
-    the async HTTP client.
-    """
-    from ..agents.runner import run_agent_async
-
-    parts = raw.split(None, 2)  # ["/agent", "<role>", "<task>"]
-    if len(parts) < 3:
-        if len(parts) == 2:
-            print_error(f"Usage: /agent <role> <task>  (missing task for role '{parts[1]}')")
-        else:
-            print_error("Usage: /agent <role> <task>")
-        return
-
-    role_name = parts[1]
-    task = parts[2].strip()
-    if not task:
-        print_error("Task cannot be empty.")
-        return
-
-    await run_agent_async(task, role_name, agent_registry, client, parent_depth=0,
-                          confirmation_manager=confirmation_manager)
-
-
 def _handle_remote_command(raw: str, a2a_manager: "A2AManager | None") -> None:
     """Handle the /remote slash command family.
 

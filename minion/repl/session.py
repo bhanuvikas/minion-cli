@@ -26,7 +26,7 @@ from ..output import ConsoleRenderer, TuiRenderer
 from ..runner import run_prompt_async
 from ..theme import SILVER, YELLOW, console
 from ..tracing import get_tracer
-from .agent_handlers import _handle_agent_direct, _handle_agent_direct_async, _handle_remote_command
+from .agent_handlers import _handle_agent_direct, _handle_remote_command
 from .commands import _get_last_response_text, _handle_slash_command
 from .input import _CaptureBuf, _INPUT_STYLE, _InputLexer, _SlashCompleter, _kb
 from .mcp import _extract_mcp_text, _handle_mcp_command, _inject_mcp_message
@@ -323,8 +323,63 @@ async def _run_repl_tui(
                 return
 
         if user_input.startswith("/agent "):
-            await _handle_agent_direct_async(user_input, agent_registry, client,
-                                             confirmation_manager=confirmation_manager)
+            parts = user_input.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                err = (
+                    f"Usage: /agent <role> <task>  (missing task for role '{parts[1]}')"
+                    if len(parts) == 2 else "Usage: /agent <role> <task>"
+                )
+                tui_app.conversation.append_system(f"[red]{err}[/]")
+                tui_app.set_thinking(False)
+                return
+            _role = parts[1]
+            _task = parts[2].strip()
+
+            # Slot-based experience — mirrors _execute_parallel_agents_async
+            import uuid
+            from ..agents.runner import run_agent
+            from ..agents.display import set_agent_display_callback
+            from ..tui.agent_registry import get_registry as _get_agent_registry
+            from ..output.base import SlotSpec
+
+            _slot_id = str(uuid.uuid4())
+            _slots = tui_app.slots
+            await _slots.pre_register_async([
+                SlotSpec(key=_slot_id, tool_name="spawn_agent",
+                         inputs={"task": _task, "role": _role}, label=_role)
+            ])
+            _reg = _get_agent_registry()
+            _reg.clear()
+            _reg.register(_slot_id, label=_role, task=_task, role=_role)
+
+            _base_cb = _slots.make_callback(_slot_id)
+            def _agent_cb(event: str, **data) -> None:
+                _base_cb(event, **data)
+                _reg.update(_slot_id, event, **data)
+
+            def _run_in_thread() -> str:
+                set_agent_display_callback(_agent_cb)
+                _agent_cb("running")
+                try:
+                    return run_agent(
+                        _task, _role, agent_registry, client,
+                        parent_depth=0,
+                        confirmation_manager=confirmation_manager,
+                    )
+                finally:
+                    set_agent_display_callback(None)
+
+            await asyncio.to_thread(_run_in_thread)
+
+            # Flush slot summary to scrollback then clear the live zone
+            from ..output.formatter import format_agent_slot_summary
+            _states = _slots.slot_results()
+            _state = _states[0] if _states else {}
+            for _line in format_agent_slot_summary(_role, _task, _state):
+                tui_app.conversation.append_system(_line)
+            tui_app.invalidate()
+            _slots.clear()
+
             tui_app.set_thinking(False)
             return
 
