@@ -40,6 +40,7 @@ WizardScreen, ModelConfigScreen {{
 #wizard-body {{
     height: 1fr;
     padding: 1 2;
+    align: center top;
     scrollbar-size-vertical: 1;
     scrollbar-background: #111111;
     scrollbar-color: #2a2a2a;
@@ -48,13 +49,14 @@ WizardScreen, ModelConfigScreen {{
 }}
 #wizard-body > Static {{
     height: auto;
-    width: 1fr;
+    width: auto;
 }}
 #wizard-foot {{
-    height: 1;
+    height: 2;
     padding: 0 2;
-    background: #0a0a0a;
+    background: #0d0d0d;
     color: {DIM};
+    border-top: solid #2e2e2e;
 }}
 Input {{
     background: #1a1a1a;
@@ -69,10 +71,6 @@ Input:focus {{
 
 # ── Title bar ─────────────────────────────────────────────────────────────────
 
-# ❶ ❷ ❸  — filled/solid circles (active step)
-# ①  ②  ③  — outlined circles (future steps)
-_FILLED = ("❶", "❷", "❸")
-_OPEN   = ("①", "②", "③")
 _STEP_LABELS = ["provider", "model", "api key"]
 
 
@@ -81,16 +79,13 @@ def _build_step_rail(step: int) -> str:
     for i, label in enumerate(_STEP_LABELS):
         n = i + 1
         if n < step:
-            # Completed — green tick
-            parts.append(f"[{GREEN}]✓ {_OPEN[i]} {label}[/]")
+            parts.append(f"[bold #0d0d0d on {GREEN}] ✓ [/] [{GREEN}]{label}[/]")
         elif n == step:
-            # Active — filled circle, gold bold, extra space for visual weight
-            parts.append(f"[bold {GOLD}] {_FILLED[i]}  {label}[/]")
+            parts.append(f"[bold #0d0d0d on {GOLD}] {n} [/] [bold {GOLD}]{label}[/]")
         else:
-            # Future — outlined circle, dim
-            parts.append(f"[{DIM}] {_OPEN[i]}  {label}[/]")
+            parts.append(f"[{DIM} on #252525] {n} [/] [{DIM}]{label}[/]")
         if i < 2:
-            parts.append(f"  [{DIM}]──────[/]  ")
+            parts.append(f"  [{DIM}]────[/]  ")
     parts.append(f"  [{DIM}]┐[/]")
     return "".join(parts)
 
@@ -155,9 +150,8 @@ def build_currently_using(provider: dict, model: dict) -> Table:
     in_p   = fmt_price(model["in_price"])
     out_p  = fmt_price(model["out_price"])
 
-    # Left column: "NOW [A]" on one line, vertically centred across both right rows
     badge = Text.from_markup(f"[bold {color} on #1e1900] {provider['mark']} [/]")
-    left  = Text.assemble(Text("NOW ", style=f"bold {DIM}"), badge)
+    left  = Text.assemble(Text("CURRENT ", style=f"bold {DIM}"), badge)
 
     # Right column: line 1 = provider › model + pills; line 2 = tagline
     ctx_pill   = Text.from_markup(f"[{DIM} on #1c1c1c] ctx {ctx} [/]")

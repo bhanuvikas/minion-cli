@@ -1,6 +1,6 @@
 """ModelConfigScreen — 3-step /model wizard.
 
-Step 1: Provider picker  (↑↓ navigate, Enter select)
+Step 1: Provider picker  (↑↓ navigate, click, Enter select)
 Step 2: Model picker     (↑↓ navigate, Enter select / Shift+Tab back)
 Step 3: API key entry    (paste, Enter validates live, Shift+Tab back)
 
@@ -11,17 +11,19 @@ All three steps live in a single ModalScreen; the frame, title rail, and
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Literal
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Input, Static
 
 from ...config.model_catalog import PROVIDERS, fmt_ctx, fmt_price, has_key
-from ..theme import DIM, GOLD, GREEN, SILVER
+from ..theme import DIM, GOLD, SILVER
 from .base import (
     WIZARD_CSS,
     build_currently_using,
@@ -31,22 +33,108 @@ from .base import (
 
 _KeySub = Literal["empty", "typing", "validating", "success", "error"]
 
+# ── Provider card CSS ─────────────────────────────────────────────────────────
+
+_CARD_CSS = f"""
+ProviderCard {{
+    border: round #3a3a3a;
+    padding: 0 2;
+    margin: 0 0 1 0;
+    height: auto;
+    width: 40%;
+}}
+ProviderCard.card-focused {{
+    border: round {GOLD};
+    background: #1a1200;
+}}
+.card-content-row {{
+    height: auto;
+}}
+.card-badge {{
+    width: 7;
+    height: 3;
+    text-align: center;
+}}
+.card-right {{
+    height: auto;
+    padding: 0 0 0 2;
+}}
+.card-name {{
+    height: 1;
+    width: auto;
+}}
+.card-tagline {{
+    height: 1;
+    color: #888888;
+    margin-top: 1;
+}}
+.card-meta {{
+    height: 1;
+}}
+"""
+
+
+# ── ProviderCard widget ───────────────────────────────────────────────────────
+
+class ProviderCard(Widget):
+    """Focusable, clickable provider selection card for Step 1."""
+
+    can_focus = True
+
+    class Selected(Message):
+        def __init__(self, idx: int) -> None:
+            super().__init__()
+            self.idx = idx
+
+    def __init__(self, provider: dict, idx: int, is_active: bool) -> None:
+        super().__init__(id=f"provider-card-{idx}")
+        self._provider  = provider
+        self._idx       = idx
+        self._is_active = is_active
+
+    def compose(self) -> ComposeResult:
+        p     = self._provider
+        color = p.get("color", SILVER)
+        name_markup = f"[bold {color}]{p['name']}[/]"
+        if self._is_active:
+            name_markup += f"  [{DIM} on #252525] active [/]"
+        n        = len(p["models"])
+        key_part = (
+            f"[#44C76A]✓ key on file[/]"
+            if has_key(p["id"])
+            else f"[#FF8C00]● needs key[/]"
+        )
+        with Horizontal(classes="card-content-row"):
+            yield Static(f"[bold {color}]{p['mark']}[/]", classes="card-badge")
+            with Vertical(classes="card-right"):
+                yield Static(name_markup, classes="card-name")
+                yield Static(p["tagline"], classes="card-tagline")
+                yield Static(f"[{DIM}]{n} models  ·  [/]{key_part}", classes="card-meta")
+
+    def on_mount(self) -> None:
+        color = self._provider.get("color", SILVER)
+        self.query_one(".card-badge").styles.border = ("solid", color)
+
+    def on_click(self) -> None:
+        self.post_message(ProviderCard.Selected(self._idx))
+
+
+# ── ModelConfigScreen ─────────────────────────────────────────────────────────
 
 class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
     """Full 3-step /model wizard modal."""
 
-    CSS = WIZARD_CSS
+    CSS = WIZARD_CSS + _CARD_CSS
 
     BINDINGS = [
-        # priority=True fires BEFORE any child widget (e.g. VerticalScroll) can
-        # consume the key — required so arrow keys move the selection, not scroll.
-        Binding("escape",    "cancel",  show=False, priority=True),
-        Binding("up",        "nav_up",  show=False, priority=True),
-        Binding("down",      "nav_down",show=False, priority=True),
-        Binding("shift+tab", "back",    show=False, priority=True),
-        # enter: normal priority — Input in Step 3 handles it via on_input_submitted;
-        # in Steps 1&2 (no Input widget) it bubbles up and fires action_confirm.
-        Binding("enter",     "confirm", show=False),
+        # priority=True fires BEFORE any child widget can consume the key.
+        Binding("escape",    "cancel",   show=False, priority=True),
+        Binding("up",        "nav_up",   show=False, priority=True),
+        Binding("down",      "nav_down", show=False, priority=True),
+        Binding("shift+tab", "back",     show=False, priority=True),
+        # enter: normal priority — Input in Step 3 handles it first via
+        # on_input_submitted; in Steps 1&2 it bubbles up to action_confirm.
+        Binding("enter",     "confirm",  show=False),
     ]
 
     def __init__(self, provider: str, model_id: str) -> None:
@@ -54,7 +142,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         self._orig_provider = provider
         self._orig_model    = model_id
 
-        # Resolve initial cursor positions from the live client state
         self._provider_idx: int = next(
             (i for i, p in enumerate(PROVIDERS) if p["id"] == provider), 0
         )
@@ -63,10 +150,10 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             (i for i, m in enumerate(sel["models"]) if m["id"] == model_id), 0
         )
 
-        self._step: int         = 1
-        self._key_sub: _KeySub  = "empty"
-        self._key_error: str    = ""
-        self._typed_key: str    = ""
+        self._step: int          = 1
+        self._key_sub: _KeySub   = "empty"
+        self._key_error: str     = ""
+        self._typed_key: str     = ""
         self._validated_key: str = ""
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -82,6 +169,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             yield Static(build_footer_markup(1), id="wizard-foot")
 
     async def on_mount(self) -> None:
+        self.query_one("#wizard-body", VerticalScroll).can_focus = False
         await self._go_to_step(1)
 
     # ── Step transitions ──────────────────────────────────────────────────────
@@ -92,9 +180,15 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         await body.remove_children()
 
         if step == 1:
-            await body.mount(Static(self._build_step1(), id="step-content"))
+            await body.mount(Static(self._build_step1_heading(), id="step1-heading"))
+            for i, p in enumerate(PROVIDERS):
+                await body.mount(ProviderCard(p, i, p["id"] == self._orig_provider))
+            self._update_card_focus()
+            self.query_one(f"#provider-card-{self._provider_idx}", ProviderCard).focus(scroll_visible=False)
+
         elif step == 2:
             await body.mount(Static(self._build_step2(), id="step-content"))
+
         elif step == 3:
             await body.mount(Static(self._build_step3_top(), id="step3-top"))
             await body.mount(Input(
@@ -103,65 +197,53 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
                 placeholder="paste API key…",
             ))
             await body.mount(Static(self._key_status_markup(), id="key-status"))
-            # Give the Input explicit focus so keyboard input lands there
             self.query_one("#key-input", Input).focus()
 
         self.query_one("#wizard-title", Static).update(build_title_bar(step))
         self.query_one("#wizard-foot", Static).update(build_footer_markup(step))
 
+    def _update_card_focus(self) -> None:
+        """Add .card-focused to the selected card, remove from all others."""
+        for i in range(len(PROVIDERS)):
+            try:
+                card = self.query_one(f"#provider-card-{i}", ProviderCard)
+                card.set_class(i == self._provider_idx, "card-focused")
+            except Exception:
+                pass
+
     def _refresh_body(self) -> None:
-        """Redraw the current step's Static content (navigation within step)."""
-        if self._step == 1:
-            self.query_one("#step-content", Static).update(self._build_step1())
-        elif self._step == 2:
+        """Redraw step 2 content; step 1 is handled by .card-focused class."""
+        if self._step == 2:
             self.query_one("#step-content", Static).update(self._build_step2())
 
     # ── Step 1 — Provider picker ──────────────────────────────────────────────
 
-    _CARD_W = 60  # inner width of box-border cards (──── chars)
+    def _build_step1_heading(self) -> Text:
+        out = Text()
+        out.append("Bello! Who should do the ", style="bold")
+        out.append("thinking", style=f"bold {GOLD}")
+        out.append("?\n", style="bold")
+        out.append("\n")
+        out.append("Pick a provider.\n", style=SILVER)
+        out.append("\n")
+        out.append("    ")
+        out.append("✓", style="#44C76A")
+        out.append(" means we already have a key on file — no setup needed.\n", style=DIM)
+        out.append("    ")
+        out.append("●", style="#FF8C00")
+        out.append(" means you'll be asked to paste one.\n", style=DIM)
+        out.append("\n")
+        return out
 
-    def _build_step1(self) -> str:
-        w = self._CARD_W
-        lines: list[str] = [
-            f"[bold]Bello! Who should do the [{GOLD}]thinking[/]?[/]",
-            f"[{DIM}]Pick a provider. [green]✓[/] = key on file  ·  [orange]●[/] = you'll paste one.[/{DIM}]",
-            "",
-        ]
-        for i, p in enumerate(PROVIDERS):
-            focused   = i == self._provider_idx
-            active    = p["id"] == self._orig_provider
-            color     = p.get("color", SILVER)
-            key_badge = f"[green]✓ key on file[/]" if has_key(p["id"]) else f"[orange]● needs key[/]"
-            active_str = f"  [{DIM}](active)[/]" if active else ""
-
-            if focused:
-                lines.append(f"[{GOLD}] ╭{'─' * w}╮[/]")
-                lines.append(
-                    f"[{GOLD}] │[/]  [bold {GOLD}]›[/]"
-                    f"  [{color} on #1a1400] {p['mark']} [/]"
-                    f"  [bold {color}]{p['name']}[/]{active_str}"
-                )
-                lines.append(f"[{GOLD}] │[/]     [{SILVER}]{p['tagline']}[/]")
-                lines.append(
-                    f"[{GOLD}] │[/]"
-                    f"     [{DIM}]{len(p['models'])} models[/]"
-                    f"  ·  {key_badge}"
-                )
-                lines.append(f"[{GOLD}] ╰{'─' * w}╯[/]")
-            else:
-                lines.append(
-                    f"     [{DIM}] {p['mark']} [/]"
-                    f"  [{DIM}]{p['name']}[/]{active_str}"
-                )
-                lines.append(f"        [{DIM}]{p['tagline']}[/]")
-                lines.append(
-                    f"        [{DIM}]{len(p['models'])} models  ·  [/]{key_badge}"
-                )
-
-            lines.append("")
-        return "\n".join(lines)
+    def on_provider_card_selected(self, message: ProviderCard.Selected) -> None:
+        if message.idx != self._provider_idx:
+            self._model_idx = 0
+        self._provider_idx = message.idx
+        self._update_card_focus()
 
     # ── Step 2 — Model picker ─────────────────────────────────────────────────
+
+    _CARD_W = 60
 
     def _build_step2(self) -> str:
         w     = self._CARD_W
@@ -176,8 +258,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             focused   = i == self._model_idx
             ctx_str   = fmt_ctx(m["ctx"])
             price     = f"{fmt_price(m['in_price'])}/{fmt_price(m['out_price'])} per Mtok"
-
-            # Explicit colors — [bold] alone renders as bright white on most terminals
             bar_fg    = GOLD if focused else "#888888"
             bar_empty = "#2a2a2a"
             spd_bar   = f"[{bar_fg}]{'█' * m['speed']}[/][{bar_empty}]{'░' * (5 - m['speed'])}[/]"
@@ -209,7 +289,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
                     f"   [{DIM}]spd[/] {spd_bar}"
                     f"  [{DIM}]iq[/] {iq_bar}"
                 )
-
             lines.append("")
         return "\n".join(lines)
 
@@ -266,13 +345,13 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         except Exception:
             pass
 
-    # ── Actions (wired to BINDINGS above) ────────────────────────────────────
+    # ── Actions ───────────────────────────────────────────────────────────────
 
     def action_nav_up(self) -> None:
         if self._step == 1:
             self._provider_idx = (self._provider_idx - 1) % len(PROVIDERS)
             self._model_idx    = 0
-            self._refresh_body()
+            self._update_card_focus()
         elif self._step == 2:
             self._model_idx = max(0, self._model_idx - 1)
             self._refresh_body()
@@ -281,7 +360,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         if self._step == 1:
             self._provider_idx = (self._provider_idx + 1) % len(PROVIDERS)
             self._model_idx    = 0
-            self._refresh_body()
+            self._update_card_focus()
         elif self._step == 2:
             models = PROVIDERS[self._provider_idx]["models"]
             self._model_idx = min(len(models) - 1, self._model_idx + 1)
@@ -306,7 +385,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             else:
                 self.action_save()
         elif self._step == 3:
-            # Reached only when Input didn't consume Enter (validating/disabled)
             if self._key_sub == "success":
                 self.action_save()
             elif self._typed_key and self._key_sub != "validating":
@@ -330,7 +408,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
     # ── Async key validation ──────────────────────────────────────────────────
 
     def _run_validation(self) -> None:
-        """Kick off async validation; called from sync on_input_submitted."""
         self.run_worker(self._validate_worker(), exclusive=True)
 
     async def _validate_worker(self) -> None:
@@ -339,8 +416,8 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         self._key_sub = "validating"
         self._refresh_key_status(sub="validating")
 
-        p   = PROVIDERS[self._provider_idx]
-        m   = p["models"][self._model_idx]
+        p      = PROVIDERS[self._provider_idx]
+        m      = p["models"][self._model_idx]
         ok, msg = await asyncio.to_thread(
             test_connection, p["id"], self._typed_key, m["id"]
         )
@@ -352,8 +429,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._key_sub   = "error"
             self._key_error = msg
         self._refresh_key_status()
-
-    # ── Actions ───────────────────────────────────────────────────────────────
 
     def action_cancel(self) -> None:
         self.dismiss({})
