@@ -71,6 +71,40 @@ ProviderCard.card-focused {{
 .card-meta {{
     height: 1;
 }}
+ModelCard {{
+    border: round #3a3a3a;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    height: auto;
+    width: 40%;
+}}
+ModelCard.model-focused {{
+    border: round {GOLD};
+    background: #1a1200;
+}}
+.model-content-row {{
+    height: auto;
+}}
+.model-left {{
+    height: auto;
+    width: 1fr;
+}}
+.model-right {{
+    height: auto;
+    width: auto;
+    padding: 0 0 0 2;
+}}
+.model-name-row {{
+    height: 1;
+}}
+.model-tag-row {{
+    height: 1;
+    color: #888888;
+    margin-top: 1;
+}}
+.model-bar-row {{
+    height: 1;
+}}
 """
 
 
@@ -117,6 +151,70 @@ class ProviderCard(Widget):
 
     def on_click(self) -> None:
         self.post_message(ProviderCard.Selected(self._idx))
+
+
+# ── ModelCard widget ──────────────────────────────────────────────────────────
+
+class ModelCard(Widget):
+    """Focusable, clickable model selection card for Step 2."""
+
+    can_focus = False  # navigation managed by screen priority bindings
+
+    class Selected(Message):
+        def __init__(self, idx: int) -> None:
+            super().__init__()
+            self.idx = idx
+
+    def __init__(self, model: dict, provider: dict, idx: int, is_focused: bool) -> None:
+        super().__init__(id=f"model-card-{idx}")
+        self._model     = model
+        self._provider  = provider
+        self._idx       = idx
+        self._is_focused = is_focused
+
+    def _name_row_markup(self) -> str:
+        m         = self._model
+        ctx       = fmt_ctx(m["ctx"])
+        name_part = (
+            f"[bold {GOLD}]{m['id']}[/]" if self._is_focused
+            else f"[{SILVER}]{m['id']}[/]"
+        )
+        ctx_tag   = f"[{DIM} on #1c1c1c] ctx {ctx} [/]"
+        price_tag = f"[{DIM} on #1c1c1c] {fmt_price(m['in_price'])} / {fmt_price(m['out_price'])} per Mtok [/]"
+        return f"{name_part}  {ctx_tag}  {price_tag}"
+
+    def _bar_markup(self, label: str, value: int) -> str:
+        bar_fg    = GOLD if self._is_focused else "#888888"
+        bar_empty = "#2a2a2a"
+        filled    = f"[{bar_fg}]{'█' * value}[/]"
+        empty     = f"[{bar_empty}]{'░' * (5 - value)}[/]"
+        return f"[{DIM}]{label}[/] {filled}{empty}"
+
+    def compose(self) -> ComposeResult:
+        m = self._model
+        with Horizontal(classes="model-content-row"):
+            with Vertical(classes="model-left"):
+                yield Static(self._name_row_markup(), classes="model-name-row")
+                yield Static(f"[{DIM}]{m['tag']}[/]", classes="model-tag-row")
+            with Vertical(classes="model-right"):
+                yield Static(self._bar_markup("SPD", m["speed"]), classes="model-bar-row")
+                yield Static(self._bar_markup("IQ ", m["intel"]), classes="model-bar-row")
+
+    def set_focused(self, focused: bool) -> None:
+        self._is_focused = focused
+        self.set_class(focused, "model-focused")
+        m = self._model
+        name_statics = self.query(".model-name-row")
+        if name_statics:
+            name_statics.first(Static).update(self._name_row_markup())
+        bar_statics = self.query(".model-bar-row")
+        bars = list(bar_statics)
+        if len(bars) >= 2:
+            bars[0].update(self._bar_markup("SPD", m["speed"]))  # type: ignore[arg-type]
+            bars[1].update(self._bar_markup("IQ ", m["intel"]))  # type: ignore[arg-type]
+
+    def on_click(self) -> None:
+        self.post_message(ModelCard.Selected(self._idx))
 
 
 # ── ModelConfigScreen ─────────────────────────────────────────────────────────
@@ -187,7 +285,16 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self.query_one(f"#provider-card-{self._provider_idx}", ProviderCard).focus(scroll_visible=False)
 
         elif step == 2:
-            await body.mount(Static(self._build_step2(), id="step-content"))
+            p     = PROVIDERS[self._provider_idx]
+            color = p.get("color", SILVER)
+            heading = (
+                f"[bold]Great, [{color}]{p['name']}[/] it is. Which model?[/]\n"
+                f"[{DIM}]Bigger isn't always better — switch any time with [bold]/model[/].[/]\n"
+            )
+            await body.mount(Static(heading, id="step2-heading"))
+            for i, m in enumerate(p["models"]):
+                await body.mount(ModelCard(m, p, i, i == self._model_idx))
+            self._update_model_focus()
 
         elif step == 3:
             await body.mount(Static(self._build_step3_top(), id="step3-top"))
@@ -211,10 +318,15 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             except Exception:
                 pass
 
-    def _refresh_body(self) -> None:
-        """Redraw step 2 content; step 1 is handled by .card-focused class."""
-        if self._step == 2:
-            self.query_one("#step-content", Static).update(self._build_step2())
+    def _update_model_focus(self) -> None:
+        """Update .model-focused class on all ModelCards for the current selection."""
+        p = PROVIDERS[self._provider_idx]
+        for i in range(len(p["models"])):
+            try:
+                card = self.query_one(f"#model-card-{i}", ModelCard)
+                card.set_focused(i == self._model_idx)
+            except Exception:
+                pass
 
     # ── Step 1 — Provider picker ──────────────────────────────────────────────
 
@@ -240,57 +352,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._model_idx = 0
         self._provider_idx = message.idx
         self._update_card_focus()
-
-    # ── Step 2 — Model picker ─────────────────────────────────────────────────
-
-    _CARD_W = 60
-
-    def _build_step2(self) -> str:
-        w     = self._CARD_W
-        p     = PROVIDERS[self._provider_idx]
-        color = p.get("color", SILVER)
-        lines: list[str] = [
-            f"[bold]Great, [{color}]{p['name']}[/] it is. Which model?[/]",
-            f"[{DIM}]Bigger isn't always better. Switch any time with [bold]/model[/].[/{DIM}]",
-            "",
-        ]
-        for i, m in enumerate(p["models"]):
-            focused   = i == self._model_idx
-            ctx_str   = fmt_ctx(m["ctx"])
-            price     = f"{fmt_price(m['in_price'])}/{fmt_price(m['out_price'])} per Mtok"
-            bar_fg    = GOLD if focused else "#888888"
-            bar_empty = "#2a2a2a"
-            spd_bar   = f"[{bar_fg}]{'█' * m['speed']}[/][{bar_empty}]{'░' * (5 - m['speed'])}[/]"
-            iq_bar    = f"[{bar_fg}]{'█' * m['intel']}[/][{bar_empty}]{'░' * (5 - m['intel'])}[/]"
-
-            if focused:
-                name = f"[bold {GOLD}]{m['id']}[/]"
-                lines.append(f"[{GOLD}] ╭{'─' * w}╮[/]")
-                lines.append(
-                    f"[{GOLD}] │[/]  [bold {GOLD}]›[/]"
-                    f"  {name}"
-                    f"  [{DIM}]ctx {ctx_str}  ·  {price}[/]"
-                )
-                lines.append(
-                    f"[{GOLD}] │[/]"
-                    f"     [{DIM}]{m['tag']}[/]"
-                    f"   [{DIM}]spd[/] {spd_bar}"
-                    f"  [{DIM}]iq[/] {iq_bar}"
-                )
-                lines.append(f"[{GOLD}] ╰{'─' * w}╯[/]")
-            else:
-                name = f"[{SILVER}]{m['id']}[/]"
-                lines.append(
-                    f"     {name}"
-                    f"  [{DIM}]ctx {ctx_str}  ·  {price}[/]"
-                )
-                lines.append(
-                    f"     [{DIM}]{m['tag']}[/]"
-                    f"   [{DIM}]spd[/] {spd_bar}"
-                    f"  [{DIM}]iq[/] {iq_bar}"
-                )
-            lines.append("")
-        return "\n".join(lines)
 
     # ── Step 3 — API key entry ────────────────────────────────────────────────
 
@@ -345,7 +406,21 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         except Exception:
             pass
 
+    # ── Key interception ─────────────────────────────────────────────────────
+
+    async def on_key(self, event) -> None:
+        # Textual consumes Tab/Shift+Tab at the App level for focus cycling
+        # before screen priority bindings fire.  Intercept them here instead.
+        if self._step >= 2 and event.key in ("tab", "shift+tab"):
+            event.prevent_default()
+            event.stop()
+            await self.action_back()
+
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def on_model_card_selected(self, message: ModelCard.Selected) -> None:
+        self._model_idx = message.idx
+        self._update_model_focus()
 
     def action_nav_up(self) -> None:
         if self._step == 1:
@@ -354,7 +429,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._update_card_focus()
         elif self._step == 2:
             self._model_idx = max(0, self._model_idx - 1)
-            self._refresh_body()
+            self._update_model_focus()
 
     def action_nav_down(self) -> None:
         if self._step == 1:
@@ -364,7 +439,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         elif self._step == 2:
             models = PROVIDERS[self._provider_idx]["models"]
             self._model_idx = min(len(models) - 1, self._model_idx + 1)
-            self._refresh_body()
+            self._update_model_focus()
 
     async def action_back(self) -> None:
         if self._step == 2:

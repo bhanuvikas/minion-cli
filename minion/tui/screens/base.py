@@ -114,13 +114,13 @@ _STEP_FOOT: dict[int | str, list[tuple[list[str], str]]] = {
     2: [
         (["↑", "↓"], "navigate"),
         (["↵"], "select model"),
-        (["⇧Tab"], "back to providers"),
+        (["Tab"], "back to providers"),
         (["esc"], "cancel"),
     ],
     3: [
         (["⌘V"], "paste"),
         (["↵"], "test & save"),
-        (["⇧Tab"], "back to model"),
+        (["Tab"], "back to model"),
         (["esc"], "cancel"),
     ],
     "3-validating": [(["…"], "testing connection"), (["esc"], "cancel")],
