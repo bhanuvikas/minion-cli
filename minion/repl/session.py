@@ -196,47 +196,36 @@ async def run_repl_async(
         from minion import __version__ as _minion_ver
         loop = asyncio.get_event_loop()
 
-        while True:
-            tui_app = MinionApp(
-                model_name=client.model_id,
-                agent_registry=agent_registry,
-                skill_registry=skill_registry,
-                a2a_manager=a2a_manager,
-            )
-            tui_app.update_session(
-                model=client.model_id,
-                provider=getattr(client, "provider_name", ""),
-                project=project_context.label if project_context and project_context.label else "",
-                cwd=str(project_cwd),
-                memory=state.memory_enabled,
-                agents=len(agent_registry) if agent_registry else 0,
-                version=_minion_ver,
-                mcp_count=mcp_count,
-                a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
-            )
-            tui_app.set_startup_warnings(_all_startup_warnings)
-            confirmation_manager.set_tui(tui_app, loop)
-            set_tui_app(tui_app)
-            model_config_ran = await _run_repl_tui(
-                tui_app=tui_app,
-                ctx=ctx,
-                mcp_manager=mcp_manager,
-                confirmation_manager=confirmation_manager,
-                dry_run=dry_run,
-                _file_cfg=_file_cfg,
-                _hook_session_id=_hook_session_id,
-                project_cwd=project_cwd,
-            )
-            if not model_config_ran:
-                break
-            from dotenv import load_dotenv
-            load_dotenv(Path.home() / ".minion" / ".env", override=True)
-            load_dotenv(Path.cwd() / ".minion" / ".env", override=True)
-            try:
-                from ..llm.factory import get_client as _get_client
-                client = _get_client()
-            except ValueError:
-                pass
+        tui_app = MinionApp(
+            model_name=client.model_id,
+            agent_registry=agent_registry,
+            skill_registry=skill_registry,
+            a2a_manager=a2a_manager,
+        )
+        tui_app.update_session(
+            model=client.model_id,
+            provider=getattr(client, "provider_name", ""),
+            project=project_context.label if project_context and project_context.label else "",
+            cwd=str(project_cwd),
+            memory=state.memory_enabled,
+            agents=len(agent_registry) if agent_registry else 0,
+            version=_minion_ver,
+            mcp_count=mcp_count,
+            a2a_count=len(a2a_manager.agent_names()) if a2a_manager.has_agents() else 0,
+        )
+        tui_app.set_startup_warnings(_all_startup_warnings)
+        confirmation_manager.set_tui(tui_app, loop)
+        set_tui_app(tui_app)
+        await _run_repl_tui(
+            tui_app=tui_app,
+            ctx=ctx,
+            mcp_manager=mcp_manager,
+            confirmation_manager=confirmation_manager,
+            dry_run=dry_run,
+            _file_cfg=_file_cfg,
+            _hook_session_id=_hook_session_id,
+            project_cwd=project_cwd,
+        )
         return
 
     await _run_console_loop(
@@ -253,6 +242,56 @@ async def run_repl_async(
     )
 
 
+# ─── /model diff helper ───────────────────────────────────────────────────────
+
+def _build_model_diff(
+    old_provider: str, old_model: str,
+    new_provider: str, new_model: str,
+) -> list[str]:
+    """Return Rich markup lines for the before→after diff card shown after /model saves."""
+    from ..config.model_catalog import fmt_ctx, fmt_price, get_model, get_provider as _gp
+
+    old_p = _gp(old_provider)
+    new_p = _gp(new_provider)
+    old_m = get_model(old_provider, old_model)
+    new_m = get_model(new_provider, new_model)
+
+    old_pname = old_p["name"]  if old_p else old_provider
+    new_pname = new_p["name"]  if new_p else new_provider
+    new_color = new_p["color"] if new_p else "#C0C0C0"
+
+    lines: list[str] = [
+        f"[green]✓ model updated[/]  [muted]· saved to ~/.minion/.env[/]",
+        "",
+    ]
+
+    def _row(label: str, old_val: str, new_val: str) -> str:
+        if old_val == new_val:
+            return f"  [muted]{label:<10}[/]  [#888888]{old_val}[/]"
+        return (
+            f"  [muted]{label:<10}[/]"
+            f"  [red]- {old_val}[/]"
+            f"  [muted]→[/]"
+            f"  [green]+ {new_val}[/]"
+        )
+
+    lines.append(_row("provider", old_pname, new_pname))
+    lines.append(_row("model",    old_model,  new_model))
+
+    if old_m and new_m:
+        lines.append(_row("context",
+            fmt_ctx(old_m["ctx"]), fmt_ctx(new_m["ctx"])))
+        lines.append(_row("pricing",
+            f"{fmt_price(old_m['in_price'])}/{fmt_price(old_m['out_price'])}",
+            f"{fmt_price(new_m['in_price'])}/{fmt_price(new_m['out_price'])}"))
+
+    lines.append("")
+    lines.append(
+        f"[muted]  Conversation kept · subagents re-bound to [{new_color}]{new_model}[/][/]"
+    )
+    return lines
+
+
 # ─── TUI REPL loop ────────────────────────────────────────────────────────────
 
 async def _run_repl_tui(
@@ -266,13 +305,8 @@ async def _run_repl_tui(
     _hook_session_id: str,
     project_cwd: Path,
 ) -> bool:
-    """TUI REPL loop.
-
-    Returns True if the loop exited to run /model (caller restarts the TUI
-    with a refreshed client), False for a normal user-initiated quit.
-    """
+    """TUI REPL loop. Returns False on normal quit."""
     import typer
-    from ..config import run_model_config
     from ..tui import set_tui_app
 
     client       = ctx.client
@@ -286,7 +320,6 @@ async def _run_repl_tui(
     a2a_manager_ref = getattr(ctx, '_a2a_manager', None)
 
     _renderer = TuiRenderer(tui_app)
-    _post_exit_model_config: list[bool] = [False]
 
     async def on_submit(user_input: str) -> None:
         get_tracer().emit("user_turn", text=user_input)
@@ -417,8 +450,64 @@ async def _run_repl_tui(
             return
 
         if user_input.startswith("/") and user_input.strip() == "/model":
-            _post_exit_model_config[0] = True
-            await tui_app.flush_and_exit()
+            from ..tui.screens import ModelConfigScreen
+
+            _prev_provider = getattr(client, "provider_name", "anthropic")
+            _prev_model    = client.model_id
+
+            async def _on_model_result(updates: dict) -> None:
+                if not updates:
+                    # Discarded — show brief one-liner
+                    from ..config.model_catalog import get_model, get_provider as _gp, fmt_ctx, fmt_price
+                    _pp = _gp(_prev_provider)
+                    _pm = get_model(_prev_provider, _prev_model)
+                    _pname = _pp["name"] if _pp else _prev_provider
+                    _mctx  = fmt_ctx(_pm["ctx"]) if _pm else "?"
+                    _mprc  = f"{fmt_price(_pm['in_price'])}/{fmt_price(_pm['out_price'])}" if _pm else ""
+                    tui_app.conversation.append_system(
+                        f"[muted]No worries — picker closed, nothing changed.[/]  "
+                        f"Still on [{_pp['color'] if _pp else '#C0C0C0'}]{_pname}[/] "
+                        f"[muted]›[/] [bold #FFD700]{_prev_model}[/]"
+                        + (f"  [muted]ctx {_mctx} · {_mprc} per Mtok[/]" if _mprc else "")
+                    )
+                    tui_app.conversation.finalize_turn()
+                    tui_app.set_thinking(False)
+                    return
+
+                from dotenv import load_dotenv
+                from pathlib import Path as _Path
+                load_dotenv(_Path.home() / ".minion" / ".env", override=True)
+                load_dotenv(_Path.cwd() / ".minion" / ".env", override=True)
+                try:
+                    from ..llm.factory import get_client as _get_client
+                    nonlocal client
+                    client = _get_client()
+                    ctx.client = client
+                    _new_provider = getattr(client, "provider_name", "")
+                    _new_model    = client.model_id
+                    tui_app.update_session(
+                        model=_new_model,
+                        provider=_new_provider,
+                    )
+                    # Before → after diff card
+                    _diff = _build_model_diff(
+                        _prev_provider, _prev_model,
+                        _new_provider,  _new_model,
+                    )
+                    for _line in _diff:
+                        tui_app.conversation.append_system(_line)
+                except Exception as _e:
+                    tui_app.conversation.append_system(f"[red]Error reloading client:[/] {_e}")
+                tui_app.conversation.finalize_turn()
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(
+                ModelConfigScreen(
+                    provider=_prev_provider,
+                    model_id=_prev_model,
+                ),
+                _on_model_result,
+            )
             return
 
         if user_input.startswith("/"):
@@ -526,19 +615,14 @@ async def _run_repl_tui(
         tui_app.invalidate()
 
     async def on_quit() -> None:
-        if not _post_exit_model_config[0]:
-            from ..hooks.events import SessionEndEvent
-            await hook_runner.fire(SessionEndEvent(session_id=_hook_session_id, cwd=project_cwd))
-            mcp_manager.shutdown()
-            get_tracer().finalize()
+        from ..hooks.events import SessionEndEvent
+        await hook_runner.fire(SessionEndEvent(session_id=_hook_session_id, cwd=project_cwd))
+        mcp_manager.shutdown()
+        get_tracer().finalize()
         set_tui_app(None)
 
     await tui_app.run_async(on_submit=on_submit, on_quit=on_quit)
-
-    if _post_exit_model_config[0]:
-        await asyncio.to_thread(run_model_config, client)
-
-    return _post_exit_model_config[0]
+    return False
 
 
 # ─── Console REPL loop ────────────────────────────────────────────────────────
