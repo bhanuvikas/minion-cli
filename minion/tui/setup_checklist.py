@@ -121,92 +121,76 @@ class SetupChecklistPanel:
 
     # ── Rich markup rendering ─────────────────────────────────────────────────
 
-    def get_rich_markup(self) -> str:
-        if self.is_complete:
-            return self._done_banner()
-        return self._checklist()
+    # Visible-text column widths — padding is applied to the raw text so
+    # Rich markup escape sequences don't inflate the field width.
+    _NAME_W = 30
+    _DESC_W = 44
 
-    def _checklist(self) -> str:
-        # Visible-text column widths — padding is applied to the raw text so
-        # Rich markup escape sequences don't inflate the field width.
-        _NAME_W = 30
-        _DESC_W = 44
-
+    def get_header_markup(self) -> str:
         done  = self.done_count()
         total = len(_ROWS)
-        lines: list[str] = []
-
-        # Header
-        lines.append(
+        hint  = (
+            f"  [{_DIM}]Three quick things to get you running.[/]"  if done == 0 else
+            f"  [{_DIM}]Nice. Two more — tab completion and a project scan.[/]" if done == 1 else
+            f"  [{_DIM}]Almost there. One last step — let me read your repo.[/]"
+        )
+        return (
             f"  [bold {_GOLD}]first-run setup[/]  [{_DIM}]· {done} of {total} done[/]"
             f"        [{_DIM}]↑↓ navigate  ·  [{_SILVER}]↵ open[/]  ·  [{_SILVER}]x[/] [{_DIM}]dismiss[/]"
+            f"\n{hint}\n"
         )
 
-        # Context hint
-        if done == 0:
-            lines.append(f"  [{_DIM}]Three quick things to get you running.[/]")
-        elif done == 1:
-            lines.append(f"  [{_DIM}]Nice. Two more — tab completion and a project scan.[/]")
-        elif done == 2:
-            lines.append(f"  [{_DIM}]Almost there. One last step — let me read your repo.[/]")
-        lines.append("")
+    def get_row_markup(self, i: int) -> str:
+        row    = _ROWS[i]
+        state  = self._state[i]
+        is_cur = (i == self._cursor and state != "done")
 
-        for i, row in enumerate(_ROWS):
-            state  = self._state[i]
-            is_cur = (i == self._cursor and state != "done")
+        # Number / status (1 visible char)
+        if state == "done":
+            num = f"[bold {_GREEN}]✓[/]"
+        elif is_cur:
+            num = f"[bold {_GOLD}]{i + 1}[/]"
+        else:
+            num = f"[{_DIM}]{i + 1}[/]"
 
-            # Arrow (1 visible char, or space)
-            arrow = f"[bold {_GOLD}]▶[/]" if is_cur else " "
+        # Name column
+        visible_name = row["title"]
+        name_pad = " " * max(0, self._NAME_W - len(visible_name))
+        if state == "done":
+            name_col = f"[{_DIM}]{visible_name}[/]{name_pad}"
+        elif is_cur:
+            name_col = f"[bold {_GOLD}]{visible_name}[/]{name_pad}"
+        else:
+            name_col = f"[{_SILVER}]{visible_name}[/]{name_pad}"
 
-            # Bullet (1 visible char)
-            if state == "done":
-                bullet = f"[bold {_GREEN}]✓[/]"
-            elif is_cur:
-                bullet = f"[bold {_GOLD}]●[/]"
-            else:
-                bullet = f"[{_DIM}]○[/]"
+        # Description column — clamp so long text never bleeds into action hint.
+        if state == "done" and self._summaries[row["id"]]:
+            visible_desc = self._summaries[row["id"]]
+        else:
+            visible_desc = row["sub"]
+        if len(visible_desc) > self._DESC_W:
+            visible_desc = visible_desc[:self._DESC_W - 1] + "…"
+        desc_pad = " " * max(0, self._DESC_W - len(visible_desc))
+        desc_col = f"[{_DIM}]{visible_desc}[/]{desc_pad}"
 
-            # Number (1 visible char)
-            num_style = _GOLD if is_cur else _DIM
-            num = f"[{num_style}]{i + 1}[/]"
+        # Action hint
+        if state == "done":
+            hint_col = f"[{_GREEN}]done[/]"
+        elif is_cur:
+            hint_col = f"[bold {_GOLD}]↵[/] [{_GOLD}]{row['action']}[/]"
+        else:
+            hint_col = f"[{_DIM}]{row['action']}[/]"
 
-            # Name column — markup wraps only the text; padding is plain spaces
-            # so Python string width accounting stays accurate.
-            visible_name = row["title"]
-            name_pad = " " * max(0, _NAME_W - len(visible_name))
-            if state == "done":
-                name_col = f"[{_DIM}]{visible_name}[/]{name_pad}"
-            elif is_cur:
-                name_col = f"[bold {_GOLD}]{visible_name}[/]{name_pad}"
-            else:
-                name_col = f"[{_SILVER}]{visible_name}[/]{name_pad}"
+        return f"  {num}  {name_col}  {desc_col}  {hint_col}"
 
-            # Description column — clamp to _DESC_W so long text never
-            # bleeds into the action hint column.
-            if state == "done" and self._summaries[row["id"]]:
-                visible_desc = self._summaries[row["id"]]
-            else:
-                visible_desc = row["sub"]
-            if len(visible_desc) > _DESC_W:
-                visible_desc = visible_desc[:_DESC_W - 1] + "…"
-            desc_pad = " " * max(0, _DESC_W - len(visible_desc))
-            desc_col = f"[{_DIM}]{visible_desc}[/]{desc_pad}"
-
-            # Action hint — always shown; bold+gold for active, dim for others
-            if state == "done":
-                hint_col = f"[{_GREEN}]done[/]"
-            elif is_cur:
-                hint_col = f"[bold {_GOLD}]↵[/] [{_GOLD}]{row['action']}[/]"
-            else:
-                hint_col = f"[{_DIM}]{row['action']}[/]"
-
-            lines.append(f"  {arrow}  {bullet}  {num}  {name_col}  {desc_col}  {hint_col}")
-            lines.append("")  # blank row between checklist entries
-
-        lines.append(
-            f"  [{_DIM}]└ all steps optional after the brain · re-open with [/][{_SILVER}]/setup[/]"
+    def get_footer_markup(self) -> str:
+        return (
+            f"\n  [{_DIM}]└ only step 1 is required · steps 2 & 3 are optional"
+            f" · re-open with [/][{_SILVER}]/setup[/]"
         )
-        return "\n".join(lines)
+
+    def get_done_banner(self) -> str:
+        return self._done_banner()
 
     def _done_banner(self) -> str:
         lines: list[str] = []

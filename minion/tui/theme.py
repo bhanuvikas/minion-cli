@@ -48,17 +48,33 @@ InspectorZone {{
     display: none;
 }}
 
-SetupChecklistZone {{
+#setup-zone-center {{
     height: auto;
     display: none;
+}}
+
+SetupChecklistZone {{
+    height: auto;
+    width: 70%;
     border: solid #333333;
-    margin: 0 1;
     padding: 0 1;
 }}
 
 SetupChecklistZone > Static {{
     height: auto;
     width: 1fr;
+}}
+
+.cl-row {{
+    height: auto;
+    border: solid #2a2a2a;
+    padding: 0 1;
+    margin: 0 0 0 0;
+}}
+
+.cl-row-focused {{
+    border: solid {GOLD};
+    background: #1a1200;
 }}
 
 InputSection {{

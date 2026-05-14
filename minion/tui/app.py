@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 from rich.console import RenderableType
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Center, Horizontal, VerticalScroll
 from textual.events import Key
 from textual.message import Message
 from textual.widget import Widget
@@ -128,7 +128,11 @@ class SetupChecklistZone(Widget):
     """Hosts the first-run setup checklist between the conversation and input."""
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="setup-checklist-static")
+        yield Static("", id="cl-header")
+        yield Static("", classes="cl-row", id="cl-row-0")
+        yield Static("", classes="cl-row", id="cl-row-1")
+        yield Static("", classes="cl-row", id="cl-row-2")
+        yield Static("", id="cl-footer")
 
 
 class PermissionContent(Static):
@@ -395,8 +399,10 @@ class MinionApp(App):
         self._completion_list:    Optional[CompletionList]      = None
         self._status_line:        Optional[StatusLine]          = None
         self._input_area:         Optional[InputArea]           = None
-        self._setup_zone:         Optional[SetupChecklistZone]  = None
-        self._setup_static:       Optional[Static]              = None
+        self._setup_zone:         Optional[Widget]               = None   # the Center wrapper
+        self._setup_cl_header:    Optional[Static]              = None
+        self._setup_cl_rows:      list[Static]                  = []
+        self._setup_cl_footer:    Optional[Static]              = None
 
     # ── History helpers ───────────────────────────────────────────────────────
 
@@ -422,7 +428,8 @@ class MinionApp(App):
 
     def compose(self) -> ComposeResult:
         yield ConversationArea(id="conv-area")
-        yield SetupChecklistZone(id="setup-zone")
+        with Center(id="setup-zone-center"):
+            yield SetupChecklistZone(id="setup-zone")
         yield InputSection(id="input-section")
         yield CompletionList(id="completion-list")
         yield StatusLine("", id="status-line")
@@ -431,8 +438,10 @@ class MinionApp(App):
 
     def on_mount(self) -> None:
         self._conv_area          = self.query_one("#conv-area",              ConversationArea)
-        self._setup_zone         = self.query_one("#setup-zone",             SetupChecklistZone)
-        self._setup_static       = self.query_one("#setup-checklist-static", Static)
+        self._setup_zone         = self.query_one("#setup-zone-center", Center)
+        self._setup_cl_header    = self.query_one("#cl-header",   Static)
+        self._setup_cl_rows      = [self.query_one(f"#cl-row-{i}", Static) for i in range(3)]
+        self._setup_cl_footer    = self.query_one("#cl-footer",   Static)
         self._input_section      = self.query_one("#input-section",          InputSection)
         self._permission_content = self.query_one("#permission-content",     PermissionContent)
         self._input_row          = self.query_one("#input-row",              InputRow)
@@ -823,14 +832,30 @@ class MinionApp(App):
         return self._setup_zone is not None and self._setup_zone.display
 
     def _refresh_checklist(self) -> None:
-        if self._setup_static is not None:
-            self._setup_static.update(self.checklist.get_rich_markup())
+        if self._setup_cl_header is None:
+            return
+        cl = self.checklist
+        if cl.is_complete:
+            self._setup_cl_header.update(cl.get_done_banner())
+            for s in self._setup_cl_rows:
+                s.display = False
+            if self._setup_cl_footer:
+                self._setup_cl_footer.display = False
+        else:
+            self._setup_cl_header.update(cl.get_header_markup())
+            for i, s in enumerate(self._setup_cl_rows):
+                s.display = True
+                s.update(cl.get_row_markup(i))
+                is_focused = (i == cl._cursor and cl._state[i] != "done")
+                s.set_class(is_focused, "cl-row-focused")
+            if self._setup_cl_footer:
+                self._setup_cl_footer.display = True
+                self._setup_cl_footer.update(cl.get_footer_markup())
 
     def show_setup_checklist(self) -> None:
         """Show the setup checklist zone (first-run or /setup re-trigger)."""
         self.checklist.reset()
-        if self._setup_static is not None:
-            self._setup_static.update(self.checklist.get_rich_markup())
+        self._refresh_checklist()
         if self._setup_zone is not None:
             self._setup_zone.display = True
         if self._conv_area is not None:
