@@ -363,6 +363,26 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         run_model_config(client)
         return True
 
+    if cmd == "/setup":
+        run_model_config(client)
+        try:
+            import shellingham
+            shell_name, _ = shellingham.detect_shell()
+            import questionary
+            do_install = questionary.confirm(
+                f" Install tab completion for {shell_name}?",
+                default=True,
+                style=MINION_STYLE,
+            ).ask()
+            if do_install:
+                from typer._completion_shared import install as _ti
+                _, comp_path = _ti(shell=shell_name, prog_name="minion")
+                console.print(f"[#4CAF50]✓ tab completion installed[/]  [muted]→ {comp_path}[/]")
+                console.print(f"[muted]Restart your terminal to activate.[/]")
+        except Exception:
+            pass
+        return True
+
     if cmd == "/context":
         print_context(conversation.context_display())
         return True

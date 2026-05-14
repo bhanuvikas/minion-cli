@@ -321,8 +321,9 @@ class MinionApp(App):
         self._thinking_widget:  Optional[Static] = None
         self._streaming_widget: Optional[Static] = None
 
-        self._on_submit: Optional[Callable[[str], Awaitable[None]]] = None
-        self._on_quit:   Optional[Callable[[], Awaitable[None]]]    = None
+        self._on_submit:    Optional[Callable[[str], Awaitable[None]]] = None
+        self._on_quit:      Optional[Callable[[], Awaitable[None]]]   = None
+        self._on_first_run: Optional[Callable[[], None]]              = None
         self._startup_warnings: list[str] = []
 
         # In-memory + persistent history
@@ -418,6 +419,8 @@ class MinionApp(App):
 
         self._refresh_status()
         self._write_banner()
+        if self._on_first_run is not None:
+            self.call_after_refresh(self._on_first_run)
         self.set_focus(self._input_area)
 
     def on_resize(self, event) -> None:
@@ -432,14 +435,17 @@ class MinionApp(App):
     async def run_async(  # type: ignore[override]
         self,
         *,
-        on_submit: Optional[Callable[[str], Awaitable[None]]] = None,
-        on_quit:   Optional[Callable[[], Awaitable[None]]]    = None,
+        on_submit:    Optional[Callable[[str], Awaitable[None]]] = None,
+        on_quit:      Optional[Callable[[], Awaitable[None]]]    = None,
+        on_first_run: Optional[Callable[[], None]]               = None,
         **kwargs,
     ) -> None:
         if on_submit is not None:
             self._on_submit = on_submit
         if on_quit is not None:
             self._on_quit = on_quit
+        if on_first_run is not None:
+            self._on_first_run = on_first_run
         await super().run_async(**kwargs)
         # Post-exit: print a resume hint to the restored terminal
         rule = "\033[38;2;192;192;192m" + "─" * self._terminal_width + "\033[0m\n"

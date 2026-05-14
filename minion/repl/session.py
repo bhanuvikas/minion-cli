@@ -46,6 +46,7 @@ async def run_repl_async(
     memory_enabled: bool = True,
     debug: bool = False,
     agents_enabled: bool = True,
+    first_run: bool = False,
 ) -> None:
     """Async REPL loop. Call via asyncio.run(run_repl_async(...)).
 
@@ -225,6 +226,7 @@ async def run_repl_async(
             _file_cfg=_file_cfg,
             _hook_session_id=_hook_session_id,
             project_cwd=project_cwd,
+            first_run=first_run,
         )
         return
 
@@ -322,6 +324,7 @@ async def _run_repl_tui(
     _file_cfg,
     _hook_session_id: str,
     project_cwd: Path,
+    first_run: bool = False,
 ) -> bool:
     """TUI REPL loop. Returns False on normal quit."""
     import typer
@@ -338,6 +341,19 @@ async def _run_repl_tui(
     a2a_manager_ref = getattr(ctx, '_a2a_manager', None)
 
     _renderer = TuiRenderer(tui_app)
+
+    # ── First-run onboarding ──────────────────────────────────────────────────
+
+    def _on_first_run() -> None:
+        tui_app.conversation.append_system(
+            "[bold #FFD700]Welcome to Minion![/]  [muted]No API key configured yet.[/]"
+        )
+        tui_app.conversation.append_system(
+            "  Type [bold #FFD700]/setup[/] [muted]to configure your model and get started.[/]"
+        )
+        tui_app.conversation.finalize_turn()
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def on_submit(user_input: str) -> None:
         get_tracer().emit("user_turn", text=user_input)
@@ -528,6 +544,56 @@ async def _run_repl_tui(
             )
             return
 
+        if user_input.startswith("/") and user_input.strip() == "/setup":
+            from ..tui.screens import CompletionSetupScreen, ModelConfigScreen
+
+            _setup_provider = getattr(client, "provider_name", "anthropic")
+            _setup_model    = client.model_id
+
+            async def _on_completion_result(installed: bool) -> None:
+                if installed:
+                    tui_app.conversation.append_system(
+                        "[#4CAF50]✓ tab completion installed[/]  "
+                        "[#666666]· restart your terminal to activate[/]"
+                    )
+                    tui_app.conversation.finalize_turn()
+
+            async def _on_setup_model_result(updates: dict) -> None:
+                nonlocal client
+                if updates:
+                    from dotenv import load_dotenv
+                    from pathlib import Path as _Path
+                    load_dotenv(_Path.home() / ".minion" / ".env", override=True)
+                    load_dotenv(_Path.cwd() / ".minion" / ".env", override=True)
+                    try:
+                        from ..llm.factory import get_client as _get_client
+                        client = _get_client()
+                        ctx.client = client
+                        _new_provider = getattr(client, "provider_name", "")
+                        _new_model    = client.model_id
+                        tui_app.update_session(model=_new_model, provider=_new_provider)
+                        _diff = _build_model_diff(
+                            _setup_provider, _setup_model, _new_provider, _new_model,
+                        )
+                        for _line in _diff:
+                            tui_app.conversation.append_system(_line)
+                    except Exception as _e:
+                        tui_app.conversation.append_system(f"[red]Error setting up client:[/] {_e}")
+                    tui_app.conversation.finalize_turn()
+                else:
+                    tui_app.conversation.append_system(
+                        "[muted]Nothing changed · type [bold #FFD700]/setup[/] again anytime[/]"
+                    )
+                    tui_app.conversation.finalize_turn()
+
+                tui_app.push_screen(CompletionSetupScreen(), _on_completion_result)
+
+            tui_app.push_screen(
+                ModelConfigScreen(provider=_setup_provider, model_id=_setup_model),
+                _on_setup_model_result,
+            )
+            return
+
         if user_input.startswith("/"):
             _buf = _CaptureBuf()
             _exit_requested = [False]
@@ -639,7 +705,11 @@ async def _run_repl_tui(
         get_tracer().finalize()
         set_tui_app(None)
 
-    await tui_app.run_async(on_submit=on_submit, on_quit=on_quit)
+    await tui_app.run_async(
+        on_submit=on_submit,
+        on_quit=on_quit,
+        on_first_run=_on_first_run if first_run else None,
+    )
     return False
 
 

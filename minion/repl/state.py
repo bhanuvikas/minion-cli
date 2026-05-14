@@ -43,6 +43,7 @@ REPL_COMMANDS: dict[str, str] = {
     "/help":    "Show available commands",
     "/init":    "Create a MINION.md template in the current directory",
     "/model":   "Interactively change provider, model, and API keys",
+    "/setup":   "Run setup wizard: model, tab completion, and preferences",
     "/context": "Show context window usage and token breakdown",
     "/reflect": "Self-refine: /reflect --on | /reflect 2 | /reflect --off | /reflect",
     "/verbose": "Verbose output: /verbose --on | /verbose --off | /verbose",
