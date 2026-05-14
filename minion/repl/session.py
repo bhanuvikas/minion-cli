@@ -261,34 +261,52 @@ def _build_model_diff(
     new_color = new_p["color"] if new_p else "#C0C0C0"
 
     lines: list[str] = [
-        f"[green]✓ model updated[/]  [muted]· saved to ~/.minion/.env[/]",
+        f"[#4CAF50]✓ model updated[/]  [muted]· saved to ~/.minion/.env[/]",
         "",
     ]
+
+    old_color = old_p["color"] if old_p else "#C0C0C0"
 
     def _row(label: str, old_val: str, new_val: str) -> str:
         if old_val == new_val:
             return f"  [muted]{label:<10}[/]  [#888888]{old_val}[/]"
         return (
             f"  [muted]{label:<10}[/]"
-            f"  [red]- {old_val}[/]"
+            f"  [#666666]{old_val}[/]"
             f"  [muted]→[/]"
-            f"  [green]+ {new_val}[/]"
+            f"  [bold #FFD700]{new_val}[/]"
         )
 
-    lines.append(_row("provider", old_pname, new_pname))
-    lines.append(_row("model",    old_model,  new_model))
+    # Provider row — use each provider's brand colour
+    if old_pname == new_pname:
+        lines.append(f"  [muted]{'provider':<10}[/]  [{old_color}]{old_pname}[/]")
+    else:
+        lines.append(
+            f"  [muted]{'provider':<10}[/]"
+            f"  [{old_color}]{old_pname}[/]"
+            f"  [muted]→[/]"
+            f"  [{new_color}]{new_pname}[/]"
+        )
 
-    if old_m and new_m:
-        lines.append(_row("context",
-            fmt_ctx(old_m["ctx"]), fmt_ctx(new_m["ctx"])))
-        lines.append(_row("pricing",
-            f"{fmt_price(old_m['in_price'])}/{fmt_price(old_m['out_price'])}",
-            f"{fmt_price(new_m['in_price'])}/{fmt_price(new_m['out_price'])}"))
+    # Model row — old dim, new gold
+    if old_model == new_model:
+        lines.append(f"  [muted]{'model':<10}[/]  [#FFD700]{old_model}[/]")
+    else:
+        lines.append(
+            f"  [muted]{'model':<10}[/]"
+            f"  [#666666]{old_model}[/]"
+            f"  [muted]→[/]"
+            f"  [bold #FFD700]{new_model}[/]"
+        )
 
-    lines.append("")
-    lines.append(
-        f"[muted]  Conversation kept · subagents re-bound to [{new_color}]{new_model}[/][/]"
-    )
+    if old_m or new_m:
+        old_ctx   = fmt_ctx(old_m["ctx"])   if old_m else "?"
+        new_ctx   = fmt_ctx(new_m["ctx"])   if new_m else "?"
+        old_price = f"{fmt_price(old_m['in_price'])}/{fmt_price(old_m['out_price'])}" if old_m else "?"
+        new_price = f"{fmt_price(new_m['in_price'])}/{fmt_price(new_m['out_price'])}" if new_m else "?"
+        lines.append(_row("context", old_ctx, new_ctx))
+        lines.append(_row("pricing", old_price, new_price))
+
     return lines
 
 
@@ -465,8 +483,8 @@ async def _run_repl_tui(
                     _mctx  = fmt_ctx(_pm["ctx"]) if _pm else "?"
                     _mprc  = f"{fmt_price(_pm['in_price'])}/{fmt_price(_pm['out_price'])}" if _pm else ""
                     tui_app.conversation.append_system(
-                        f"[muted]No worries — picker closed, nothing changed.[/]  "
-                        f"Still on [{_pp['color'] if _pp else '#C0C0C0'}]{_pname}[/] "
+                        f"[muted]Nothing changed · still on[/] "
+                        f"[{_pp['color'] if _pp else '#C0C0C0'}]{_pname}[/] "
                         f"[muted]›[/] [bold #FFD700]{_prev_model}[/]"
                         + (f"  [muted]ctx {_mctx} · {_mprc} per Mtok[/]" if _mprc else "")
                     )
