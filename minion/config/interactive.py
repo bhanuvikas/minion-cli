@@ -49,14 +49,23 @@ def _find_env_file() -> Path:
     return env_path
 
 
-def update_env_values(updates: dict) -> None:
-    """Update specific keys in the .env file, preserving all comments and other keys.
+def update_env_values(updates: dict, target: Path | None = None) -> None:
+    """Update specific keys in a .env file, preserving all comments and other keys.
 
     Keys present in `updates` are overwritten in-place. Keys not yet in the
-    file are appended at the end. Everything else (comments, blank lines,
-    unrelated keys) is left exactly as-is.
+    file are appended at the end. Everything else is left exactly as-is.
+
+    `target` selects the file to write:
+      - None (default)  → .minion/.env in the current working directory
+      - explicit Path   → that path (created if absent, directory made with parents)
     """
-    env_path = _find_env_file()
+    if target is None:
+        env_path = _find_env_file()
+    else:
+        env_path = target
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        if not env_path.exists():
+            env_path.touch()
 
     lines = env_path.read_text().splitlines(keepends=True)
     updated_keys: set = set()

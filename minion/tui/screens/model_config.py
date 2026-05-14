@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Literal
 
+from rich.style import Style as _RichStyle
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -31,7 +32,7 @@ from .base import (
     build_title_bar,
 )
 
-_KeySub = Literal["empty", "typing", "validating", "success", "error"]
+_KeySub = Literal["empty", "typing", "validating", "success", "error", "confirm-skip"]
 
 # ── Provider card CSS ─────────────────────────────────────────────────────────
 
@@ -104,6 +105,103 @@ ModelCard.model-focused {{
 }}
 .model-bar-row {{
     height: 1;
+}}
+
+/* ── Step 3 ─────────────────────────────────────────────────────────── */
+#step3-wrapper {{
+    width: 65%;
+    height: auto;
+}}
+#step3-heading {{
+    height: auto;
+    margin: 0 0 1 0;
+}}
+SwitchingToCard {{
+    border: solid #3a3a3a;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    height: auto;
+    width: 100%;
+}}
+#switching-inner {{
+    height: auto;
+}}
+.switching-row1 {{
+    height: 1;
+}}
+.switch-prefix {{
+    width: auto;
+    height: 1;
+}}
+.switching-right {{
+    width: 1fr;
+    height: 1;
+    content-align: right middle;
+}}
+
+#key-label {{
+    height: 1;
+    margin: 1 0 0 0;
+}}
+#key-input {{
+    margin-bottom: 0;
+}}
+#key-status {{
+    height: auto;
+    margin: 0;
+}}
+KeyScopeRow {{
+    height: auto;
+    margin: 1 0 0 0;
+}}
+KeyScopeRow.section-focused #scope-header {{
+    color: {GOLD};
+}}
+#scope-header {{
+    height: 1;
+    margin: 0;
+}}
+#scope-options {{
+    height: auto;
+}}
+.scope-btn {{
+    height: auto;
+    width: 1fr;
+    padding: 1 2;
+    margin-right: 1;
+    border: solid #2a2a2a;
+    background: #0f0f0f;
+}}
+.scope-selected {{
+    border: solid {GOLD};
+    background: #1a1200;
+}}
+#scope-project {{
+    margin-right: 0;
+}}
+TestConnectionRow {{
+    height: auto;
+    padding: 1 2;
+    margin: 1 0 0 0;
+    border: solid #2a2a2a;
+    background: #0f0f0f;
+}}
+TestConnectionRow.section-focused {{
+    border: solid {GOLD};
+    background: #1a1200;
+}}
+#test-conn-inner {{
+    height: auto;
+}}
+.test-label {{
+    height: 1;
+    width: 1fr;
+}}
+.test-btn {{
+    height: 1;
+    width: auto;
+    padding: 0 1;
+    margin-left: 1;
 }}
 """
 
@@ -217,6 +315,162 @@ class ModelCard(Widget):
         self.post_message(ModelCard.Selected(self._idx))
 
 
+# ── Step 3 helper widgets ─────────────────────────────────────────────────────
+
+
+class SwitchingToCard(Widget):
+    """Step 3 recap card — shows provider › model, docs link, and API key input."""
+
+    def __init__(self, provider: dict, model: dict) -> None:
+        super().__init__(id="switching-to-card")
+        self._provider = provider
+        self._model    = model
+
+    def compose(self) -> ComposeResult:
+        p     = self._provider
+        m     = self._model
+        color = p.get("color", SILVER)
+        badge = f"[bold {color} on #1e1900]  {p['mark']}  [/]"
+        with Vertical(id="switching-inner"):
+            with Horizontal(classes="switching-row1"):
+                yield Static(
+                    f"[{DIM}]SWITCHING TO[/]  {badge}  "
+                    f"[bold {color}]{p['name']}[/]  [{DIM}]›[/]  [bold {GOLD}]{m['id']}[/]",
+                    classes="switch-prefix",
+                )
+                link_text = Text("Where do I get one? ›",
+                                 style=_RichStyle(color=color, underline=True, link=p['docs_url']))
+                yield Static(link_text, classes="switching-right")
+            yield Static(f"[{DIM}]API KEY  ·  {p['key_env']}[/]", id="key-label")
+            yield Input(
+                password=True,
+                id="key-input",
+                placeholder=f"{p.get('key_prefix', 'sk-')}…",
+            )
+            yield Static("", id="key-status")
+
+
+class _TestBtn(Static):
+    """Internal clickable label for TestConnectionRow."""
+
+    def __init__(self, validate: bool, **kwargs) -> None:
+        super().__init__("", **kwargs)
+        self._validate = validate
+
+    def on_click(self) -> None:
+        self.post_message(TestConnectionRow.Toggled(self._validate))
+
+
+class TestConnectionRow(Widget):
+    """Row with yes/no toggle — test the connection before saving."""
+
+    can_focus = True
+
+    class Toggled(Message):
+        def __init__(self, validate: bool) -> None:
+            super().__init__()
+            self.validate = validate
+
+    def __init__(self) -> None:
+        super().__init__(id="test-conn-row")
+        self._validate: bool = True
+
+    @property
+    def value(self) -> bool:
+        return self._validate
+
+    def toggle(self) -> None:
+        self._validate = not self._validate
+        self._refresh_buttons()
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="test-conn-inner"):
+            yield Static(
+                f"[green]●[/] [bold]Test connection before saving[/] [{DIM}](recommended)[/]",
+                classes="test-label",
+            )
+            yield _TestBtn(True,  classes="test-btn", id="test-yes")
+            yield _TestBtn(False, classes="test-btn", id="test-no")
+
+    def on_mount(self) -> None:
+        self._refresh_buttons()
+
+    def _refresh_buttons(self) -> None:
+        try:
+            yes = self.query_one("#test-yes", _TestBtn)
+            no  = self.query_one("#test-no",  _TestBtn)
+            if self._validate:
+                yes.update(f"[bold {GOLD}]◉  yes[/]")
+                no.update(f"[{DIM}]○  no[/]")
+            else:
+                yes.update(f"[{DIM}]○  yes[/]")
+                no.update(f"[bold {GOLD}]◉  no[/]")
+        except Exception:
+            pass
+
+    def on_test_connection_row_toggled(self, message: "TestConnectionRow.Toggled") -> None:
+        self._validate = message.validate
+        self._refresh_buttons()
+
+
+class _ScopeBtn(Static):
+    """Clickable scope option inside KeyScopeRow."""
+
+    def __init__(self, scope: str, **kwargs) -> None:
+        super().__init__("", **kwargs)
+        self._scope = scope
+
+    def on_click(self) -> None:
+        self.post_message(KeyScopeRow.ScopeChanged(self._scope))
+
+
+class KeyScopeRow(Widget):
+    """Two-card selector: save key globally (~/.minion/.env) or just this project."""
+
+    can_focus = True
+
+    class ScopeChanged(Message):
+        def __init__(self, scope: str) -> None:
+            super().__init__()
+            self.scope = scope
+
+    _LABELS: dict[str, tuple[str, str]] = {
+        "global":  ("All projects",  "~/.minion/.env"),
+        "project": ("This project",  ".minion/.env"),
+    }
+
+    def __init__(self) -> None:
+        super().__init__(id="key-scope-row")
+        self._scope = "global"
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"[{DIM}]SCOPE[/]", id="scope-header")
+        with Horizontal(id="scope-options"):
+            yield _ScopeBtn("global",  classes="scope-btn", id="scope-global")
+            yield _ScopeBtn("project", classes="scope-btn", id="scope-project")
+
+    def on_mount(self) -> None:
+        self._refresh_options()
+
+    def _refresh_options(self) -> None:
+        for key, (label, path) in self._LABELS.items():
+            try:
+                btn = self.query_one(f"#scope-{key}", _ScopeBtn)
+                if key == self._scope:
+                    btn.update(f"[bold {GOLD}]●  {label}[/]\n[{DIM}]{path}[/]")
+                    btn.set_class(True, "scope-selected")
+                else:
+                    btn.update(f"[{DIM}]○  {label}\n{path}[/]")
+                    btn.set_class(False, "scope-selected")
+            except Exception:
+                pass
+
+    def on_key_scope_row_scope_changed(self, message: "KeyScopeRow.ScopeChanged") -> None:
+        self._scope = message.scope
+        self._refresh_options()
+
+
+
 # ── ModelConfigScreen ─────────────────────────────────────────────────────────
 
 class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
@@ -225,14 +479,17 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
     CSS = WIZARD_CSS + _CARD_CSS
 
     BINDINGS = [
-        # priority=True fires BEFORE any child widget can consume the key.
-        Binding("escape",    "cancel",   show=False, priority=True),
-        Binding("up",        "nav_up",   show=False, priority=True),
-        Binding("down",      "nav_down", show=False, priority=True),
-        Binding("shift+tab", "back",     show=False, priority=True),
+        Binding("escape", "cancel",    show=False, priority=True),
+        Binding("up",     "nav_up",    show=False, priority=True),
+        Binding("down",   "nav_down",  show=False, priority=True),
+        # left/right: NOT priority so Input cursor movement is preserved;
+        # fires when a non-input section (scope/test) has focus.
+        Binding("left",   "nav_left",  show=False),
+        Binding("right",  "nav_right", show=False),
         # enter: normal priority — Input in Step 3 handles it first via
         # on_input_submitted; in Steps 1&2 it bubbles up to action_confirm.
-        Binding("enter",     "confirm",  show=False),
+        Binding("enter",  "confirm",   show=False),
+        # Tab / Shift+Tab handled in on_key for full-wizard navigation.
     ]
 
     def __init__(self, provider: str, model_id: str) -> None:
@@ -253,6 +510,8 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         self._key_error: str     = ""
         self._typed_key: str     = ""
         self._validated_key: str = ""
+        self._key_scope: str     = "project"
+        self._step3_focus: str   = "input"   # "input" | "scope" | "test"
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -297,14 +556,23 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._update_model_focus()
 
         elif step == 3:
-            await body.mount(Static(self._build_step3_top(), id="step3-top"))
-            await body.mount(Input(
-                password=True,
-                id="key-input",
-                placeholder="paste API key…",
+            self._key_scope   = "global"
+            self._step3_focus = "scope"
+            p     = PROVIDERS[self._provider_idx]
+            m     = p["models"][self._model_idx]
+            color = p.get("color", SILVER)
+            wrapper = Vertical(id="step3-wrapper")
+            await body.mount(wrapper)
+            await wrapper.mount(Static(
+                f"[bold]One more thing — your [{color}]{p['name']}[/] key.[/]\n"
+                f"[{DIM}]Paste it once. We'll test it then stash it — you won't see this screen again.[/]",
+                id="step3-heading",
             ))
-            await body.mount(Static(self._key_status_markup(), id="key-status"))
-            self.query_one("#key-input", Input).focus()
+            await wrapper.mount(KeyScopeRow())
+            await wrapper.mount(TestConnectionRow())
+            await wrapper.mount(SwitchingToCard(p, m))
+            self._refresh_key_status()
+            self._set_step3_focus("scope")
 
         self.query_one("#wizard-title", Static).update(build_title_bar(step))
         self.query_one("#wizard-foot", Static).update(build_footer_markup(step))
@@ -355,39 +623,40 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
 
     # ── Step 3 — API key entry ────────────────────────────────────────────────
 
-    def _build_step3_top(self) -> str:
-        p      = PROVIDERS[self._provider_idx]
-        m      = p["models"][self._model_idx]
-        color  = p.get("color", SILVER)
-        dashes = "─" * 52
-        return "\n".join([
-            f"[bold]One more thing — your [{color}]{p['name']}[/] key.[/]",
-            f"[{DIM}]Paste it once. Stashed in [{SILVER}]~/.minion/.env[/{SILVER}] — you won't see this screen again.[/]",
-            "",
-            f"[{DIM}] ╭{dashes}╮[/]",
-            (
-                f"[{DIM}] │[/]  [{DIM}]switching to[/]"
-                f"  [{color}]{p['name']}[/]"
-                f"  [{DIM}]›[/]"
-                f"  [bold {GOLD}]{m['id']}[/]"
-                f"  [{DIM}]{p['key_env']}[/]"
-            ),
-            f"[{DIM}] ╰{dashes}╯[/]",
-            "",
-        ])
+    def on_key_scope_row_scope_changed(self, message: KeyScopeRow.ScopeChanged) -> None:
+        self._key_scope = message.scope
+
+    def on_test_connection_row_toggled(self, _: TestConnectionRow.Toggled) -> None:
+        if self._key_sub == "confirm-skip":
+            self._key_sub = "typing"
+        self._refresh_key_status()
 
     def _key_status_markup(self) -> str:
         sub = self._key_sub
+        test_validate = True
+        try:
+            test_validate = self.query_one("#test-conn-row", TestConnectionRow).value
+        except Exception:
+            pass
         if sub == "empty":
+            if not test_validate:
+                return f"[{DIM}]Paste · won't be echoed · enter to save.[/{DIM}]"
             return f"[{DIM}]Paste · won't be echoed · we'll test it before saving.[/{DIM}]"
         if sub == "typing":
             n = len(self._typed_key)
+            if not test_validate:
+                return f"[{DIM}]{n} chars · enter to save without testing.[/{DIM}]"
             return f"[{DIM}]{n} chars · keep going…[/{DIM}]"
+        if sub == "confirm-skip":
+            return (
+                f"[{GOLD}]● skipping test — are you sure?[/]  "
+                f"[{DIM}]↵ again to save[/{DIM}]"
+            )
         if sub == "validating":
             p = PROVIDERS[self._provider_idx]
             return f"[{GOLD}]● pinging {p['name']}…[/] [{DIM}]testing connection[/{DIM}]"
         if sub == "success":
-            return f"[green]● valid · provider replied OK[/] [{DIM}]ready to save[/{DIM}]"
+            return f"[green]● valid · provider replied OK[/] [{DIM}]· enter to save[/{DIM}]"
         if sub == "error":
             from rich.markup import escape as _esc
             return (
@@ -399,28 +668,134 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
     def _refresh_key_status(self, sub: str = "") -> None:
         try:
             self.query_one("#key-status", Static).update(self._key_status_markup())
-            foot_sub = sub or self._key_sub
-            self.query_one("#wizard-foot", Static).update(
-                build_footer_markup(3, sub=foot_sub if foot_sub in ("validating", "success", "error") else "")
-            )
         except Exception:
             pass
+        self._refresh_step3_footer()
 
     # ── Key interception ─────────────────────────────────────────────────────
 
     async def on_key(self, event) -> None:
-        # Textual consumes Tab/Shift+Tab at the App level for focus cycling
-        # before screen priority bindings fire.  Intercept them here instead.
-        if self._step >= 2 and event.key in ("tab", "shift+tab"):
-            event.prevent_default()
-            event.stop()
-            await self.action_back()
+        # Intercept Tab/Shift+Tab before Textual's focus-cycling.
+        # Tab = forward through the wizard; Shift+Tab = backward.
+        if event.key not in ("tab", "shift+tab"):
+            return
+        event.prevent_default()
+        event.stop()
+        if event.key == "tab":
+            await self._tab_forward()
+        else:
+            await self._tab_backward()
+
+    async def _tab_forward(self) -> None:
+        if self._step == 1:
+            await self._go_to_step(2)
+        elif self._step == 2:
+            p = PROVIDERS[self._provider_idx]
+            if p["id"] != self._orig_provider and not has_key(p["id"]):
+                await self._go_to_step(3)
+            else:
+                self.action_save()
+        elif self._step == 3:
+            if self._step3_focus == "scope":
+                self._set_step3_focus("test")
+            elif self._step3_focus == "test":
+                self._set_step3_focus("input")
+            # at "input": Tab is a no-op (end of form)
+
+    async def _tab_backward(self) -> None:
+        if self._step == 1:
+            pass  # already at the start
+        elif self._step == 2:
+            await self._go_to_step(1)
+        elif self._step == 3:
+            if self._step3_focus == "input":
+                self._set_step3_focus("test")
+            elif self._step3_focus == "test":
+                self._set_step3_focus("scope")
+            else:
+                # focus is on scope — go back to step 2
+                self._key_sub       = "empty"
+                self._typed_key     = ""
+                self._validated_key = ""
+                await self._go_to_step(2)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def on_model_card_selected(self, message: ModelCard.Selected) -> None:
         self._model_idx = message.idx
         self._update_model_focus()
+
+    def _set_step3_focus(self, section: str) -> None:
+        self._step3_focus = section
+        if section == "input":
+            try:
+                self.query_one("#key-input", Input).focus()
+            except Exception:
+                pass
+        elif section == "scope":
+            try:
+                self.query_one("#key-scope-row", KeyScopeRow).focus()
+            except Exception:
+                pass
+        elif section == "test":
+            try:
+                self.query_one("#test-conn-row", TestConnectionRow).focus()
+            except Exception:
+                pass
+        # section highlight classes
+        try:
+            self.query_one("#key-scope-row", KeyScopeRow).set_class(
+                section == "scope", "section-focused"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#test-conn-row", TestConnectionRow).set_class(
+                section == "test", "section-focused"
+            )
+        except Exception:
+            pass
+        self._refresh_step3_footer()
+
+    def _refresh_step3_footer(self) -> None:
+        if self._step != 3:
+            return
+        if self._step3_focus == "scope":
+            sub = "scope"
+        elif self._step3_focus == "test":
+            sub = "test"
+        elif self._key_sub in ("validating", "success", "error", "confirm-skip"):
+            sub = self._key_sub
+        else:
+            sub = ""
+        try:
+            self.query_one("#wizard-foot", Static).update(
+                build_footer_markup(3, sub=sub)
+            )
+        except Exception:
+            pass
+
+    def action_nav_left(self) -> None:
+        if self._step == 3:
+            if self._step3_focus == "scope":
+                try:
+                    scope_row = self.query_one("#key-scope-row", KeyScopeRow)
+                    new = "project" if scope_row._scope == "global" else "global"
+                    scope_row._scope = new
+                    scope_row._refresh_options()
+                    self._key_scope = new
+                except Exception:
+                    pass
+            elif self._step3_focus == "test":
+                try:
+                    self.query_one("#test-conn-row", TestConnectionRow).toggle()
+                    self._refresh_key_status()
+                except Exception:
+                    pass
+
+    def action_nav_right(self) -> None:
+        # same as left — only 2 options in each section
+        self.action_nav_left()
 
     def action_nav_up(self) -> None:
         if self._step == 1:
@@ -441,15 +816,6 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._model_idx = min(len(models) - 1, self._model_idx + 1)
             self._update_model_focus()
 
-    async def action_back(self) -> None:
-        if self._step == 2:
-            await self._go_to_step(1)
-        elif self._step == 3:
-            self._key_sub       = "empty"
-            self._typed_key     = ""
-            self._validated_key = ""
-            await self._go_to_step(2)
-
     async def action_confirm(self) -> None:
         if self._step == 1:
             await self._go_to_step(2)
@@ -460,10 +826,26 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             else:
                 self.action_save()
         elif self._step == 3:
-            if self._key_sub == "success":
-                self.action_save()
-            elif self._typed_key and self._key_sub != "validating":
+            await self._step3_finish()
+
+    async def _step3_finish(self) -> None:
+        """Shared finish logic: validate or save depending on toggle state."""
+        if self._key_sub == "success":
+            self.action_save()
+        elif self._key_sub == "confirm-skip":
+            self.action_save()
+        elif self._typed_key and self._key_sub != "validating":
+            should_validate = True
+            try:
+                row = self.query_one("#test-conn-row", TestConnectionRow)
+                should_validate = row.value
+            except Exception:
+                pass
+            if should_validate:
                 self._run_validation()
+            else:
+                self._key_sub = "confirm-skip"
+                self._refresh_key_status()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "key-input":
@@ -475,10 +857,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "key-input":
             return
-        if self._key_sub == "success":
-            self.action_save()
-        elif self._typed_key:
-            self._run_validation()
+        self.run_worker(self._step3_finish())
 
     # ── Async key validation ──────────────────────────────────────────────────
 
@@ -509,6 +888,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         self.dismiss({})
 
     def action_save(self) -> None:
+        from pathlib import Path
         from ...config.interactive import update_env_values
 
         p = PROVIDERS[self._provider_idx]
@@ -519,10 +899,15 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             updates["MINION_PROVIDER"] = p["id"]
         if m["id"] != self._orig_model:
             updates["MINION_MODEL"] = m["id"]
-        if self._validated_key:
-            updates[p["key_env"]] = self._validated_key
+        key_to_save = self._validated_key or self._typed_key
+        if key_to_save:
+            updates[p["key_env"]] = key_to_save
 
         if updates:
-            update_env_values(updates)
+            if self._key_scope == "global":
+                target = Path.home() / ".minion" / ".env"
+            else:
+                target = Path(".minion") / ".env"
+            update_env_values(updates, target=target)
 
         self.dismiss(updates)
