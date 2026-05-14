@@ -48,26 +48,34 @@ class StatusBar:
     def update_session(
         self,
         *,
-        model: str = "",
-        provider: str = "",
-        project: str = "",
-        cwd: str = "",
-        memory: bool = True,
-        agents: int = 0,
-        version: str = "",
-        mcp_count: int = 0,
-        a2a_count: int = 0,
+        model: str | None = None,
+        provider: str | None = None,
+        project: str | None = None,
+        cwd: str | None = None,
+        memory: bool | None = None,
+        agents: int | None = None,
+        version: str | None = None,
+        mcp_count: int | None = None,
+        a2a_count: int | None = None,
     ) -> None:
-        if model:
+        if model is not None:
             self._model     = model
-        self._provider  = provider
-        self._project   = project
-        self._cwd       = cwd
-        self._memory    = memory
-        self._agents    = agents
-        self._version   = version
-        self._mcp_count = mcp_count
-        self._a2a_count = a2a_count
+        if provider is not None:
+            self._provider  = provider
+        if project is not None:
+            self._project   = project
+        if cwd is not None:
+            self._cwd       = cwd
+        if memory is not None:
+            self._memory    = memory
+        if agents is not None:
+            self._agents    = agents
+        if version is not None:
+            self._version   = version
+        if mcp_count is not None:
+            self._mcp_count = mcp_count
+        if a2a_count is not None:
+            self._a2a_count = a2a_count
 
     # ── Section builders ──────────────────────────────────────────────────────
 
