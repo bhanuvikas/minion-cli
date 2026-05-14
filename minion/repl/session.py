@@ -655,13 +655,22 @@ async def _run_repl_tui(
 
             def _exec_slash():
                 _old_file = console._file
-                console._file = _buf
+                _old_width = console._width
+                # Read the real terminal width while the original file is still
+                # active (before redirecting to _buf whose fileno() raises).
+                # Subtract 6: padding 0 1 (2 cols) + stable scrollbar gutter (1 col)
+                # + SetupChecklistZone margin 0 1 (2 cols, applied by Textual to the
+                # whole container while visible) + 1 spare.
+                _safe_width = max(60, console.width - 6)
+                console._file  = _buf
+                console._width = _safe_width
                 try:
                     _handle_slash_command(user_input, ctx)
                 except (SystemExit, typer.Exit):
                     _exit_requested[0] = True
                 finally:
-                    console._file = _old_file
+                    console._file  = _old_file
+                    console._width = _old_width
 
             await asyncio.to_thread(_exec_slash)
 

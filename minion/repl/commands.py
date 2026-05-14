@@ -572,23 +572,13 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
     if not was_streamed:
         from rich.markdown import Markdown
         from rich.panel import Panel
-        import shutil as _shutil
-        _old_width = console._width
-        if _capture_mode:
-            # ConversationArea: padding 0 1 (2 cols) + stable scrollbar (1 col) = -3;
-            # subtract one more for safety.
-            console._width = max(60, _shutil.get_terminal_size().columns - 4)
-        try:
-            console.print(Panel(
-                Markdown(content),
-                title=f"[bold {YELLOW}]MINION.md[/]",
-                subtitle=f"[muted]{minion_md_path}[/]",
-                expand=False,
-                border_style="dim",
-            ))
-        finally:
-            if _capture_mode:
-                console._width = _old_width
+        console.print(Panel(
+            Markdown(content),
+            title=f"[bold {YELLOW}]MINION.md[/]",
+            subtitle=f"[muted]{minion_md_path}[/]",
+            expand=False,
+            border_style="dim",
+        ))
     console.print()
     console.print(f"[{YELLOW}]{action} MINION.md[/] [muted]in {Path.cwd()}[/]")
     console.print(f"[muted]Edit MINION.md to refine — changes take effect in this session immediately.[/]")
