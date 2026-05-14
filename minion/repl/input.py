@@ -126,6 +126,9 @@ class _CaptureBuf(io.StringIO):
     """StringIO that claims to be a TTY so Rich emits color codes, while
     filtering cursor-movement escape sequences on write."""
 
+    # Sentinel checked by _handle_init to skip Live/status rendering
+    is_capture_buf: bool = True
+
     def isatty(self) -> bool:
         return True
 

@@ -48,6 +48,19 @@ InspectorZone {{
     display: none;
 }}
 
+SetupChecklistZone {{
+    height: auto;
+    display: none;
+    border: solid #333333;
+    margin: 0 1;
+    padding: 0 1;
+}}
+
+SetupChecklistZone > Static {{
+    height: auto;
+    width: 1fr;
+}}
+
 InputSection {{
     height: auto;
     margin-top: 1;

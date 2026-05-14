@@ -342,16 +342,115 @@ async def _run_repl_tui(
 
     _renderer = TuiRenderer(tui_app)
 
-    # ── First-run onboarding ──────────────────────────────────────────────────
+    # ── First-run onboarding + setup checklist ───────────────────────────────
+
+    def _wire_checklist_callbacks() -> None:
+        """Wire the three checklist row callbacks onto tui_app.checklist."""
+        _cb_provider = getattr(client, "provider_name", "anthropic")
+        _cb_model    = client.model_id
+
+        async def _on_brain_model_result(updates: dict) -> None:
+            nonlocal client
+            if updates:
+                from dotenv import load_dotenv
+                from pathlib import Path as _Path
+                load_dotenv(_Path.home() / ".minion" / ".env", override=True)
+                load_dotenv(_Path.cwd() / ".minion" / ".env", override=True)
+                try:
+                    from ..llm.factory import get_client as _get_client
+                    client = _get_client()
+                    ctx.client = client
+                    _new_provider = getattr(client, "provider_name", "")
+                    _new_model    = client.model_id
+                    tui_app.update_session(model=_new_model, provider=_new_provider)
+                    _diff = _build_model_diff(_cb_provider, _cb_model, _new_provider, _new_model)
+                    for _line in _diff:
+                        tui_app.conversation.append_system(_line)
+                    tui_app.conversation.finalize_turn()
+                    tui_app.checklist.mark_done("brain", f"{_new_provider} · {_new_model}")
+                except Exception as _e:
+                    tui_app.conversation.append_system(f"[red]Error setting up client:[/] {_e}")
+                    tui_app.conversation.finalize_turn()
+            else:
+                tui_app.conversation.append_system(
+                    "[#666666]Brain not configured — press ↵ on row 1 to try again[/]"
+                )
+                tui_app.conversation.finalize_turn()
+            tui_app._refresh_checklist()
+
+        def _on_brain_activate() -> None:
+            from ..tui.screens import ModelConfigScreen
+            from ..config.model_catalog import has_key as _has_key
+            tui_app.push_screen(
+                ModelConfigScreen(
+                    provider=_cb_provider,
+                    model_id=_cb_model,
+                    first_run=not _has_key(_cb_provider),
+                ),
+                _on_brain_model_result,
+            )
+
+        async def _on_completion_done(installed: bool) -> None:
+            if installed:
+                tui_app.checklist.mark_done("completion", "shell completion installed")
+                tui_app.conversation.append_system(
+                    "[#4CAF50]✓ tab completion installed[/]  "
+                    "[#666666]· restart your terminal to activate[/]"
+                )
+                tui_app.conversation.finalize_turn()
+            else:
+                tui_app.checklist.mark_done("completion", "skipped")
+            tui_app._refresh_checklist()
+
+        def _on_completion_activate() -> None:
+            from ..tui.screens import CompletionSetupScreen
+            tui_app.push_screen(CompletionSetupScreen(), _on_completion_done)
+
+        async def _do_init() -> None:
+            from pathlib import Path as _Path
+            minion_md_path = _Path.cwd() / "MINION.md"
+
+            # If MINION.md already exists skip regeneration — questionary.confirm()
+            # inside _handle_init would block waiting for terminal input that
+            # Textual owns, causing an indefinite hang.
+            if minion_md_path.exists():
+                tui_app.conversation.append_system(
+                    f"[#4CAF50]✓ MINION.md already exists[/]  [#666666]{minion_md_path}[/]"
+                )
+                tui_app.conversation.finalize_turn()
+                tui_app.checklist.mark_done("init", "MINION.md exists")
+                tui_app._refresh_checklist()
+                return
+
+            # Simulate the user typing /init — full normal path, no custom output.
+            tui_app.conversation.append_user("/init")
+            tui_app._set_thinking(True)
+            await on_submit("/init")
+
+            if minion_md_path.exists():
+                tui_app.checklist.mark_done("init", "MINION.md written")
+            else:
+                tui_app.checklist.mark_done("init", "attempted")
+            tui_app._refresh_checklist()
+
+        def _on_init_activate() -> None:
+            from ..llm.factory import _PlaceholderClient
+            if isinstance(client, _PlaceholderClient):
+                tui_app.conversation.append_system(
+                    "[#666666]API key not configured — complete[/] "
+                    "[bold #FFD700]Pick a brain[/] [#666666]first[/]"
+                )
+                tui_app.conversation.finalize_turn()
+                return
+            asyncio.ensure_future(_do_init())
+
+        tui_app.checklist.on_brain      = _on_brain_activate
+        tui_app.checklist.on_completion = _on_completion_activate
+        tui_app.checklist.on_init       = _on_init_activate
 
     def _on_first_run() -> None:
-        tui_app.conversation.append_system(
-            "[bold #FFD700]Welcome to Minion![/]  [muted]No API key configured yet.[/]"
-        )
-        tui_app.conversation.append_system(
-            "  Type [bold #FFD700]/setup[/] [muted]to configure your model and get started.[/]"
-        )
-        tui_app.conversation.finalize_turn()
+        _wire_checklist_callbacks()
+        tui_app.show_setup_checklist()
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -545,53 +644,9 @@ async def _run_repl_tui(
             return
 
         if user_input.startswith("/") and user_input.strip() == "/setup":
-            from ..tui.screens import CompletionSetupScreen, ModelConfigScreen
-
-            _setup_provider = getattr(client, "provider_name", "anthropic")
-            _setup_model    = client.model_id
-
-            async def _on_completion_result(installed: bool) -> None:
-                if installed:
-                    tui_app.conversation.append_system(
-                        "[#4CAF50]✓ tab completion installed[/]  "
-                        "[#666666]· restart your terminal to activate[/]"
-                    )
-                    tui_app.conversation.finalize_turn()
-
-            async def _on_setup_model_result(updates: dict) -> None:
-                nonlocal client
-                if updates:
-                    from dotenv import load_dotenv
-                    from pathlib import Path as _Path
-                    load_dotenv(_Path.home() / ".minion" / ".env", override=True)
-                    load_dotenv(_Path.cwd() / ".minion" / ".env", override=True)
-                    try:
-                        from ..llm.factory import get_client as _get_client
-                        client = _get_client()
-                        ctx.client = client
-                        _new_provider = getattr(client, "provider_name", "")
-                        _new_model    = client.model_id
-                        tui_app.update_session(model=_new_model, provider=_new_provider)
-                        _diff = _build_model_diff(
-                            _setup_provider, _setup_model, _new_provider, _new_model,
-                        )
-                        for _line in _diff:
-                            tui_app.conversation.append_system(_line)
-                    except Exception as _e:
-                        tui_app.conversation.append_system(f"[red]Error setting up client:[/] {_e}")
-                    tui_app.conversation.finalize_turn()
-                else:
-                    tui_app.conversation.append_system(
-                        "[muted]Nothing changed · type [bold #FFD700]/setup[/] again anytime[/]"
-                    )
-                    tui_app.conversation.finalize_turn()
-
-                tui_app.push_screen(CompletionSetupScreen(), _on_completion_result)
-
-            tui_app.push_screen(
-                ModelConfigScreen(provider=_setup_provider, model_id=_setup_model),
-                _on_setup_model_result,
-            )
+            _wire_checklist_callbacks()
+            tui_app.show_setup_checklist()
+            tui_app.set_thinking(False)
             return
 
         if user_input.startswith("/"):

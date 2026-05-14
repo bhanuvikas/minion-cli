@@ -125,12 +125,20 @@ _STEP_FOOT: dict[int | str, list[tuple[list[str], str]]] = {
     ],
     "3-scope": [
         (["← →"], "switch scope"),
+        (["↓", "tab"], "next section"),
         (["shift+tab"], "back to model"),
         (["esc"], "cancel"),
     ],
     "3-test": [
         (["← →"], "toggle yes/no"),
+        (["↑", "↓"], "navigate sections"),
         (["shift+tab"], "prev"),
+        (["esc"], "cancel"),
+    ],
+    "3-input": [
+        (["⌘V"], "paste"),
+        (["↑"], "prev section"),
+        (["↵"], "save"),
         (["esc"], "cancel"),
     ],
     "3-confirm-skip": [(["↵"], "again to save"), (["esc"], "cancel")],

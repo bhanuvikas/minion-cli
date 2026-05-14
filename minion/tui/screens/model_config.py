@@ -492,10 +492,11 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         # Tab / Shift+Tab handled in on_key for full-wizard navigation.
     ]
 
-    def __init__(self, provider: str, model_id: str) -> None:
+    def __init__(self, provider: str, model_id: str, *, first_run: bool = False) -> None:
         super().__init__()
         self._orig_provider = provider
         self._orig_model    = model_id
+        self._first_run     = first_run
 
         self._provider_idx: int = next(
             (i for i, p in enumerate(PROVIDERS) if p["id"] == provider), 0
@@ -520,7 +521,8 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         m = p["models"][self._model_idx]
         with Vertical(id="wizard-panel"):
             yield Static(build_title_bar(1), id="wizard-title")
-            yield Static(build_currently_using(p, m), id="currently-using")
+            if not self._first_run:
+                yield Static(build_currently_using(p, m), id="currently-using")
             with VerticalScroll(id="wizard-body"):
                 pass  # populated in on_mount
             yield Static(build_footer_markup(1), id="wizard-foot")
@@ -575,7 +577,10 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             self._set_step3_focus("scope")
 
         self.query_one("#wizard-title", Static).update(build_title_bar(step))
-        self.query_one("#wizard-foot", Static).update(build_footer_markup(step))
+        # Step 3 footer is owned by _set_step3_focus() / _refresh_step3_footer()
+        # which already ran above — don't overwrite with the generic paste hint.
+        if step != 3:
+            self.query_one("#wizard-foot", Static).update(build_footer_markup(step))
 
     def _update_card_focus(self) -> None:
         """Add .card-focused to the selected card, remove from all others."""
@@ -691,7 +696,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             await self._go_to_step(2)
         elif self._step == 2:
             p = PROVIDERS[self._provider_idx]
-            if p["id"] != self._orig_provider and not has_key(p["id"]):
+            if not has_key(p["id"]):
                 await self._go_to_step(3)
             else:
                 self.action_save()
@@ -767,7 +772,7 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         elif self._key_sub in ("validating", "success", "error", "confirm-skip"):
             sub = self._key_sub
         else:
-            sub = ""
+            sub = "input"
         try:
             self.query_one("#wizard-foot", Static).update(
                 build_footer_markup(3, sub=sub)
@@ -805,6 +810,12 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
         elif self._step == 2:
             self._model_idx = max(0, self._model_idx - 1)
             self._update_model_focus()
+        elif self._step == 3:
+            # Vertical section order: scope → test → input (↑ = go up)
+            if self._step3_focus == "test":
+                self._set_step3_focus("scope")
+            elif self._step3_focus == "input":
+                self._set_step3_focus("test")
 
     def action_nav_down(self) -> None:
         if self._step == 1:
@@ -815,13 +826,19 @@ class ModelConfigScreen(ModalScreen):  # type: ignore[type-arg]
             models = PROVIDERS[self._provider_idx]["models"]
             self._model_idx = min(len(models) - 1, self._model_idx + 1)
             self._update_model_focus()
+        elif self._step == 3:
+            # Vertical section order: scope → test → input (↓ = go down)
+            if self._step3_focus == "scope":
+                self._set_step3_focus("test")
+            elif self._step3_focus == "test":
+                self._set_step3_focus("input")
 
     async def action_confirm(self) -> None:
         if self._step == 1:
             await self._go_to_step(2)
         elif self._step == 2:
             p = PROVIDERS[self._provider_idx]
-            if p["id"] != self._orig_provider and not has_key(p["id"]):
+            if not has_key(p["id"]):
                 await self._go_to_step(3)
             else:
                 self.action_save()

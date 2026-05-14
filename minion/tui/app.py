@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 
 from rich.console import RenderableType
 from textual.app import App, ComposeResult, ScreenStackError
@@ -36,6 +36,7 @@ from .conversation import ConversationBuffer
 from .inspector import InspectorScreen
 from .messages import InspectorUpdated, SlotsUpdated
 from .permission import PermissionPanel
+from .setup_checklist import SetupChecklistPanel
 from .slots import SlotsManager
 from .status import StatusBar
 from .theme import MINION_TCSS
@@ -123,6 +124,13 @@ class InspectorZone(Static):
     """Subagent transcript viewer."""
 
 
+class SetupChecklistZone(Widget):
+    """Hosts the first-run setup checklist between the conversation and input."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="setup-checklist-static")
+
+
 class PermissionContent(Static):
     """Inline permission panel — shown inside InputSection when confirmation is needed."""
 
@@ -204,6 +212,11 @@ class InputArea(TextArea):
         text = self.text.strip()
         if text:
             self.post_message(TuiSubmit(text))
+        elif hasattr(self.app, "_is_checklist_visible"):
+            # Empty Enter + visible checklist → activate the focused row
+            _mapp = cast("MinionApp", self.app)
+            if _mapp._is_checklist_visible():
+                _mapp.checklist.activate_current()
 
     def action_insert_newline(self) -> None:
         self.insert("\n")
@@ -216,6 +229,12 @@ class InputArea(TextArea):
                 return
         except Exception:
             pass
+        if hasattr(self.app, "_is_checklist_visible"):
+            _mapp = cast("MinionApp", self.app)
+            if _mapp._is_checklist_visible():
+                _mapp.checklist.move_cursor(-1)
+                _mapp._refresh_checklist()
+                return
         self.app.post_message(TuiHistoryNav(direction=-1))
 
     def action_navigate_history_down(self) -> None:
@@ -226,9 +245,24 @@ class InputArea(TextArea):
                 return
         except Exception:
             pass
+        if hasattr(self.app, "_is_checklist_visible"):
+            _mapp = cast("MinionApp", self.app)
+            if _mapp._is_checklist_visible():
+                _mapp.checklist.move_cursor(1)
+                _mapp._refresh_checklist()
+                return
         self.app.post_message(TuiHistoryNav(direction=1))
 
     def on_key(self, event: Key) -> None:
+        # x dismisses the setup checklist when it's visible and the input is empty
+        if event.key == "x" and not self.text.strip():
+            if hasattr(self.app, "_is_checklist_visible"):
+                _mapp = cast("MinionApp", self.app)
+                if _mapp._is_checklist_visible():
+                    _mapp.hide_setup_checklist()
+                    event.prevent_default()
+                    return
+
         try:
             cl = self.app.query_one(CompletionList)
         except Exception:
@@ -336,6 +370,7 @@ class MinionApp(App):
         # Component state machines (not Textual widgets)
         self.conversation = ConversationBuffer()
         self.permission   = PermissionPanel(app_ref=self)
+        self.checklist    = SetupChecklistPanel()
         self.status       = StatusBar(model_name=model_name, width=self._terminal_width)
 
         _reg = get_registry()
@@ -353,13 +388,15 @@ class MinionApp(App):
         )
 
         # Widget references populated in on_mount()
-        self._conv_area:          Optional[ConversationArea]  = None
-        self._input_section:      Optional[InputSection]      = None
-        self._permission_content: Optional[PermissionContent] = None
-        self._input_row:          Optional[InputRow]          = None
-        self._completion_list:    Optional[CompletionList]    = None
-        self._status_line:        Optional[StatusLine]        = None
-        self._input_area:         Optional[InputArea]         = None
+        self._conv_area:          Optional[ConversationArea]    = None
+        self._input_section:      Optional[InputSection]        = None
+        self._permission_content: Optional[PermissionContent]   = None
+        self._input_row:          Optional[InputRow]            = None
+        self._completion_list:    Optional[CompletionList]      = None
+        self._status_line:        Optional[StatusLine]          = None
+        self._input_area:         Optional[InputArea]           = None
+        self._setup_zone:         Optional[SetupChecklistZone]  = None
+        self._setup_static:       Optional[Static]              = None
 
     # ── History helpers ───────────────────────────────────────────────────────
 
@@ -385,6 +422,7 @@ class MinionApp(App):
 
     def compose(self) -> ComposeResult:
         yield ConversationArea(id="conv-area")
+        yield SetupChecklistZone(id="setup-zone")
         yield InputSection(id="input-section")
         yield CompletionList(id="completion-list")
         yield StatusLine("", id="status-line")
@@ -392,13 +430,15 @@ class MinionApp(App):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        self._conv_area          = self.query_one("#conv-area",          ConversationArea)
-        self._input_section      = self.query_one("#input-section",      InputSection)
-        self._permission_content = self.query_one("#permission-content", PermissionContent)
-        self._input_row          = self.query_one("#input-row",          InputRow)
-        self._completion_list    = self.query_one("#completion-list",    CompletionList)
-        self._status_line        = self.query_one("#status-line",        StatusLine)
-        self._input_area         = self.query_one("#input-area",         InputArea)
+        self._conv_area          = self.query_one("#conv-area",              ConversationArea)
+        self._setup_zone         = self.query_one("#setup-zone",             SetupChecklistZone)
+        self._setup_static       = self.query_one("#setup-checklist-static", Static)
+        self._input_section      = self.query_one("#input-section",          InputSection)
+        self._permission_content = self.query_one("#permission-content",     PermissionContent)
+        self._input_row          = self.query_one("#input-row",              InputRow)
+        self._completion_list    = self.query_one("#completion-list",        CompletionList)
+        self._status_line        = self.query_one("#status-line",            StatusLine)
+        self._input_area         = self.query_one("#input-area",             InputArea)
 
         # Push MINION_THEME onto Textual's shared console so that custom style
         # names (muted, primary, …) resolve correctly when Static widgets render
@@ -528,6 +568,11 @@ class MinionApp(App):
                 handled = False
             if handled:
                 event.prevent_default()
+            return
+
+        if self._is_checklist_visible() and event.key == "x":
+            self.hide_setup_checklist()
+            event.prevent_default()
             return
 
     # ── Message handlers ──────────────────────────────────────────────────────
@@ -771,6 +816,46 @@ class MinionApp(App):
     def _refresh_permission(self) -> None:
         if self._permission_content is not None:
             self._permission_content.update(self.permission.get_rich_markup())
+
+    # ── Checklist show/hide/refresh ───────────────────────────────────────────
+
+    def _is_checklist_visible(self) -> bool:
+        return self._setup_zone is not None and self._setup_zone.display
+
+    def _refresh_checklist(self) -> None:
+        if self._setup_static is not None:
+            self._setup_static.update(self.checklist.get_rich_markup())
+
+    def show_setup_checklist(self) -> None:
+        """Show the setup checklist zone (first-run or /setup re-trigger)."""
+        self.checklist.reset()
+        if self._setup_static is not None:
+            self._setup_static.update(self.checklist.get_rich_markup())
+        if self._setup_zone is not None:
+            self._setup_zone.display = True
+        if self._conv_area is not None:
+            self.call_after_refresh(
+                self._conv_area.scroll_end, animate=False, x_axis=False
+            )
+
+    def hide_setup_checklist(self) -> None:
+        """Hide the checklist zone and write a summary to the conversation."""
+        if self._setup_zone is not None:
+            self._setup_zone.display = False
+        done = self.checklist.done_count()
+        if done > 0:
+            self.conversation.append_system(
+                f"[#4CAF50]setup · {done} of 3 steps completed[/]"
+            )
+        else:
+            self.conversation.append_system("[#666666]setup dismissed · type /setup to run anytime[/]")
+        self.conversation.finalize_turn()
+        if self._input_area is not None:
+            self.set_focus(self._input_area)
+
+        # Fire dismiss callback if set
+        if self.checklist.on_dismiss:
+            self.checklist.on_dismiss()
 
     # ── Permission show/hide ──────────────────────────────────────────────────
 

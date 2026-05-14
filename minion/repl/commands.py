@@ -514,6 +514,10 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
 
     content = None
     was_streamed = False
+    # _CaptureBuf (TUI slash-command capture) marks itself so we skip Live/status
+    # rendering — Live.update() writes every intermediate frame to the buffer
+    # which can't erase previous frames, producing duplicate panels.
+    _capture_mode = getattr(console._file, "is_capture_buf", False)
     if project_context:
         fresh_context = _PC(
             cwd=project_context.cwd,
@@ -533,19 +537,23 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
                 border_style="dim",
             )
             gen = _generate_minion_md_llm(fresh_context, client)
-            with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
-                first_chunk = next(gen, None)
-            chunks: list[str] = []
-            if first_chunk is not None:
-                chunks.append(first_chunk)
-                with Live(_panel(first_chunk), console=console, refresh_per_second=12,
-                          vertical_overflow="visible") as live:
-                    for chunk in gen:
-                        chunks.append(chunk)
-                        live.update(_panel("".join(chunks)))
+            if _capture_mode:
+                # Collect all chunks silently; render once at the end
+                chunks = list(gen)
+            else:
+                with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
+                    first_chunk = next(gen, None)
+                chunks = []
+                if first_chunk is not None:
+                    chunks.append(first_chunk)
+                    with Live(_panel(first_chunk), console=console, refresh_per_second=12,
+                              vertical_overflow="visible") as live:
+                        for chunk in gen:
+                            chunks.append(chunk)
+                            live.update(_panel("".join(chunks)))
             _generated = "".join(chunks).strip()
             content = _generated + "\n" if _generated else None
-            was_streamed = True
+            was_streamed = not _capture_mode
         except Exception as e:
             console.print(f"[muted]LLM generation failed: {e}[/]")
 
@@ -564,13 +572,23 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
     if not was_streamed:
         from rich.markdown import Markdown
         from rich.panel import Panel
-        console.print(Panel(
-            Markdown(content),
-            title=f"[bold {YELLOW}]MINION.md[/]",
-            subtitle=f"[muted]{minion_md_path}[/]",
-            expand=False,
-            border_style="dim",
-        ))
+        import shutil as _shutil
+        _old_width = console._width
+        if _capture_mode:
+            # ConversationArea: padding 0 1 (2 cols) + stable scrollbar (1 col) = -3;
+            # subtract one more for safety.
+            console._width = max(60, _shutil.get_terminal_size().columns - 4)
+        try:
+            console.print(Panel(
+                Markdown(content),
+                title=f"[bold {YELLOW}]MINION.md[/]",
+                subtitle=f"[muted]{minion_md_path}[/]",
+                expand=False,
+                border_style="dim",
+            ))
+        finally:
+            if _capture_mode:
+                console._width = _old_width
     console.print()
     console.print(f"[{YELLOW}]{action} MINION.md[/] [muted]in {Path.cwd()}[/]")
     console.print(f"[muted]Edit MINION.md to refine — changes take effect in this session immediately.[/]")

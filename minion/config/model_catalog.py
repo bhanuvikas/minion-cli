@@ -19,7 +19,7 @@ PROVIDERS: list[dict] = [
         "tagline":  "Claude models · long context, careful reasoning",
         "key_env":  "ANTHROPIC_API_KEY",
         "key_prefix": "sk-ant-",
-        "docs_url": "https://console.anthropic.com/keys",
+        "docs_url": "https://platform.claude.com/settings/keys",
         "models": [
             {
                 "id":        "claude-opus-4-5",
