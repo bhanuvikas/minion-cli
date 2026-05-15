@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ..context import build_project_context
 from ..context.prompts import build_system_prompt
@@ -654,6 +654,17 @@ async def _run_repl_tui(
                 ConfigPanelScreen(cfg=_file_cfg, cwd=project_cwd),
                 _on_config_done,
             )
+            return
+
+        if user_input.startswith("/") and user_input.strip() == "/help":
+            from ..tui.screens import HelpScreen
+
+            async def _on_help_done(result: Optional[str]) -> None:
+                if result:
+                    tui_app.prefill_input(result)
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(HelpScreen(skill_registry=skill_registry), _on_help_done)
             return
 
         if user_input.startswith("/") and user_input.strip() == "/setup":

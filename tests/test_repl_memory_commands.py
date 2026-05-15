@@ -58,8 +58,10 @@ def _stored_record(store: MemoryStore, content: str = "test fact") -> MemoryReco
 # ─── REPL_COMMANDS registry ───────────────────────────────────────────────────
 
 class TestMemoryCommandsRegistered:
-    def test_memory_in_repl_commands(self):
-        assert "/memory" in REPL_COMMANDS
+    def test_recall_replaces_memory_in_repl_commands(self):
+        # /memory was folded into /recall; /memory is no longer a top-level command
+        assert "/memory" not in REPL_COMMANDS
+        assert "/recall" in REPL_COMMANDS
 
     def test_remember_in_repl_commands(self):
         assert "/remember" in REPL_COMMANDS
@@ -71,26 +73,7 @@ class TestMemoryCommandsRegistered:
         assert "/recall" in REPL_COMMANDS
 
 
-# ─── /memory ─────────────────────────────────────────────────────────────────
-
-class TestMemoryCommand:
-    def test_handled_as_slash_command(self, tmp_path):
-        store = _make_store(tmp_path)
-        assert _dispatch("/memory", memory_store=store) is True
-
-    def test_memory_on_sets_flag(self, tmp_path):
-        state = ReplState(memory_enabled=False)
-        _dispatch("/memory --on", memory_store=_make_store(tmp_path), state=state)
-        assert state.memory_enabled is True
-
-    def test_memory_off_clears_flag(self, tmp_path):
-        state = ReplState(memory_enabled=True)
-        _dispatch("/memory --off", memory_store=_make_store(tmp_path), state=state)
-        assert state.memory_enabled is False
-
-    def test_memory_no_arg_returns_true(self, tmp_path):
-        result = _dispatch("/memory", memory_store=_make_store(tmp_path))
-        assert result is True
+# /memory command was removed — its stats are now folded into /recall.
 
     def test_memory_none_state_still_returns_true(self):
         assert _dispatch("/memory", state=None) is True

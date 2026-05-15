@@ -852,6 +852,17 @@ class MinionApp(App):
                 self._setup_cl_footer.display = True
                 self._setup_cl_footer.update(cl.get_footer_markup())
 
+    def prefill_input(self, text: str) -> None:
+        """Insert text into the prompt buffer (e.g. command inserted from /help modal)."""
+        try:
+            ia = self.query_one(InputArea)
+            ia._suppress_next_completion = True
+            ia.load_text(text)
+            ia.move_cursor((0, len(text)))
+            ia.focus()
+        except Exception:
+            pass
+
     def show_setup_checklist(self) -> None:
         """Show the setup checklist zone (first-run or /setup re-trigger)."""
         self.checklist.reset()
