@@ -360,6 +360,30 @@ COMMAND_DETAIL: dict[str, CmdInfo] = {
         usage=["$ /init    scaffold MINION.md in current directory"],
         related=["/config"],
     ),
+    "/help": CmdInfo(
+        name="/help", category="general",
+        short_desc="Browse all commands in an interactive modal.",
+        long_desc=(
+            "Opens the command palette modal. Use ←→ to switch categories,\n"
+            "↓ to highlight a command, and ↵ to insert it into the prompt."
+        ),
+        usage=["$ /help"],
+        related=["/quit"],
+    ),
+    "/quit": CmdInfo(
+        name="/quit", category="general",
+        short_desc="Exit Minion.",
+        long_desc="End the current session and return to the shell.",
+        usage=["$ /quit"],
+        related=["/exit"],
+    ),
+    "/exit": CmdInfo(
+        name="/exit", category="general",
+        short_desc="Exit Minion (alias for /quit).",
+        long_desc="End the current session and return to the shell.",
+        usage=["$ /exit"],
+        related=["/quit"],
+    ),
 }
 
 _GENERAL_CMDS = ["/help", "/quit", "/exit"]
@@ -452,9 +476,14 @@ class HelpScreen(ModalScreen):  # type: ignore[type-arg]
         Binding("enter",  "confirm",   show=False, priority=True),
     ]
 
-    def __init__(self, skill_registry: "Optional[SkillRegistry]" = None) -> None:
+    def __init__(
+        self,
+        skill_registry: "Optional[SkillRegistry]" = None,
+        initial_cmd: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self._skill_registry = skill_registry
+        self._initial_cmd = initial_cmd
         self._cat_idx: int = 0
         self._cmd_idx: Optional[int] = None
         self._skill_cmds: list[CmdInfo] = []
@@ -507,6 +536,19 @@ class HelpScreen(ModalScreen):  # type: ignore[type-arg]
                     ))
 
         self._refresh()
+
+        # Pre-select a command if requested (e.g. from the ? key in autocomplete).
+        if self._initial_cmd:
+            for i, cat in enumerate(self._cats):
+                if self._initial_cmd in cat.cmd_keys:
+                    self._cat_idx = i
+                    visible = [k for k in cat.cmd_keys if k in COMMAND_DETAIL or any(sc.name == k for sc in self._skill_cmds)]
+                    try:
+                        self._cmd_idx = visible.index(self._initial_cmd)
+                    except ValueError:
+                        self._cmd_idx = 0
+                    break
+            self._refresh()
 
     # ── Data helpers ──────────────────────────────────────────────────────────
 

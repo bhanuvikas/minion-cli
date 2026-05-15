@@ -1,14 +1,14 @@
 """MinionApp — the Textual Application that owns the terminal in TUI mode.
 
 Layout (vertical stack):
-  ConversationArea  — VerticalScroll; each content block is a child Static widget
-  Slots             — live parallel agent/tool status (inline at end of ConversationArea)
-  InspectorZone     — subagent transcript viewer (hidden by default)
-  InputSection      — switches between InputRow (normal) and PermissionContent
-    PermissionContent — inline permission panel (hidden when idle)
-    InputRow          — "you › " label + TextArea for user input
-  CompletionList    — slash-command completion overlay (hidden when idle)
-  StatusLine        — 1-line docked status bar (below InputSection)
+  ConversationArea   — VerticalScroll; each content block is a child Static widget
+  Slots              — live parallel agent/tool status (inline at end of ConversationArea)
+  InspectorZone      — subagent transcript viewer (hidden by default)
+  InputSection       — switches between InputRow (normal) and PermissionContent
+    PermissionContent  — inline permission panel (hidden when idle)
+    InputRow           — "you › " label + TextArea for user input
+  SlashPreviewWidget — inline-preview slash-command completion overlay (hidden when idle)
+  StatusLine         — 1-line docked status bar (below InputSection)
 
 Non-TTY or MINION_NO_TUI=1: this module is not used; the console path
 (PromptSession + Rich Live + questionary) remains active.
@@ -22,14 +22,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 
 from rich.console import RenderableType
+from rich.text import Text
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Center, Horizontal, VerticalScroll
 from textual.events import Key
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import OptionList, Static, TextArea
-from textual.widgets.option_list import Option
+from textual.widgets import Static, TextArea
 
 from .agent_registry import get_registry
 from .conversation import ConversationBuffer
@@ -64,6 +64,27 @@ class TuiUpdateCompletion(Message):
         self.prefix = prefix
         super().__init__()
 
+
+class TuiOpenHelp(Message):
+    """User pressed ? in the completion dropdown — open /help modal."""
+    def __init__(self, initial_cmd: str | None = None) -> None:
+        self.initial_cmd = initial_cmd
+        super().__init__()
+
+
+# ── SlashPreviewWidget color tokens ───────────────────────────────────────────
+
+_SP_BRIGHT   = "#f5d76e"  # highlighted cmd name + pointer
+_SP_CYAN     = "#1E90FF"  # command names, related links (minion blue)
+_SP_GREEN    = "#6ed084"  # usage patterns
+_SP_DIM_YEL  = "#b8a030"  # labels: usage, related
+_SP_DIM      = "#6a6a6a"  # descriptions, footer
+_SP_TINT_BG  = "#1a1400"  # faint yellow tint for selected row + expansion
+_SP_KEYCAP   = "#2a2a2a"  # keycap pill background
+
+# Category pill — single gold accent matching the minion brand
+_CAT_PILL_FG = "#e6c34a"   # gold text
+_CAT_PILL_BG = "#1f1a08"   # very dark gold background
 
 # ── Custom widget classes ─────────────────────────────────────────────────────
 
@@ -186,30 +207,25 @@ class InputArea(TextArea):
     # Set before load_text() so the resulting Changed event doesn't re-open the dropdown.
     _suppress_next_completion: bool = False
 
-    def _apply_completion(self, cl: "CompletionList") -> str:
-        """Apply the highlighted option (or first option) from cl; return the cmd."""
-        idx = cl.highlighted if cl.highlighted is not None else 0
-        try:
-            opt = cl.get_option_at_index(idx)
-            cmd = str(getattr(opt, "id", "") or "")
-        except Exception:
-            cmd = ""
+    def _apply_completion(self, dropdown: "SlashPreviewWidget") -> str:
+        """Fill the input with the highlighted command; return the cmd string."""
+        cmd = dropdown.highlighted_cmd or ""
         if cmd:
             # load_text fires exactly one Changed event; suppress it so the
             # dropdown doesn't reopen after we close it.
             self._suppress_next_completion = True
             self.load_text(cmd)
             self.move_cursor((0, len(cmd)))
-        cl.display = False
+        dropdown.display = False
         return cmd
 
     def action_submit_input(self) -> None:
         try:
-            cl = self.app.query_one(CompletionList)
-            if cl.display:
-                # Fill the input with the selected command; don't submit yet so
-                # the user can inspect or append arguments before pressing Enter again.
-                self._apply_completion(cl)
+            dropdown = self.app.query_one(SlashPreviewWidget)
+            if dropdown.display:
+                # Enter fills the input with the selected command; the user
+                # can review / append arguments before pressing Enter again.
+                self._apply_completion(dropdown)
                 return
         except Exception:
             pass
@@ -227,9 +243,9 @@ class InputArea(TextArea):
 
     def action_navigate_history_up(self) -> None:
         try:
-            cl = self.app.query_one(CompletionList)
-            if cl.display:
-                cl.action_cursor_up()
+            dropdown = self.app.query_one(SlashPreviewWidget)
+            if dropdown.display:
+                dropdown.move_up()
                 return
         except Exception:
             pass
@@ -243,9 +259,9 @@ class InputArea(TextArea):
 
     def action_navigate_history_down(self) -> None:
         try:
-            cl = self.app.query_one(CompletionList)
-            if cl.display:
-                cl.action_cursor_down()
+            dropdown = self.app.query_one(SlashPreviewWidget)
+            if dropdown.display:
+                dropdown.move_down()
                 return
         except Exception:
             pass
@@ -268,17 +284,18 @@ class InputArea(TextArea):
                     return
 
         try:
-            cl = self.app.query_one(CompletionList)
+            dropdown = self.app.query_one(SlashPreviewWidget)
         except Exception:
             return
-        if not cl.display:
+        if not dropdown.display:
             return
         if event.key == "escape":
-            cl.display = False
+            dropdown.display = False
             event.prevent_default()
-        elif event.key == "tab":
-            # Tab applies the selection but does NOT submit.
-            self._apply_completion(cl)
+        elif event.key == "question_mark":
+            initial_cmd = dropdown.highlighted_cmd
+            dropdown.display = False
+            self.post_message(TuiOpenHelp(initial_cmd))
             event.prevent_default()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -287,13 +304,13 @@ class InputArea(TextArea):
             return
         text = event.text_area.text
         try:
-            cl = self.app.query_one(CompletionList)
+            dropdown = self.app.query_one(SlashPreviewWidget)
         except Exception:
             return
         if text.startswith("/") and "\n" not in text:
             self.app.post_message(TuiUpdateCompletion(text))
         else:
-            cl.display = False
+            dropdown.display = False
 
 
 class InputRow(Horizontal):
@@ -312,8 +329,176 @@ class InputSection(Widget):
         yield InputRow(id="input-row")
 
 
-class CompletionList(OptionList):
-    """Slash-command completion overlay."""
+class SlashPreviewWidget(Static):
+    """Inline-preview slash-command autocomplete dropdown."""
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__("", id=id)
+        self._matches: list[str] = []
+        self._selected: int = 0
+        self._prefix: str = ""
+        self._total: int = 0
+
+    def update_matches(self, prefix: str, matches: list[str], total: int) -> None:
+        self._prefix = prefix
+        self._matches = matches
+        self._selected = 0
+        self._total = total
+        self._refresh_content()
+
+    def move_up(self) -> None:
+        if self._matches:
+            self._selected = (self._selected - 1) % len(self._matches)
+            self._refresh_content()
+
+    def move_down(self) -> None:
+        if self._matches:
+            self._selected = (self._selected + 1) % len(self._matches)
+            self._refresh_content()
+
+    @property
+    def highlighted_cmd(self) -> str | None:
+        return self._matches[self._selected] if self._matches else None
+
+    def _refresh_content(self) -> None:
+        self.update(self._build_dropdown())
+
+    def _build_dropdown(self) -> RenderableType:
+        from ..repl import REPL_COMMANDS as _CMDS
+        from rich.table import Table
+        try:
+            from .screens.help_screen import COMMAND_DETAIL
+        except Exception:
+            COMMAND_DETAIL = {}  # type: ignore[assignment]
+
+        # Table.grid(expand=True) makes Rich extend every row's background to
+        # the full terminal width — the only reliable way to span the highlight.
+        tbl = Table.grid(expand=True, padding=0)
+        tbl.add_column("content", no_wrap=True, overflow="ellipsis")
+
+        prefix_len = len(self._prefix)
+        # Layout columns (all units = terminal characters):
+        #   gutter (5) + name (11) + gap (2) = description starts at col 18
+        #   indent (18) + label (9)           = values start at col 27
+        NAME_W  = 11
+        DESC_W  = 62   # wide enough for longest short_desc (57 chars) + margin
+        GAP     = 2
+        LABEL_W = 9    # "usage    " / "related  " — 9 chars each
+        INDENT  = " " * (5 + NAME_W + GAP)  # 18 spaces for expansion rows
+        TINT_S  = f"on {_SP_TINT_BG}"
+
+        # Skill registry for dynamic commands not in COMMAND_DETAIL
+        try:
+            from .screens.help_screen import CmdInfo as _CmdInfo
+        except Exception:
+            _CmdInfo = None  # type: ignore[assignment]
+        _skill_registry = getattr(self.app, "_skill_registry", None)
+
+        def _cat_pill(t: Text, category: str) -> None:
+            t.append(f" {category} ", style=f"{_CAT_PILL_FG} on {_CAT_PILL_BG}")
+
+        def _trow(text: Text, highlighted: bool = False) -> None:
+            tbl.add_row(text, style=TINT_S if highlighted else "")
+
+        def _get_info(cmd: str):  # type: ignore[return]
+            """Return CmdInfo for static commands, or a minimal equivalent for skills."""
+            static = COMMAND_DETAIL.get(cmd)
+            if static is not None:
+                return static
+            if _skill_registry is not None and _CmdInfo is not None:
+                skill_name = cmd.lstrip("/")
+                skill = _skill_registry.get(skill_name)
+                if skill is not None:
+                    return _CmdInfo(
+                        name=cmd,
+                        short_desc=skill.description,
+                        long_desc=skill.description,
+                        usage=[cmd],
+                        related=["/skills"],
+                        category="skills",
+                    )
+            return None
+
+        for i, cmd in enumerate(self._matches):
+            is_sel = i == self._selected
+            info = _get_info(cmd)
+            short_desc = info.short_desc if info else _CMDS.get(cmd, "")
+            category   = info.category   if info else ""
+
+            if is_sel:
+                # ── Highlighted main row ──────────────────────────────────────
+                row = Text(no_wrap=True, overflow="ellipsis")
+                row.append("  ▸  ", style=f"bold {_SP_BRIGHT}")
+                if prefix_len and cmd.startswith(self._prefix):
+                    row.append(cmd[:prefix_len], style=f"bold {_SP_BRIGHT}")
+                    remainder = cmd[prefix_len:]
+                else:
+                    remainder = cmd
+                row.append(remainder.ljust(max(0, NAME_W - prefix_len)), style=_SP_CYAN)
+                row.append("  ")
+                # Pad description to DESC_W so pill lands at consistent column
+                row.append(short_desc[:DESC_W].ljust(DESC_W))
+                row.append("  ")
+                if category:
+                    _cat_pill(row, category)
+                _trow(row, highlighted=True)
+
+                # ── Expansion block: usage, one line per invocation ───────────
+                if info and info.usage:
+                    for j, usage_item in enumerate(info.usage):
+                        urow = Text(no_wrap=True, overflow="ellipsis")
+                        urow.append(INDENT)
+                        urow.append("usage".ljust(LABEL_W) if j == 0 else " " * LABEL_W,
+                                    style=_SP_DIM_YEL if j == 0 else "")
+                        urow.append(usage_item, style=_SP_GREEN)
+                        _trow(urow, highlighted=True)
+
+                # ── Expansion block: related, one line per command ────────────
+                if info and info.related:
+                    for j, rel in enumerate(info.related[:4]):
+                        rrow = Text(no_wrap=True, overflow="ellipsis")
+                        rrow.append(INDENT)
+                        rrow.append("related".ljust(LABEL_W) if j == 0 else " " * LABEL_W,
+                                    style=_SP_DIM_YEL if j == 0 else "")
+                        rrow.append(rel, style=_SP_CYAN)
+                        _trow(rrow, highlighted=True)
+            else:
+                # ── Compact row ───────────────────────────────────────────────
+                row = Text(no_wrap=True, overflow="ellipsis")
+                row.append("     ")
+                if prefix_len and cmd.startswith(self._prefix):
+                    row.append(cmd[:prefix_len], style=f"bold {_SP_BRIGHT}")
+                    row.append(cmd[prefix_len:].ljust(max(0, NAME_W - prefix_len)), style=_SP_CYAN)
+                else:
+                    row.append(cmd.ljust(NAME_W), style=_SP_CYAN)
+                row.append("  ")
+                row.append(short_desc[:DESC_W].ljust(DESC_W), style=_SP_DIM)
+                row.append("  ")
+                if category:
+                    _cat_pill(row, category)
+                _trow(row)
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        tbl.add_row(Text(""))
+
+        foot = Text(no_wrap=True)
+
+        def _kpill(label: str) -> None:
+            foot.append(f" {label} ", style=f"bold white on {_SP_KEYCAP}")
+
+        foot.append("     ")
+        _kpill("↑↓")
+        foot.append(" pick  ·  ", style=_SP_DIM)
+        _kpill("↵")
+        foot.append(" fill  ·  ", style=_SP_DIM)
+        _kpill("?")
+        foot.append(" full help  ·  ", style=_SP_DIM)
+        _kpill("esc")
+        foot.append(" dismiss", style=_SP_DIM)
+        foot.append(f"  {len(self._matches)} of {self._total}", style=_SP_DIM)
+        tbl.add_row(foot)
+
+        return tbl
 
 
 class StatusLine(Static):
@@ -396,7 +581,7 @@ class MinionApp(App):
         self._input_section:      Optional[InputSection]        = None
         self._permission_content: Optional[PermissionContent]   = None
         self._input_row:          Optional[InputRow]            = None
-        self._completion_list:    Optional[CompletionList]      = None
+        self._completion_list:    Optional[SlashPreviewWidget]   = None
         self._status_line:        Optional[StatusLine]          = None
         self._input_area:         Optional[InputArea]           = None
         self._setup_zone:         Optional[Widget]               = None   # the Center wrapper
@@ -431,7 +616,7 @@ class MinionApp(App):
         with Center(id="setup-zone-center"):
             yield SetupChecklistZone(id="setup-zone")
         yield InputSection(id="input-section")
-        yield CompletionList(id="completion-list")
+        yield SlashPreviewWidget(id="completion-list")
         yield StatusLine("", id="status-line")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -445,7 +630,7 @@ class MinionApp(App):
         self._input_section      = self.query_one("#input-section",          InputSection)
         self._permission_content = self.query_one("#permission-content",     PermissionContent)
         self._input_row          = self.query_one("#input-row",              InputRow)
-        self._completion_list    = self.query_one("#completion-list",        CompletionList)
+        self._completion_list    = self.query_one("#completion-list",        SlashPreviewWidget)
         self._status_line        = self.query_one("#status-line",            StatusLine)
         self._input_area         = self.query_one("#input-area",             InputArea)
 
@@ -637,19 +822,25 @@ class MinionApp(App):
             return
         prefix = message.prefix.lower()
         from ..repl import REPL_COMMANDS as _CMDS
-        matches: list[str] = [cmd for cmd in _CMDS if cmd.startswith(prefix)][:10]
-        self._completion_list.clear_options()
+        matches = [cmd for cmd in _CMDS if cmd.startswith(prefix)]
         if matches:
-            col_w = max(len(cmd) for cmd in matches)
-            for cmd in matches:
-                desc = _CMDS.get(cmd, "")
-                padded = cmd.ljust(col_w)
-                display = f"{padded}  [dim]{desc}[/dim]" if desc else padded
-                self._completion_list.add_option(Option(display, id=cmd))
+            self._completion_list.update_matches(prefix, matches, len(_CMDS))
             self._completion_list.display = True
             self.call_after_refresh(self._position_completion_list)
         else:
             self._completion_list.display = False
+
+    def on_tui_open_help(self, message: TuiOpenHelp) -> None:
+        from .screens import HelpScreen
+
+        async def _on_done(result: str | None) -> None:
+            if result:
+                self.prefill_input(result)
+
+        self.push_screen(
+            HelpScreen(skill_registry=self._skill_registry, initial_cmd=message.initial_cmd),
+            _on_done,
+        )
 
     def _position_completion_list(self) -> None:
         """Pin the completion dropdown's bottom edge flush to InputSection's top.

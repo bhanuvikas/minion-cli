@@ -11,7 +11,7 @@ import pytest
 
 from minion.tui.app import (
     MinionApp,
-    CompletionList,
+    SlashPreviewWidget,
     ConversationArea,
     InputRow,
     InputSection,
@@ -32,7 +32,7 @@ class TestCompose:
             assert app.query_one("#input-section",      InputSection)
             assert app.query_one("#permission-content", PermissionContent)
             assert app.query_one("#input-row",          InputRow)
-            assert app.query_one("#completion-list",    CompletionList)
+            assert app.query_one("#completion-list",    SlashPreviewWidget)
             assert app.query_one("#status-line",        StatusLine)
 
     @pytest.mark.asyncio

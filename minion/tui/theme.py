@@ -130,31 +130,13 @@ InputArea:focus {{
     background: transparent;
 }}
 
-CompletionList {{
+SlashPreviewWidget {{
     layer: overlay;
     dock: bottom;
     display: none;
     height: auto;
-    max-height: 10;
     background: #111111;
-    border: solid {DIM};
-    padding: 0;
-    scrollbar-size-vertical: 1;
-    scrollbar-background: #111111;
-    scrollbar-color: #2a2a2a;
-    scrollbar-color-hover: #444444;
-    scrollbar-color-active: {DIM};
-}}
-
-CompletionList > .option-list--option-highlighted {{
-    background: #1c1c1c;
-    color: {GOLD};
-    text-style: bold;
-}}
-
-CompletionList > .option-list--option-hover {{
-    background: #1c1c1c;
-    color: {TEXT};
+    padding: 1 2;
 }}
 
 StatusLine {{

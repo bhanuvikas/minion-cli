@@ -222,7 +222,7 @@ class TestTuiTheme:
         from minion.tui.theme import MINION_TCSS
         for selector in ("ConversationArea",
                          "InspectorZone", "InputSection", "PermissionContent",
-                         "InputArea", "CompletionList", "StatusLine"):
+                         "InputArea", "SlashPreviewWidget", "StatusLine"):
             assert selector in MINION_TCSS, f"Missing selector: {selector}"
 
     def test_tcss_embeds_palette_colors(self):
