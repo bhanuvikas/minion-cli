@@ -13,7 +13,7 @@ from ..config import MINION_STYLE, run_model_config
 from ..memory.injection import _format_age
 from ..memory.record import MemoryRecord
 from ..runner.session import list_sessions, load, save
-from ..theme import BLUE, SILVER, YELLOW, console, print_context, print_error, print_mode_toggle
+from ..theme import BLUE, SILVER, YELLOW, console, print_context, print_error
 from ..tracing import get_tracer
 from .state import CommandContext, REPL_COMMANDS, ReplState
 
@@ -48,6 +48,16 @@ def _load_session(name: str, conversation) -> None:
         )
     except FileNotFoundError as e:
         print_error(str(e))
+
+
+def _maybe_create_project_config(cwd: Path) -> None:
+    """Create .minion/config.toml from root config values if it doesn't exist yet."""
+    if (cwd / ".minion" / "config.toml").exists():
+        return
+    from ..config import create_project_config, load_config_levels
+    global_raw, _ = load_config_levels()
+    path = create_project_config(cwd, global_raw)
+    console.print(f"[{YELLOW}]Created[/] [muted]{path}[/]")
 
 
 def _display_plan(content: str, path: Path) -> None:
@@ -105,105 +115,11 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         return True
 
     if cmd == "/init":
-        return _handle_init(arg, client, state, project_context)
+        result = _handle_init(arg, client, state, project_context)
+        if result and cwd:
+            _maybe_create_project_config(cwd)
+        return result
 
-    if cmd == "/reflect":
-        if state is not None:
-            if not arg:
-                status = "off" if state.reflect_depth == 0 else f"on (depth={state.reflect_depth})"
-                console.print(f"[{YELLOW}]Reflection:[/] {status}")
-            elif arg == "--off":
-                state.reflect_depth = 0
-                console.print(f"[{YELLOW}]Reflection off.[/]")
-            elif arg == "--on":
-                state.reflect_depth = 1
-                console.print(f"[{YELLOW}]Reflection on[/] [muted](depth=1)[/]")
-            else:
-                try:
-                    state.reflect_depth = max(0, int(arg))
-                    console.print(f"[{YELLOW}]Reflection on[/] [muted](depth={state.reflect_depth})[/]")
-                except ValueError:
-                    print_error("Usage: /reflect [--on | --off | <depth 1-3>]")
-        return True
-
-    if cmd == "/verbose":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Verbose:[/] {'on' if state.verbose else 'off'}")
-            elif arg == "--on":
-                state.verbose = True
-                console.print(f"[{YELLOW}]Verbose on.[/]")
-            elif arg == "--off":
-                state.verbose = False
-                console.print(f"[{YELLOW}]Verbose off.[/]")
-            else:
-                print_error("Usage: /verbose [--on | --off]")
-        return True
-
-    if cmd == "/edits":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Edits mode:[/] {'on' if state.approval_mode == 'edits' else 'off'}")
-            elif arg == "on":
-                state.approval_mode = "edits"
-                print_mode_toggle("edits", True)
-            elif arg == "off":
-                state.approval_mode = "off"
-                print_mode_toggle("edits", False)
-            else:
-                print_error("Usage: /edits [on | off]")
-        return True
-
-    if cmd == "/yolo":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Yolo mode:[/] {'on' if state.approval_mode == 'yolo' else 'off'}")
-            elif arg == "on":
-                state.approval_mode = "yolo"
-                print_mode_toggle("yolo", True)
-            elif arg == "off":
-                state.approval_mode = "off"
-                print_mode_toggle("yolo", False)
-            else:
-                print_error("Usage: /yolo [on | off]")
-        return True
-
-    if cmd == "/debug":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Debug:[/] {'on' if state.debug else 'off'}")
-            elif arg == "--on":
-                state.debug = True
-                console.print(f"[{YELLOW}]Debug on.[/] [muted]System prompt and other debug info will be printed each turn.[/]")
-            elif arg == "--off":
-                state.debug = False
-                console.print(f"[{YELLOW}]Debug off.[/]")
-            else:
-                print_error("Usage: /debug [--on | --off]")
-        return True
-
-    if cmd == "/memory":
-        if state is not None:
-            if not arg:
-                status = "on" if state.memory_enabled else "off"
-                if memory_store is not None:
-                    s = memory_store.stats()
-                    console.print(
-                        f"[{YELLOW}]Memory:[/] {status} · "
-                        f"{s['global_count']} global, {s['project_count']} project"
-                        + (" · embeddings on" if s["has_embeddings"] else " · keyword search only")
-                    )
-                else:
-                    console.print(f"[{YELLOW}]Memory:[/] {status}")
-            elif arg == "--on":
-                state.memory_enabled = True
-                console.print(f"[{YELLOW}]Memory on.[/]")
-            elif arg == "--off":
-                state.memory_enabled = False
-                console.print(f"[{YELLOW}]Memory off.[/]")
-            else:
-                print_error("Usage: /memory [--on | --off]")
-        return True
 
     if cmd == "/hooks":
         if hook_runner is None:
@@ -237,43 +153,20 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
 
     if cmd == "/agents":
         if state is not None:
-            if not arg:
-                status = "on" if state.agents_enabled else "off"
-                console.print(f"[{YELLOW}]Subagents:[/] {status}")
-                if agent_registry:
-                    from rich.table import Table
-                    table = Table(show_header=True, header_style="bold", expand=False, box=None)
-                    table.add_column("role", style=YELLOW)
-                    table.add_column("description")
-                    table.add_column("tools", style="muted")
-                    for name, role in sorted(agent_registry.items()):
-                        tools_str = ", ".join(role.tools) if role.tools else "all"
-                        table.add_row(name, role.description, tools_str)
-                    console.print(table)
-                else:
-                    console.print("[muted]No agent roles loaded.[/]")
-            elif arg in ("on", "--on"):
-                state.agents_enabled = True
-                console.print(f"[{YELLOW}]Subagents on.[/]")
-            elif arg in ("off", "--off"):
-                state.agents_enabled = False
-                console.print(f"[{YELLOW}]Subagents off.[/] [muted](spawn_agent removed from tool list)[/]")
+            status = "on" if state.agents_enabled else "off"
+            console.print(f"[{YELLOW}]Subagents:[/] {status}")
+            if agent_registry:
+                from rich.table import Table
+                table = Table(show_header=True, header_style="bold", expand=False, box=None)
+                table.add_column("role", style=YELLOW)
+                table.add_column("description")
+                table.add_column("tools", style="muted")
+                for name, role in sorted(agent_registry.items()):
+                    tools_str = ", ".join(role.tools) if role.tools else "all"
+                    table.add_row(name, role.description, tools_str)
+                console.print(table)
             else:
-                print_error("Usage: /agents [on | off]")
-        return True
-
-    if cmd == "/markdown":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Markdown rendering:[/] {'on' if state.markdown_enabled else 'off'}")
-            elif arg in ("on", "--on"):
-                state.markdown_enabled = True
-                console.print(f"[{YELLOW}]Markdown rendering on.[/]")
-            elif arg in ("off", "--off"):
-                state.markdown_enabled = False
-                console.print(f"[{YELLOW}]Markdown rendering off.[/] [muted](plain text streaming)[/]")
-            else:
-                print_error("Usage: /markdown [on | off]")
+                console.print("[muted]No agent roles loaded.[/]")
         return True
 
     if cmd == "/remember":
@@ -337,10 +230,17 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
 
     if cmd == "/recall":
         if memory_store is not None:
+            s = memory_store.stats()
+            status = "on" if (state is not None and state.memory_enabled) else "off"
+            embeddings = "embeddings on" if s["has_embeddings"] else "keyword search only"
+            console.print(
+                f"[{YELLOW}]Memory:[/] {status} · "
+                f"[bold]{s['global_count']}[/] global, [bold]{s['project_count']}[/] project · "
+                f"[muted]{embeddings}[/]"
+            )
             memories = memory_store.list_all(query=arg or None)
-            if not memories:
-                console.print(f"[muted]No memories stored yet.[/]")
-            else:
+            if memories:
+                console.print()
                 for m in memories:
                     age = _format_age(m.created_at)
                     console.print(
@@ -352,12 +252,8 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         return True
 
     if cmd == "/config":
-        from ..config import format_config, load_config as _load_cfg
-        cfg = _load_cfg(cwd=cwd)
-        console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + CLI flags):[/]\n")
-        console.print(format_config(cfg))
-        console.print()
-        return True
+        from .config_cmd import handle_config_command
+        return handle_config_command(raw, ctx)
 
     if cmd == "/model":
         run_model_config(client)
