@@ -286,94 +286,94 @@ class TestInitCommandLLM:
         assert "".join(chunks) == ""
 
 
-# ─── /reflect command ─────────────────────────────────────────────────────────
+# ─── /config reflect subcommand ───────────────────────────────────────────────
 
 class TestReflectCommand:
     def _call(self, raw: str, state: ReplState | None = None):
         if state is None:
             state = ReplState()
         ctx = _make_ctx(state=state)
-        with patch("minion.repl.commands.console"), patch("minion.repl.commands.print_error"):
+        with patch("minion.repl.config_cmd.console"), patch("minion.repl.config_cmd.print_error"):
             result = _handle_slash_command(raw, ctx)
         return result, state
 
-    def test_reflect_registered_in_repl_commands(self):
-        assert "/reflect" in REPL_COMMANDS
+    def test_reflect_accessible_via_config(self):
+        assert "/config" in REPL_COMMANDS
 
     def test_reflect_on_sets_depth_one(self):
-        _, state = self._call("/reflect --on")
+        _, state = self._call("/config reflect on")
         assert state.reflect_depth == 1
 
     def test_reflect_off_sets_depth_zero(self):
         state = ReplState(reflect_depth=2)
-        _, state = self._call("/reflect --off", state=state)
+        _, state = self._call("/config reflect off", state=state)
         assert state.reflect_depth == 0
 
     def test_reflect_integer_sets_depth(self):
-        _, state = self._call("/reflect 3")
+        _, state = self._call("/config reflect 3")
         assert state.reflect_depth == 3
 
     def test_reflect_zero_sets_off(self):
-        _, state = self._call("/reflect 0")
+        _, state = self._call("/config reflect 0")
         assert state.reflect_depth == 0
 
     def test_reflect_no_arg_shows_state_returns_true(self):
-        result, _ = self._call("/reflect")
+        result, _ = self._call("/config reflect")
         assert result is True
 
     def test_reflect_invalid_arg_does_not_crash(self):
-        result, state = self._call("/reflect banana")
+        result, state = self._call("/config reflect banana")
         assert result is True
         assert state.reflect_depth == 0
 
     def test_reflect_returns_true(self):
-        result, _ = self._call("/reflect --on")
+        result, _ = self._call("/config reflect on")
         assert result is True
 
     def test_reflect_without_state_returns_true(self):
         ctx = _make_ctx(state=None)
-        with patch("minion.repl.commands.console"):
-            result = _handle_slash_command("/reflect --on", ctx)
+        with patch("minion.repl.config_cmd.console"):
+            result = _handle_slash_command("/config reflect on", ctx)
         assert result is True
 
 
-# ─── /verbose command ─────────────────────────────────────────────────────────
+# ─── /config verbose subcommand ───────────────────────────────────────────────
 
 class TestVerboseCommand:
     def _call(self, raw: str, state: ReplState | None = None):
         if state is None:
             state = ReplState()
         ctx = _make_ctx(state=state)
-        with patch("minion.repl.commands.console"), patch("minion.repl.commands.print_error"):
+        with patch("minion.repl.config_cmd.console"), patch("minion.repl.config_cmd.print_error"):
             result = _handle_slash_command(raw, ctx)
         return result, state
 
-    def test_verbose_registered_in_repl_commands(self):
-        assert "/verbose" in REPL_COMMANDS
+    def test_verbose_accessible_via_config(self):
+        assert "/config" in REPL_COMMANDS
 
     def test_verbose_on_sets_flag(self):
-        _, state = self._call("/verbose --on")
+        _, state = self._call("/config verbose on")
         assert state.verbose is True
 
     def test_verbose_off_clears_flag(self):
         state = ReplState(verbose=True)
-        _, state = self._call("/verbose --off", state=state)
+        _, state = self._call("/config verbose off", state=state)
         assert state.verbose is False
 
     def test_verbose_no_arg_shows_state_returns_true(self):
-        result, _ = self._call("/verbose")
+        result, _ = self._call("/config verbose")
         assert result is True
 
     def test_verbose_returns_true(self):
-        result, _ = self._call("/verbose --on")
+        result, _ = self._call("/config verbose on")
         assert result is True
 
     def test_verbose_invalid_arg_does_not_crash(self):
-        result, state = self._call("/verbose maybe")
+        result, state = self._call("/config verbose maybe")
         assert result is True
 
     def test_verbose_without_state_returns_true(self):
         ctx = _make_ctx(state=None)
-        with patch("minion.repl.commands.console"):
-            result = _handle_slash_command("/verbose --on", ctx)
+        with patch("minion.repl.config_cmd.console"):
+            result = _handle_slash_command("/config verbose on", ctx)
         assert result is True

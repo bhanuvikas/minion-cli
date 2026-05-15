@@ -184,6 +184,7 @@ async def run_repl_async(
         memory_store=memory_store,
         skill_registry=skill_registry,
         agent_registry=agent_registry,
+        a2a_manager=a2a_manager,
         cwd=project_cwd,
         permission_store=permission_store,
         hook_runner=hook_runner,
@@ -576,11 +577,6 @@ async def _run_repl_tui(
             finally:
                 tui_app.conversation.finalize_turn()
 
-            tui_app.set_thinking(False)
-            return
-
-        if user_input.startswith("/remote"):
-            _handle_remote_command(user_input, ctx.agent_registry)
             tui_app.set_thinking(False)
             return
 

@@ -101,6 +101,11 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
     permission_store = ctx.permission_store
     hook_runner     = ctx.hook_runner
 
+    if cmd == "/remote":
+        from .agent_handlers import _handle_remote_command
+        _handle_remote_command(raw, ctx.a2a_manager)
+        return True
+
     if cmd in ("/quit", "/exit"):
         console.print(f"[{YELLOW}]Poopaye! (Goodbye!) 👋[/]")
         from rich.rule import Rule

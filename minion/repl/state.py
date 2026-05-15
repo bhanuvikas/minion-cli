@@ -81,6 +81,7 @@ class CommandContext:
     memory_store: "Optional[MemoryStore]" = None
     skill_registry: "Optional[SkillRegistry]" = None
     agent_registry: Any = None
+    a2a_manager: Any = None
     cwd: Optional[Path] = None
     permission_store: Any = None
     hook_runner: Any = None
