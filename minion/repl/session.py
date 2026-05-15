@@ -107,6 +107,8 @@ async def run_repl_async(
     hook_runner = HookRegistry.from_config(_file_cfg)
 
     conversation = Conversation(model=client.model_id)
+    _env_md = os.getenv("MINION_MARKDOWN")
+    _markdown = (_env_md.lower() != "false") if _env_md is not None else _file_cfg.agent.markdown_enabled
     state = ReplState(
         reflect_depth=reflect_depth,
         verbose=verbose,
@@ -114,7 +116,7 @@ async def run_repl_async(
         debug=debug,
         agents_enabled=agents_enabled,
         approval_mode=_file_cfg.agent.approval_mode,
-        markdown_enabled=os.getenv("MINION_MARKDOWN", "true").lower() != "false",
+        markdown_enabled=_markdown,
         system_prompt=base_system_prompt,
     )
 
@@ -640,6 +642,21 @@ async def _run_repl_tui(
                     model_id=_prev_model,
                 ),
                 _on_model_result,
+            )
+            return
+
+        if user_input.startswith("/") and user_input.strip() == "/config":
+            from ..tui.screens import ConfigPanelScreen
+
+            async def _on_config_done(result: dict) -> None:
+                for _attr, _val in result.get("session_changes", {}).items():
+                    if state is not None:
+                        setattr(state, _attr, _val)
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(
+                ConfigPanelScreen(cfg=_file_cfg, cwd=project_cwd),
+                _on_config_done,
             )
             return
 
