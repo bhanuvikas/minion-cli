@@ -193,8 +193,11 @@ AgentsScreen {{
     width: 60%;
     border-right: solid {_RULE};
 }}
-#ag-list-pane.rhs-focused {{
+#ag-list-pane.lhs-focused {{
     border-right: solid {_ORANGE};
+}}
+#ag-list-pane.rhs-focused {{
+    border-right: solid {_BLUE};
 }}
 #ag-list-scroll {{
     height: 1fr;
@@ -380,12 +383,16 @@ AgentsScreen {{
         self.query_one("#ag-preview", Static).update(self._build_preview())
         self.query_one("#ag-footer", Static).update(self._build_footer())
 
-        # Highlight the divider border when the right pane has logical focus.
+        # Single divider border changes color: orange = left pane active,
+        # blue = right pane active. Both classes live on the list pane so
+        # there is only ever one border character between the two panes.
         list_pane = self.query_one("#ag-list-pane", Vertical)
         if self._focus_pane == "detail":
+            list_pane.remove_class("lhs-focused")
             list_pane.add_class("rhs-focused")
         else:
             list_pane.remove_class("rhs-focused")
+            list_pane.add_class("lhs-focused")
 
         dup_input = self.query_one("#ag-dup-name", Input)
         dup_input.display = (self._mode == "duplicate")
