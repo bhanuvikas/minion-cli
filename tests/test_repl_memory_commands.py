@@ -1,6 +1,6 @@
 """Tests for memory-related slash commands in minion/repl.py.
 
-Covers /memory, /remember, /forget, /recall and their registration
+Covers /memory, /remember, /forget, /memories and their registration
 in REPL_COMMANDS. All file I/O uses tmp_path. No API calls.
 """
 
@@ -58,10 +58,10 @@ def _stored_record(store: MemoryStore, content: str = "test fact") -> MemoryReco
 # ─── REPL_COMMANDS registry ───────────────────────────────────────────────────
 
 class TestMemoryCommandsRegistered:
-    def test_recall_replaces_memory_in_repl_commands(self):
-        # /memory was folded into /recall; /memory is no longer a top-level command
-        assert "/memory" not in REPL_COMMANDS
-        assert "/recall" in REPL_COMMANDS
+    def test_memories_replaces_recall_in_repl_commands(self):
+        # /recall was renamed to /memories
+        assert "/recall" not in REPL_COMMANDS
+        assert "/memories" in REPL_COMMANDS
 
     def test_remember_in_repl_commands(self):
         assert "/remember" in REPL_COMMANDS
@@ -69,11 +69,11 @@ class TestMemoryCommandsRegistered:
     def test_forget_in_repl_commands(self):
         assert "/forget" in REPL_COMMANDS
 
-    def test_recall_in_repl_commands(self):
-        assert "/recall" in REPL_COMMANDS
+    def test_memories_in_repl_commands(self):
+        assert "/memories" in REPL_COMMANDS
 
 
-# /memory command was removed — its stats are now folded into /recall.
+# /memory command was removed — its stats are now shown in /memories.
 
     def test_memory_none_state_still_returns_true(self):
         assert _dispatch("/memory", state=None) is True
@@ -158,17 +158,17 @@ class TestForgetCommand:
         assert _dispatch("/forget something", memory_store=None) is True
 
 
-# ─── /recall ─────────────────────────────────────────────────────────────────
+# ─── /memories ───────────────────────────────────────────────────────────────
 
-class TestRecallCommand:
+class TestMemoriesCommand:
     def test_handled_as_slash_command(self, tmp_path):
-        assert _dispatch("/recall", memory_store=_make_store(tmp_path)) is True
+        assert _dispatch("/memories", memory_store=_make_store(tmp_path)) is True
 
-    def test_recall_with_query_returns_true(self, tmp_path):
-        assert _dispatch("/recall database", memory_store=_make_store(tmp_path)) is True
+    def test_memories_with_query_returns_true(self, tmp_path):
+        assert _dispatch("/memories database", memory_store=_make_store(tmp_path)) is True
 
-    def test_recall_without_store_returns_true(self):
-        assert _dispatch("/recall", memory_store=None) is True
+    def test_memories_without_store_returns_true(self):
+        assert _dispatch("/memories", memory_store=None) is True
 
 
 # ─── _get_last_response_text ──────────────────────────────────────────────────

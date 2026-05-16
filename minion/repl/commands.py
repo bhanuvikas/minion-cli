@@ -233,7 +233,7 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
             console.print(f"[muted]Memory not available in this session.[/]")
         return True
 
-    if cmd == "/recall":
+    if cmd == "/memories":
         if memory_store is not None:
             s = memory_store.stats()
             status = "on" if (state is not None and state.memory_enabled) else "off"

@@ -667,6 +667,19 @@ async def _run_repl_tui(
             tui_app.push_screen(HelpScreen(skill_registry=skill_registry), _on_help_done)
             return
 
+        if user_input.startswith("/") and user_input.strip().split()[0] == "/memories":
+            from ..tui.screens import MemoriesScreen
+
+            async def _on_memories_done(result: None) -> None:
+                tui_app.set_thinking(False)
+
+            _mem_query = " ".join(user_input.strip().split()[1:])
+            tui_app.push_screen(
+                MemoriesScreen(memory_store=memory_store, initial_query=_mem_query),
+                _on_memories_done,
+            )
+            return
+
         if user_input.startswith("/") and user_input.strip() == "/setup":
             _wire_checklist_callbacks()
             tui_app.show_setup_checklist()

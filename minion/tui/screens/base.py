@@ -9,8 +9,67 @@ from __future__ import annotations
 
 from rich.table import Table
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.widget import Widget
+from textual.widgets import Input
 
 from ..theme import DIM, GOLD, GREEN, SILVER
+
+
+# ── Shared reusable widgets ───────────────────────────────────────────────────
+
+class ModalSearchBar(Widget):
+    """Reusable search bar for modal screens.
+
+    Yields a single ``Input`` with consistent dark-theme styling: dimmed
+    background, subtle border that turns gold on focus.  Placeholder text
+    and widget id are configurable.
+
+    Usage::
+
+        yield ModalSearchBar(placeholder="search…", id="my-search")
+        # listen for Input.Changed / Input.Submitted on the parent screen
+    """
+
+    DEFAULT_CSS = """
+    ModalSearchBar {
+        height: auto;
+        padding: 0 2;
+        border-bottom: solid #2e2e2e;
+        background: #0d0d0d;
+    }
+    ModalSearchBar > Input {
+        margin: 0;
+        background: #1a1a1a;
+        border: solid #3a3a3a;
+        color: #e6e6e6;
+        padding: 0 1;
+        height: 3;
+    }
+    ModalSearchBar > Input:focus {
+        border: solid #e5c46b;
+    }
+    """
+
+    def __init__(self, placeholder: str = "search…", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        yield Input(placeholder=self._placeholder)
+
+    @property
+    def value(self) -> str:
+        try:
+            return self.query_one(Input).value
+        except Exception:
+            return ""
+
+    def focus_input(self) -> None:
+        self.query_one(Input).focus()
+
+    def clear(self) -> None:
+        self.query_one(Input).value = ""
 
 # ── Shared wizard CSS ─────────────────────────────────────────────────────────
 
@@ -86,7 +145,6 @@ def _build_step_rail(step: int) -> str:
             parts.append(f"[{DIM} on #252525] {n} [/] [{DIM}]{label}[/]")
         if i < 2:
             parts.append(f"  [{DIM}]────[/]  ")
-    parts.append(f"  [{DIM}]┐[/]")
     return "".join(parts)
 
 

@@ -71,7 +71,7 @@ CATEGORIES: list[Category] = [
         key="memory",
         title="MEMORY",
         subtitle="pin facts you want minion to remember across sessions.",
-        cmd_keys=["/remember", "/recall", "/forget"],
+        cmd_keys=["/remember", "/memories", "/forget"],
     ),
     Category(
         key="planning",
@@ -185,19 +185,19 @@ COMMAND_DETAIL: dict[str, CmdInfo] = {
             "$ /remember --global <text>                 global memory",
             "$ /remember --category preference <text>    with category tag",
         ],
-        related=["/recall", "/forget"],
+        related=["/memories", "/forget"],
     ),
-    "/recall": CmdInfo(
-        name="/recall", category="memory",
-        short_desc="Browse and search stored memories.",
+    "/memories": CmdInfo(
+        name="/memories", category="memory",
+        short_desc="Browse, search, edit and delete stored memories.",
         long_desc=(
-            "Show all memories, optionally filtered by a search query. Also\n"
-            "displays memory stats: count, embedding status, and whether\n"
-            "memory extraction is currently enabled."
+            "Full-screen split-pane modal: list on the left, preview on the\n"
+            "right. Supports keyword search, inline edit, scope move (global\n"
+            "↔ project), pin, and delete with 4-second undo."
         ),
         usage=[
-            "$ /recall             show all memories + stats",
-            "$ /recall <query>     search memories by text",
+            "$ /memories             open browser (all memories)",
+            "$ /memories <query>     open with search pre-filled",
         ],
         related=["/remember", "/forget"],
     ),
@@ -205,12 +205,12 @@ COMMAND_DETAIL: dict[str, CmdInfo] = {
         name="/forget", category="memory",
         short_desc="Delete a memory by ID or text match.",
         long_desc=(
-            "Remove a stored memory. Pass the memory ID (shown by /recall)\n"
+            "Remove a stored memory. Pass the memory ID (shown by /memories)\n"
             "or a text fragment — Minion finds the closest match and\n"
             "confirms before deleting."
         ),
         usage=["$ /forget <id or text>    delete matching memory"],
-        related=["/recall", "/remember"],
+        related=["/memories", "/remember"],
     ),
     # ── planning ───────────────────────────────────────────────────────────────
     "/plan": CmdInfo(

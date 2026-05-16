@@ -49,7 +49,7 @@ REPL_COMMANDS: dict[str, str] = {
     "/hooks":   "Hooks: /hooks | /hooks list | /hooks on | /hooks off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
-    "/recall":  "Show memories: /recall [query]",
+    "/memories": "Browse, search, edit and delete memories: /memories [query]",
     "/compact": "Compact conversation: /compact | /compact summary | /compact truncate [N]",
     "/clear":   "Clear conversation history and start fresh",
     "/save":    "Save session: /save <name>",
