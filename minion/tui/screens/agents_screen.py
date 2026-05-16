@@ -267,6 +267,9 @@ AgentsScreen {{
         # Phase 2 — duplicate
         self._dup_name: str = ""
         self._dup_tier: str = "user"
+        # True after any successful create/delete — passed to dismiss() so the
+        # session callback can reload the live agent_registry from disk.
+        self._registry_changed: bool = False
         self._dup_focus: str = "name"   # "name" | "tier"
 
     # ── Compose ───────────────────────────────────────────────────────────────
@@ -1028,7 +1031,7 @@ AgentsScreen {{
             self.query_one("#ag-panel", Vertical).focus()
             self._refresh()
         else:
-            self.dismiss(None)
+            self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
         if self._mode == "duplicate":
@@ -1166,6 +1169,7 @@ AgentsScreen {{
             agent.source_path.unlink()
         except OSError:
             return
+        self._registry_changed = True
         self._reload_registry()
         self._mode = "browse"
         self._del_confirmed = False
@@ -1204,6 +1208,7 @@ AgentsScreen {{
             )
         except OSError:
             return
+        self._registry_changed = True
         self._reload_registry()
         # Jump focus to the newly created agent
         new_agent_idx = next(

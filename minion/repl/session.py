@@ -683,7 +683,12 @@ async def _run_repl_tui(
         if user_input.startswith("/") and user_input.strip().split()[0] == "/agents":
             from ..tui.screens import AgentsScreen
 
-            async def _on_agents_done(result: None) -> None:
+            async def _on_agents_done(changed: bool) -> None:
+                nonlocal agent_registry
+                if changed:
+                    from ..agents import load_agent_registry as _load_ar
+                    agent_registry = _load_ar(project_cwd)
+                    ctx.agent_registry = agent_registry
                 tui_app.set_thinking(False)
 
             tui_app.push_screen(

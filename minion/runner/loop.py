@@ -421,7 +421,7 @@ async def run_prompt_async(
 
     _subagent_tokens: list[int] = []
     if enable_agents and agent_depth < MAX_AGENT_DEPTH and agent_registry is not None:
-        from ..agents import SUBAGENT_GUIDANCE
+        from ..agents import build_subagent_guidance
         from ..agents.runner import run_agent
         _agent_runner = lambda task, role, confirm_callback=None: run_agent(  # noqa: E731
             task, role, agent_registry, client,
@@ -430,7 +430,7 @@ async def run_prompt_async(
             confirm_callback=confirm_callback,
             confirmation_manager=confirmation_manager,
         )
-        system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
+        system_prompt = system_prompt + "\n\n" + build_subagent_guidance(agent_registry)
     else:
         _agent_runner = None
 
