@@ -193,6 +193,9 @@ AgentsScreen {{
     width: 60%;
     border-right: solid {_RULE};
 }}
+#ag-list-pane.rhs-focused {{
+    border-right: solid {_ORANGE};
+}}
 #ag-list-scroll {{
     height: 1fr;
     scrollbar-size-vertical: 1;
@@ -376,6 +379,13 @@ AgentsScreen {{
         self.query_one("#ag-list",   Static).update(self._build_list())
         self.query_one("#ag-preview", Static).update(self._build_preview())
         self.query_one("#ag-footer", Static).update(self._build_footer())
+
+        # Highlight the divider border when the right pane has logical focus.
+        list_pane = self.query_one("#ag-list-pane", Vertical)
+        if self._focus_pane == "detail":
+            list_pane.add_class("rhs-focused")
+        else:
+            list_pane.remove_class("rhs-focused")
 
         dup_input = self.query_one("#ag-dup-name", Input)
         dup_input.display = (self._mode == "duplicate")
@@ -992,6 +1002,9 @@ AgentsScreen {{
         return True
 
     def action_nav_up(self) -> None:
+        if self._focus_pane == "detail":
+            self.query_one("#ag-preview-scroll", VerticalScroll).scroll_relative(y=-3)
+            return
         if self._mode == "duplicate" and self._dup_focus == "tier":
             self._dup_tier = "user"
             self._refresh()
@@ -1003,6 +1016,9 @@ AgentsScreen {{
             self._refresh()
 
     def action_nav_down(self) -> None:
+        if self._focus_pane == "detail":
+            self.query_one("#ag-preview-scroll", VerticalScroll).scroll_relative(y=3)
+            return
         if self._mode == "duplicate" and self._dup_focus == "tier":
             self._dup_tier = "project"
             self._refresh()
