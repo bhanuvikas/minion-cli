@@ -164,24 +164,17 @@ MemoriesScreen {{
     border: solid {_GOLD};
 }}
 #mem-footer {{
-    height: auto;
-    padding: 0 1;
+    height: 2;
+    padding: 0 2;
+    background: #0d0d0d;
     border-top: solid {_RULE};
 }}
-#mem-del-all-overlay {{
+#mem-list-dim {{
     display: none;
-    align: center middle;
-    background: #000000 55%;
     layer: overlay;
+    background: #000000 65%;
     width: 100%;
     height: 100%;
-}}
-#mem-del-all-card {{
-    width: 62;
-    height: auto;
-    background: #120c09;
-    border: solid {_ORANGE};
-    padding: 1 2;
 }}
 """
 
@@ -191,6 +184,12 @@ MemoriesScreen {{
         Binding("down",   "nav_down",    show=False, priority=True),
         Binding("enter",  "confirm",     show=False, priority=True),
         Binding("tab",    "toggle_pane", show=False, priority=True),
+    ]
+
+    _DEL_ALL_OPTIONS: list[tuple[str, str]] = [
+        ("All memories",  "all"),
+        ("Global only",   "global"),
+        ("Project only",  "project"),
     ]
 
     def __init__(
@@ -207,7 +206,7 @@ MemoriesScreen {{
         self._records: list["MemoryRecord"] = []
         self._selected: int = 0
         self._edit_original: str = ""
-        self._del_all_input: str = ""
+        self._del_all_selected: int = 0
         self._undo_record: Optional["MemoryRecord"] = None
         self._undo_expired: bool = True
         self._focus_list: bool = True  # True = list focused, False = preview
@@ -222,12 +221,11 @@ MemoriesScreen {{
                     yield ModalSearchBar(placeholder="search memories…", id="mem-search")
                     with VerticalScroll(id="mem-list-scroll"):
                         yield Static("", id="mem-list")
+                    yield Static("", id="mem-list-dim")
                 with Vertical(id="mem-preview-pane"):
                     yield Static("", id="mem-preview")
                     yield TextArea("", id="mem-edit-area")
             yield Static("", id="mem-footer")
-        with Vertical(id="mem-del-all-overlay"):
-            yield Static("", id="mem-del-all-card")
 
     def on_mount(self) -> None:
         self._reload_records()
@@ -241,7 +239,6 @@ MemoriesScreen {{
         panel.can_focus = True
         panel.focus()
         self.query_one("#mem-edit-area", TextArea).display = False
-        self.query_one("#mem-del-all-overlay", Vertical).display = False
         self._refresh()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -251,7 +248,6 @@ MemoriesScreen {{
         self._refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Enter in search bar returns focus to the list panel.
         self.query_one("#mem-panel", Vertical).focus()
         self._mode = "browse" if not self._query else "search"
         self._refresh()
@@ -262,7 +258,13 @@ MemoriesScreen {{
         if self._store is None:
             self._records = []
             return
-        all_active = self._store.list_all(query=self._query or None)
+        if self._query and len(self._query) < 3:
+            # Store's keyword search requires ≥3-char tokens; do local substring match instead.
+            all_active = self._store.list_all()
+            q = self._query.lower()
+            all_active = [r for r in all_active if q in r.content.lower()]
+        else:
+            all_active = self._store.list_all(query=self._query or None)
         if self._scope != "all":
             all_active = [r for r in all_active if r.scope == self._scope]
         pinned = [r for r in all_active if r.pinned]
@@ -298,10 +300,8 @@ MemoriesScreen {{
         edit_area = self.query_one("#mem-edit-area", TextArea)
         edit_area.display = (self._mode == "edit")
 
-        overlay = self.query_one("#mem-del-all-overlay", Vertical)
-        overlay.display = (self._mode == "confirm_delete_all")
-        if self._mode == "confirm_delete_all":
-            self.query_one("#mem-del-all-card", Static).update(self._build_del_all_card())
+        is_del_all = self._mode == "confirm_delete_all"
+        self.query_one("#mem-list-dim", Static).display = is_del_all
 
     # ── Builders ──────────────────────────────────────────────────────────────
 
@@ -313,7 +313,7 @@ MemoriesScreen {{
         t.append("  ")
 
         g_count, p_count = self._stats()
-        t.append(f" {g_count} global ", style=f"{_DIM} on #161614")
+        t.append(f" {g_count} global ", style=f"{_GOLD_DIM} on #161614")
         t.append("·", style=_FAINT)
         t.append(f" {p_count} project ", style=f"{_GREEN} on #0a1208")
 
@@ -334,22 +334,6 @@ MemoriesScreen {{
     def _build_list(self) -> Table:
         outer = Table.grid(expand=True, padding=0)
         outer.add_column()
-
-        # Scope tab row
-        g_count, p_count = self._stats()
-        scope_line = Text()
-        scope_line.append("  ")
-        for label, scope, count in [
-            ("all", "all", g_count + p_count),
-            ("global", "global", g_count),
-            ("project", "project", p_count),
-        ]:
-            active = self._scope == scope
-            style = f"bold {_GOLD} on #1a1200" if active else f"{_DIM} on #161614"
-            scope_line.append(f" {label} · {count} ", style=style)
-            scope_line.append("  ")
-        outer.add_row(scope_line)
-        outer.add_row(Text(""))  # spacer
 
         # Multi-column table for memory rows — gives true column alignment.
         # Columns: ptr+pin | ID | scope | content (fills) | age
@@ -422,26 +406,14 @@ MemoriesScreen {{
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
-        search_line = Text()
-        search_line.append("  / ", style=f"bold {_GOLD_DIM}")
-        search_line.append(self._query, style=_TEXT)
-        search_line.append("▌", style=f"bold {_GOLD}")
-        tbl.add_row(search_line)
         tbl.add_row(Text(""))
-
         art = Text()
-        art.append("    ⌕   nothing here\n", style=f"bold {_DIM}")
-        art.append(f'       memory hasn\'t seen "{self._query}"\n', style=_FAINT)
-        art.append("       try a shorter keyword\n", style=_FAINT)
+        art.append(f'  no memories match "{self._query}"\n', style=_DIM)
+        art.append("  try a different term or", style=_FAINT)
+        art.append(" esc", style=f"bold {_SILVER}")
+        art.append(" to clear", style=_FAINT)
         tbl.add_row(art)
 
-        hints = Text()
-        hints.append("  ")
-        hints.append(" ⌫ ", style=f"bold {_SILVER} on #2a2a2a")
-        hints.append(" narrow  ", style=_DIM)
-        hints.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
-        hints.append(" back  ", style=_DIM)
-        tbl.add_row(hints)
         return tbl
 
     def _build_list_empty(self) -> Table:
@@ -459,9 +431,11 @@ MemoriesScreen {{
         return tbl
 
     def _build_preview(self) -> Table:
-        # Outer: single-column, every section is a full-width row.
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
+
+        if self._mode == "confirm_delete_all":
+            return self._build_del_all_top()
 
         rec = self._current_record()
         if rec is None:
@@ -552,8 +526,7 @@ MemoriesScreen {{
         elif self._mode == "confirm_delete":
             hints = [_hint("↵", "confirm delete"), _hint("esc", "keep")]
         elif self._mode == "confirm_delete_all":
-            hints = [_hint("↵", "delete all"), _hint("g", "only global"),
-                     _hint("p", "only project"), _hint("esc", "cancel")]
+            hints = [_hint("↑↓", "select"), _hint("↵", "delete"), _hint("esc", "cancel")]
         else:
             hints = [_hint("↑↓", "nav"), _hint("/", "search"), _hint("e", "edit"),
                      _hint("p", "pin"), _hint("y", "copy text"), _hint("m", "move"),
@@ -563,84 +536,89 @@ MemoriesScreen {{
 
         return Text.from_markup("  " + dot.join(hints))
 
-    def _build_del_all_card(self) -> Table:
+    def _build_del_all_top(self) -> Table:
         g_count, p_count = self._stats()
         total = g_count + p_count
 
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
-        header = Text()
-        header.append("⚠ Delete all memories?", style=f"bold {_ORANGE}")
-        header.append("  ")
-        header.append(" irreversible · no backup ", style=f"{_ORANGE} on #2a0e06")
-        tbl.add_row(header)
+        # Header
+        hdr = Table.grid(expand=True, padding=0)
+        hdr.add_column(ratio=1)
+        hdr.add_column(no_wrap=True)
+        title = Text()
+        title.append("⚠ ", style=_ORANGE)
+        title.append("Delete memories?", style=f"bold {_ORANGE}")
+        warning = Text(" irreversible · no backup ", style=f"{_DIM} on #1a1a1a")
+        hdr.add_row(title, warning)
+        tbl.add_row(hdr)
         tbl.add_row(Text(""))
 
-        counts = Text()
-        counts.append(f" {total} memories — ", style=_DIM)
-        counts.append(f"{g_count} global", style=_DIM)
-        counts.append(" · ", style=_FAINT)
-        counts.append(f"{p_count} project", style=_DIM)
-        tbl.add_row(counts)
+        tbl.add_row(Text(
+            "Global memories affect every project on this machine; "
+            "project memories only affect this project.",
+            style=_FAINT,
+        ))
         tbl.add_row(Text(""))
+        tbl.add_row(Rule(style=_RULE))
 
-        confirm_label = Text()
-        confirm_label.append(" type to confirm: ", style=_FAINT)
-        tbl.add_row(confirm_label)
+        # Selector rows
+        counts_by_scope = {"all": total, "global": g_count, "project": p_count}
+        scope_colors   = {"all": _ORANGE, "global": _GOLD_DIM, "project": _GREEN}
 
-        input_line = Text()
-        input_line.append(" ")
-        input_line.append(self._del_all_input, style=_TEXT)
-        input_line.append("▌", style=f"bold {_GOLD}")
-        tbl.add_row(input_line, style="on #0d0d0d")
+        sel = Table.grid(expand=True, padding=0)
+        sel.add_column(width=4,  no_wrap=True)   # pointer
+        sel.add_column(ratio=1)                   # label
+        sel.add_column(no_wrap=True)              # count chip
 
-        expected = "delete all memories"
-        remaining = expected[len(self._del_all_input):]
-        if remaining:
-            rem_text = Text()
-            rem_text.append(f" expected: {self._del_all_input}", style=_DIM)
-            rem_text.append(remaining, style=_FAINT)
-            tbl.add_row(rem_text)
-        else:
-            tbl.add_row(Text(" ✓ match — press ↵ to confirm", style=f"bold {_GREEN}"))
+        for i, (label, scope) in enumerate(self._DEL_ALL_OPTIONS):
+            active = i == self._del_all_selected
+            color  = scope_colors[scope]
+            row_style = f"on {_TINT_ORG}" if active else ""
 
-        tbl.add_row(Text(""))
+            ptr = Text(" › " if active else "   ", style=f"bold {_ORANGE}" if active else "")
+            lbl = Text(label, style=f"bold {color}" if active else _DIM)
+            n   = counts_by_scope[scope]
+            cnt = Text(f" {n} ", style=f"{color} on #1a0800" if active else f"{_FAINT} on #161614",
+                       no_wrap=True)
 
-        actions = Text()
-        ready = self._del_all_input == expected
-        if ready:
-            actions.append(" ↵ ", style=f"bold #1a0800 on {_ORANGE}")
-        else:
-            actions.append(" ↵ ", style=f"bold {_DIM} on #2a1a14")
-        actions.append(" delete all  ", style=_DIM)
-        actions.append(" g ", style=f"bold {_SILVER} on #2a2a2a")
-        actions.append(f" only global ({g_count})  ", style=_DIM)
-        actions.append(" p ", style=f"bold {_SILVER} on #2a2a2a")
-        actions.append(f" only project ({p_count})  ", style=_DIM)
-        actions.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
-        actions.append(" cancel", style=_DIM)
-        tbl.add_row(actions)
+            sel.add_row(ptr, lbl, cnt, style=row_style)
+
+        tbl.add_row(sel)
+        tbl.add_row(Rule(style=_RULE))
 
         return tbl
 
     # ── Key handling ──────────────────────────────────────────────────────────
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:  # type: ignore[override]
+        if action in ("nav_up", "nav_down") and self._mode == "edit":
+            return False
+        return True
+
     def action_nav_up(self) -> None:
-        if self._records:
+        if self._mode == "confirm_delete_all":
+            self._del_all_selected = max(0, self._del_all_selected - 1)
+            self.query_one("#mem-preview", Static).update(self._build_preview())
+        elif self._records:
             self._selected = max(0, self._selected - 1)
             self._refresh()
 
     def action_nav_down(self) -> None:
-        if self._records:
+        if self._mode == "confirm_delete_all":
+            self._del_all_selected = min(len(self._DEL_ALL_OPTIONS) - 1, self._del_all_selected + 1)
+            self.query_one("#mem-preview", Static).update(self._build_preview())
+        elif self._records:
             self._selected = min(len(self._records) - 1, self._selected + 1)
             self._refresh()
 
     def action_esc_action(self) -> None:
         if self._mode in ("edit", "confirm_delete", "confirm_delete_all"):
             self._mode = "browse"
-            self._del_all_input = ""
+            self._del_all_selected = 0
             self.query_one("#mem-edit-area", TextArea).display = False
+            self.query_one("#mem-panel", Vertical).focus()
             self._refresh()
         elif self._mode == "search" or self._query:
             self.query_one("#mem-search", ModalSearchBar).clear()
@@ -658,8 +636,8 @@ MemoriesScreen {{
         elif self._mode == "confirm_delete":
             self._do_delete()
         elif self._mode == "confirm_delete_all":
-            if self._del_all_input == "delete all memories":
-                self._delete_scope("all")
+            _, scope = self._DEL_ALL_OPTIONS[self._del_all_selected]
+            self._delete_scope(scope)
 
     def action_toggle_pane(self) -> None:
         self._focus_list = not self._focus_list
@@ -672,23 +650,6 @@ MemoriesScreen {{
     def on_key(self, event: Key) -> None:
         key = event.key
         mode = self._mode
-
-        if mode == "confirm_delete_all":
-            if key == "backspace":
-                self._del_all_input = self._del_all_input[:-1]
-                self._refresh()
-                event.stop()
-            elif key == "g":
-                self._delete_scope("global")
-                event.stop()
-            elif key == "p":
-                self._delete_scope("project")
-                event.stop()
-            elif len(key) == 1 and key.isprintable():
-                self._del_all_input += key
-                self._refresh()
-                event.stop()
-            return
 
         if mode == "edit":
             if key == "ctrl+z":
@@ -739,8 +700,8 @@ MemoriesScreen {{
         edit_area = self.query_one("#mem-edit-area", TextArea)
         edit_area.load_text(rec.content)
         edit_area.display = True
-        if not self._focus_list:
-            edit_area.focus()
+        self._focus_list = False
+        edit_area.focus()
         self._refresh()
 
     def _save_edit(self) -> None:
@@ -796,7 +757,7 @@ MemoriesScreen {{
         for r in records:
             self._store.delete(r.id)
         self._mode = "browse"
-        self._del_all_input = ""
+        self._del_all_selected = 0
         self._reload_records()
         self._refresh()
 
