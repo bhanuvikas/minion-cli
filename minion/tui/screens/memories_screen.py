@@ -171,10 +171,6 @@ MemoriesScreen {{
 }}
 #mem-list-dim {{
     display: none;
-    layer: overlay;
-    background: #000000 65%;
-    width: 100%;
-    height: 100%;
 }}
 """
 
@@ -207,6 +203,8 @@ MemoriesScreen {{
         self._selected: int = 0
         self._edit_original: str = ""
         self._del_all_selected: int = 0
+        self._del_all_confirmed: bool = False
+        self._del_all_timer: object | None = None
         self._undo_record: Optional["MemoryRecord"] = None
         self._undo_expired: bool = True
         self._focus_list: bool = True  # True = list focused, False = preview
@@ -284,24 +282,34 @@ MemoriesScreen {{
         s = self._store.stats()
         return s.get("global_count", 0), s.get("project_count", 0)
 
+    def _del_all_scope_count(self, scope: str) -> int:
+        g, p = self._stats()
+        return g + p if scope == "all" else (g if scope == "global" else p)
+
     # ── Refresh ───────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
         self.query_one("#mem-header", Static).update(self._build_header())
-        if not self._records and self._query:
+
+        if self._mode == "confirm_delete_all":
+            scope = self._DEL_ALL_OPTIONS[self._del_all_selected][1]
+            all_recs = self._store.list_all() if self._store else []
+            pending = [r for r in all_recs if scope == "all" or r.scope == scope]
+            self.query_one("#mem-list", Static).update(self._build_list_delete_pending(pending))
+        elif not self._records and self._query:
             self.query_one("#mem-list", Static).update(self._build_search_empty())
         elif not self._records:
             self.query_one("#mem-list", Static).update(self._build_list_empty())
         else:
             self.query_one("#mem-list", Static).update(self._build_list())
+
         self.query_one("#mem-preview", Static).update(self._build_preview())
         self.query_one("#mem-footer", Static).update(self._build_footer())
 
         edit_area = self.query_one("#mem-edit-area", TextArea)
         edit_area.display = (self._mode == "edit")
 
-        is_del_all = self._mode == "confirm_delete_all"
-        self.query_one("#mem-list-dim", Static).display = is_del_all
+        self.query_one("#mem-list-dim", Static).display = False
 
     # ── Builders ──────────────────────────────────────────────────────────────
 
@@ -324,7 +332,7 @@ MemoriesScreen {{
         elif self._mode == "confirm_delete":
             t.append("  delete pending ", style=f"bold {_ORANGE} on #1a0800")
         elif self._mode == "confirm_delete_all":
-            t.append("  delete all? ", style=f"bold {_ORANGE} on #1a0800")
+            t.append(" delete all ", style=f"bold {_ORANGE} on #2a0e06")
         elif self._query:
             count = len(self._records)
             t.append(f"  {count} match{'es' if count != 1 else ''} ", style=f"{_GOLD} on #1a1200")
@@ -400,6 +408,49 @@ MemoriesScreen {{
             undo_line.append(" undo (4s)", style=_DIM)
             outer.add_row(undo_line)
 
+        return outer
+
+    def _build_list_delete_pending(self, records: list) -> Table:
+        outer = Table.grid(expand=True, padding=0)
+        outer.add_column()
+
+        n = len(records)
+        hdr_line = Text()
+        hdr_line.append(f"  ABOUT TO DELETE · {n} {'MEMORY' if n == 1 else 'MEMORIES'}",
+                        style=f"bold {_ORANGE}")
+        outer.add_row(hdr_line)
+
+        if not records:
+            outer.add_row(Text("  nothing in this scope", style=_FAINT))
+            return outer
+
+        mem = Table.grid(expand=True, padding=0)
+        mem.add_column(width=5,  no_wrap=True)
+        mem.add_column(width=10, no_wrap=True)
+        mem.add_column(width=10, no_wrap=True)
+        mem.add_column(ratio=1)
+        mem.add_column(width=10, no_wrap=True)
+        mem.add_column(width=2,  no_wrap=True)
+
+        for rec in records:
+            ptr = Text()
+            ptr.append("  × ", style=f"bold {_ORANGE}")
+            ptr.append(" ")
+
+            id_t = Text(no_wrap=True)
+            id_t.append(rec.id[:8], style=f"strike {_ORANGE}")
+            id_t.append("  ")  # plain trailing spaces — no strikethrough bleed
+            scope_t = Text(rec.scope, style=f"bold {_scope_color(rec.scope)}", no_wrap=True)
+
+            preview = rec.content.replace("\n", " ")
+            if len(preview) > 120:
+                preview = preview[:117] + "…"
+            content_t = Text(preview, style=f"strike {_DIM}")
+
+            age_t = Text(_age(rec.created_at), style=_FAINT, justify="right", no_wrap=True)
+            mem.add_row(ptr, id_t, scope_t, content_t, age_t, Text(""), style=f"on {_TINT_ORG}")
+
+        outer.add_row(mem)
         return outer
 
     def _build_search_empty(self) -> Table:
@@ -526,7 +577,11 @@ MemoriesScreen {{
         elif self._mode == "confirm_delete":
             hints = [_hint("↵", "confirm delete"), _hint("esc", "keep")]
         elif self._mode == "confirm_delete_all":
-            hints = [_hint("↑↓", "select"), _hint("↵", "delete"), _hint("esc", "cancel")]
+            hints = [
+                _hint("↑↓", "select scope"),
+                _hint("↵", "delete (press twice)"),
+                _hint("esc", "cancel"),
+            ]
         else:
             hints = [_hint("↑↓", "nav"), _hint("/", "search"), _hint("e", "edit"),
                      _hint("p", "pin"), _hint("y", "copy text"), _hint("m", "move"),
@@ -537,56 +592,94 @@ MemoriesScreen {{
         return Text.from_markup("  " + dot.join(hints))
 
     def _build_del_all_top(self) -> Table:
-        g_count, p_count = self._stats()
-        total = g_count + p_count
-
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
-        # Header
+        # ── Headline ──────────────────────────────────────────────────────────
         hdr = Table.grid(expand=True, padding=0)
         hdr.add_column(ratio=1)
         hdr.add_column(no_wrap=True)
         title = Text()
-        title.append("⚠ ", style=_ORANGE)
-        title.append("Delete memories?", style=f"bold {_ORANGE}")
+        title.append("⚠  ", style=_ORANGE)
+        title.append("Clear memory store", style=f"bold {_ORANGE}")
         warning = Text(" irreversible · no backup ", style=f"{_DIM} on #1a1a1a")
         hdr.add_row(title, warning)
         tbl.add_row(hdr)
         tbl.add_row(Text(""))
 
-        tbl.add_row(Text(
-            "Global memories affect every project on this machine; "
-            "project memories only affect this project.",
-            style=_FAINT,
-        ))
+        desc = Text()
+        desc.append("Global", style=f"bold {_GOLD_DIM}")
+        desc.append(" memories affect every project on this machine;\n", style=_DIM)
+        desc.append("Project", style=f"bold {_GREEN}")
+        desc.append(" memories only affect this project.", style=_DIM)
+        tbl.add_row(desc)
         tbl.add_row(Text(""))
         tbl.add_row(Rule(style=_RULE))
 
-        # Selector rows
-        counts_by_scope = {"all": total, "global": g_count, "project": p_count}
-        scope_colors   = {"all": _ORANGE, "global": _GOLD_DIM, "project": _GREEN}
+        # ── SCOPE label ───────────────────────────────────────────────────────
+        tbl.add_row(Text("  SCOPE", style=_FAINT))
+        tbl.add_row(Text(""))
 
-        sel = Table.grid(expand=True, padding=0)
-        sel.add_column(width=4,  no_wrap=True)   # pointer
-        sel.add_column(ratio=1)                   # label
-        sel.add_column(no_wrap=True)              # count chip
+        # ── Selector rows ─────────────────────────────────────────────────────
+        _SUBLINES = {
+            "all":     "everything across both scopes",
+            "global":  "~/.minion/memory/global.jsonl",
+            "project": ".minion/memory/project.jsonl",
+        }
+        _SCOPE_COLORS = {"all": _ORANGE, "global": _GOLD_DIM, "project": _GREEN}
 
         for i, (label, scope) in enumerate(self._DEL_ALL_OPTIONS):
-            active = i == self._del_all_selected
-            color  = scope_colors[scope]
+            active   = i == self._del_all_selected
+            n        = self._del_all_scope_count(scope)
+            disabled = (n == 0 and scope != "all")
+            color    = _SCOPE_COLORS[scope]
             row_style = f"on {_TINT_ORG}" if active else ""
 
-            ptr = Text(" › " if active else "   ", style=f"bold {_ORANGE}" if active else "")
-            lbl = Text(label, style=f"bold {color}" if active else _DIM)
-            n   = counts_by_scope[scope]
-            cnt = Text(f" {n} ", style=f"{color} on #1a0800" if active else f"{_FAINT} on #161614",
-                       no_wrap=True)
+            ptr = Text(" › " if active else "   ",
+                       style=f"bold {_ORANGE}" if active else "")
 
-            sel.add_row(ptr, lbl, cnt, style=row_style)
+            subline = _SUBLINES[scope]
+            if disabled:
+                subline += " · nothing to delete"
+            lbl_block = Text()
+            lbl_block.append(
+                label + "\n",
+                style=(_FAINT if disabled else (f"bold {color}" if active else _TEXT)),
+            )
+            lbl_block.append(subline, style=_FAINT)
 
-        tbl.add_row(sel)
-        tbl.add_row(Rule(style=_RULE))
+            if disabled:
+                cnt = Text("0", style=_FAINT, no_wrap=True)
+            elif active:
+                cnt = Text(str(n), style=f"bold {color}", no_wrap=True)
+            else:
+                cnt = Text(str(n), style=color, no_wrap=True)
+
+            row_tbl = Table.grid(expand=True, padding=0)
+            row_tbl.add_column(width=3, no_wrap=True)
+            row_tbl.add_column(ratio=1)
+            row_tbl.add_column(width=6, no_wrap=True)
+            row_tbl.add_row(ptr, lbl_block, cnt)
+            tbl.add_row(row_tbl, style=row_style)
+
+            if i < len(self._DEL_ALL_OPTIONS) - 1:
+                tbl.add_row(Text(""))
+
+        # ── Two-press confirm strip ───────────────────────────────────────────
+        if self._del_all_confirmed:
+            _, scope = self._DEL_ALL_OPTIONS[self._del_all_selected]
+            n = self._del_all_scope_count(scope)
+            noun = "memory" if n == 1 else "memories"
+            tbl.add_row(Text(""))
+            tbl.add_row(Rule(style=_RULE))
+            confirm = Text()
+            confirm.append(f" delete {n} {noun}?  ", style=f"bold {_ORANGE}")
+            confirm.append(" ↵ ", style=f"bold {_SILVER} on {_ORANGE}")
+            confirm.append(" delete  ", style=_DIM)
+            confirm.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
+            confirm.append(" cancel", style=_DIM)
+            tbl.add_row(confirm, style=f"on {_TINT_ORG}")
+            tbl.add_row(Rule(style=_RULE))
 
         return tbl
 
@@ -597,26 +690,55 @@ MemoriesScreen {{
             return False
         return True
 
+    def _cancel_del_all_confirm_immediate(self) -> None:
+        """Cancel a pending two-press confirm without waiting for the timer."""
+        if self._del_all_confirmed:
+            self._del_all_confirmed = False
+            if self._del_all_timer:
+                self._del_all_timer.cancel()  # type: ignore[union-attr]
+                self._del_all_timer = None
+
     def action_nav_up(self) -> None:
         if self._mode == "confirm_delete_all":
-            self._del_all_selected = max(0, self._del_all_selected - 1)
-            self.query_one("#mem-preview", Static).update(self._build_preview())
+            self._cancel_del_all_confirm_immediate()
+            idx = self._del_all_selected - 1
+            while idx >= 0:
+                _, scope = self._DEL_ALL_OPTIONS[idx]
+                if scope == "all" or self._del_all_scope_count(scope) > 0:
+                    break
+                idx -= 1
+            if idx >= 0:
+                self._del_all_selected = idx
+            self._refresh()
         elif self._records:
             self._selected = max(0, self._selected - 1)
             self._refresh()
 
     def action_nav_down(self) -> None:
         if self._mode == "confirm_delete_all":
-            self._del_all_selected = min(len(self._DEL_ALL_OPTIONS) - 1, self._del_all_selected + 1)
-            self.query_one("#mem-preview", Static).update(self._build_preview())
+            self._cancel_del_all_confirm_immediate()
+            idx = self._del_all_selected + 1
+            while idx < len(self._DEL_ALL_OPTIONS):
+                _, scope = self._DEL_ALL_OPTIONS[idx]
+                if scope == "all" or self._del_all_scope_count(scope) > 0:
+                    break
+                idx += 1
+            if idx < len(self._DEL_ALL_OPTIONS):
+                self._del_all_selected = idx
+            self._refresh()
         elif self._records:
             self._selected = min(len(self._records) - 1, self._selected + 1)
             self._refresh()
 
     def action_esc_action(self) -> None:
-        if self._mode in ("edit", "confirm_delete", "confirm_delete_all"):
+        if self._mode == "confirm_delete_all":
+            self._cancel_del_all_confirm_immediate()
             self._mode = "browse"
             self._del_all_selected = 0
+            self.query_one("#mem-panel", Vertical).focus()
+            self._refresh()
+        elif self._mode in ("edit", "confirm_delete"):
+            self._mode = "browse"
             self.query_one("#mem-edit-area", TextArea).display = False
             self.query_one("#mem-panel", Vertical).focus()
             self._refresh()
@@ -636,8 +758,12 @@ MemoriesScreen {{
         elif self._mode == "confirm_delete":
             self._do_delete()
         elif self._mode == "confirm_delete_all":
-            _, scope = self._DEL_ALL_OPTIONS[self._del_all_selected]
-            self._delete_scope(scope)
+            if not self._del_all_confirmed:
+                self._del_all_confirmed = True
+                self._refresh()
+            else:
+                _, scope = self._DEL_ALL_OPTIONS[self._del_all_selected]
+                self._delete_scope(scope)
 
     def action_toggle_pane(self) -> None:
         self._focus_list = not self._focus_list
@@ -650,6 +776,9 @@ MemoriesScreen {{
     def on_key(self, event: Key) -> None:
         key = event.key
         mode = self._mode
+
+        if mode == "confirm_delete_all":
+            return  # all keys handled by BINDINGS
 
         if mode == "edit":
             if key == "ctrl+z":
@@ -682,7 +811,6 @@ MemoriesScreen {{
             event.stop()
         elif key == "D":
             self._mode = "confirm_delete_all"
-            self._del_all_input = ""
             self._refresh()
             event.stop()
         elif key == "u" and not self._undo_expired and self._undo_record:
@@ -748,6 +876,11 @@ MemoriesScreen {{
         self._undo_record = None
         self._refresh()
 
+    def _cancel_del_all_confirm(self) -> None:
+        self._del_all_confirmed = False
+        self._del_all_timer = None
+        self._refresh()
+
     def _delete_scope(self, which: str) -> None:
         if self._store is None:
             return
@@ -756,6 +889,10 @@ MemoriesScreen {{
             records = [r for r in records if r.scope == which]
         for r in records:
             self._store.delete(r.id)
+        self._del_all_confirmed = False
+        if self._del_all_timer:
+            self._del_all_timer.cancel()  # type: ignore[union-attr]
+            self._del_all_timer = None
         self._mode = "browse"
         self._del_all_selected = 0
         self._reload_records()
