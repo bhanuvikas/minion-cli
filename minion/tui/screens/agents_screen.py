@@ -31,7 +31,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, TextArea
 
 from .base import ModalSearchBar
 
@@ -96,6 +96,17 @@ _TOOL_WARN: dict[str, str] = {
 _NATIVE_TOOLS = list(_TOOL_DESCRIPTIONS.keys())
 
 _TIER_ORDER: dict[str, int] = {"builtin": 0, "user": 1, "project": 2}
+
+# Named color options for the color picker (Phase 4)
+_COLOR_OPTIONS: list[tuple[str, str, str]] = [
+    ("gold",    _GOLD,    "user-tier default"),
+    ("green",   _GREEN,   "project-tier default"),
+    ("blue",    _BLUE,    "model / accent"),
+    ("orange",  _ORANGE,  "high-attention (use sparingly)"),
+    ("silver",  _SILVER,  "neutral helper"),
+    ("muted",   _DIM,     "background / quiet"),
+    ("inherit", _FAINT,   "no override — falls back to tier default"),
+]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -237,6 +248,30 @@ AgentsScreen {{
 #ag-dup-name:focus {{
     border: solid {_ORANGE};
 }}
+#ag-run-input {{
+    height: 1fr;
+    display: none;
+    background: #1a1a1a;
+    border: solid #3a3a3a;
+    color: #E8E8E8;
+    margin: 0 1;
+}}
+#ag-run-input:focus {{
+    border: solid {_ORANGE};
+}}
+#ag-full-content {{
+    display: none;
+    height: 1fr;
+    padding: 0 2;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
+    scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {_DIM};
+}}
+#ag-full-static {{
+    height: auto;
+}}
 #ag-footer {{
     height: 2;
     padding: 0 2;
@@ -277,6 +312,17 @@ AgentsScreen {{
         # session callback can reload the live agent_registry from disk.
         self._registry_changed: bool = False
         self._dup_focus: str = "name"   # "name" | "tier"
+        # Phase 3 — run
+        self._run_agent_name: str = ""
+        # Phase 4 — edit color
+        self._edit_color_cursor: int = 0
+        # Phase 4 — edit tools
+        self._edit_tools: list[str] = []
+        self._edit_tools_saved: list[str] = []
+        self._edit_tools_cursor: int = 0
+        # Phase 4 — edit model
+        self._edit_model_cursor: int = 0
+        self._edit_model_flat: list[Optional[str]] = []
 
     # ── Compose ───────────────────────────────────────────────────────────────
 
@@ -292,6 +338,9 @@ AgentsScreen {{
                     with VerticalScroll(id="ag-preview-scroll"):
                         yield Static("", id="ag-preview")
                     yield Input(placeholder="new agent name…", id="ag-dup-name")
+                    yield TextArea("", id="ag-run-input")
+            with VerticalScroll(id="ag-full-content"):
+                yield Static("", id="ag-full-static")
             yield Static("", id="ag-footer")
 
     def on_mount(self) -> None:
@@ -300,6 +349,7 @@ AgentsScreen {{
         panel.can_focus = True
         panel.focus()
         self.query_one("#ag-dup-name", Input).display = False
+        self.query_one("#ag-run-input", TextArea).display = False
         self._refresh()
 
     # ── Data ──────────────────────────────────────────────────────────────────
@@ -379,13 +429,25 @@ AgentsScreen {{
 
     def _refresh(self) -> None:
         self.query_one("#ag-header", Static).update(self._build_header())
-        self.query_one("#ag-list",   Static).update(self._build_list())
-        self.query_one("#ag-preview", Static).update(self._build_preview())
         self.query_one("#ag-footer", Static).update(self._build_footer())
 
+        # Full-screen modes (edit_tools, edit_model) replace the two-pane body
+        full_mode = self._mode in ("edit_tools", "edit_model")
+        body = self.query_one("#ag-body", Horizontal)
+        full_area = self.query_one("#ag-full-content", VerticalScroll)
+        body.display = not full_mode
+        full_area.display = full_mode
+        if full_mode:
+            if self._mode == "edit_tools":
+                self.query_one("#ag-full-static", Static).update(self._build_full_tools())
+            else:
+                self.query_one("#ag-full-static", Static).update(self._build_full_model())
+        else:
+            self.query_one("#ag-list", Static).update(self._build_list())
+            self.query_one("#ag-preview", Static).update(self._build_preview())
+
         # Single divider border changes color: orange = left pane active,
-        # blue = right pane active. Both classes live on the list pane so
-        # there is only ever one border character between the two panes.
+        # blue = right pane active.
         list_pane = self.query_one("#ag-list-pane", Vertical)
         if self._focus_pane == "detail":
             list_pane.remove_class("lhs-focused")
@@ -398,6 +460,9 @@ AgentsScreen {{
         dup_input.display = (self._mode == "duplicate")
         if self._mode == "duplicate" and self._dup_focus == "name":
             dup_input.focus()
+
+        run_area = self.query_one("#ag-run-input", TextArea)
+        run_area.display = (self._mode == "run")
 
     # ── Header ────────────────────────────────────────────────────────────────
 
@@ -415,6 +480,30 @@ AgentsScreen {{
             agent = self._current_agent()
             name = agent.name if agent else "agent"
             t.append(f"{name} › duplicate", style=_DIM)
+        elif self._mode == "run":
+            t.append(f"{self._run_agent_name} › ", style=_DIM)
+            t.append("run", style=f"bold {_ORANGE}")
+            t.append("  ")
+            t.append(" ctrl+↵ to dispatch ", style=f"{_SILVER} on #161614")
+        elif self._mode == "edit_tools":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            allowed = len(self._edit_tools)
+            total = len(_NATIVE_TOOLS)
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit tools", style=f"bold {_ORANGE}")
+            t.append("  ")
+            t.append(f" {allowed} of {total} allowed ", style=f"{_ORANGE} on #1a0800")
+        elif self._mode == "edit_model":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit model", style=f"bold {_ORANGE}")
+        elif self._mode == "edit_color":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit color", style=f"bold {_ORANGE}")
         elif self._mode == "detail":
             agent = self._current_agent()
             name = agent.name if agent else "agent"
@@ -620,6 +709,10 @@ AgentsScreen {{
             return self._build_preview_delete(agent)
         if self._mode == "duplicate" and agent:
             return self._build_preview_duplicate(agent)
+        if self._mode == "run":
+            return self._build_preview_run()
+        if self._mode == "edit_color" and agent:
+            return self._build_preview_color(agent)
         if agent is None:
             tbl = Table.grid(expand=True, padding=0)
             tbl.add_column()
@@ -656,32 +749,64 @@ AgentsScreen {{
         tbl.add_row(Text(""))
 
         # Tools section
+        tools_header = Text()
+        tools_header.append(" TOOLS", style=f"bold {_DIM}")
+        tools_count = manifest.tools
+        if tools_count is None:
+            tools_header.append(" · all allowed", style=_DIM)
+        else:
+            tools_header.append(f" · {len(tools_count)} of {len(_NATIVE_TOOLS)} allowed", style=_DIM)
+        if manifest.source != "builtin":
+            tools_header.append("  ")
+            tools_header.append(" t ", style=f"bold {_SILVER} on #2a2a2a")
+            tools_header.append(" edit", style=_DIM)
+        tbl.add_row(tools_header)
+        tbl.add_row(Text(""))
         tbl.add_row(self._build_tools_section(manifest))
         tbl.add_row(Text(""))
 
         # SOURCE
         source_header = Text()
         source_header.append(" SOURCE", style=f"bold {_DIM}")
+        if manifest.source != "builtin":
+            source_header.append("  ")
+            source_header.append(" e ", style=f"bold {_SILVER} on #2a2a2a")
+            source_header.append(" edit file", style=_DIM)
         tbl.add_row(source_header)
         tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
         tbl.add_row(Text(""))
 
-        # MODEL — placeholder until Phase 4 adds model override to YAML
+        # MODEL
         model_header = Text()
         model_header.append(" MODEL", style=f"bold {_DIM}")
-        model_header.append("  ·  inherit", style=_DIM)
+        if manifest.source != "builtin":
+            model_header.append("  ")
+            model_header.append(" m ", style=f"bold {_SILVER} on #2a2a2a")
+            model_header.append(" edit", style=_DIM)
+        if manifest.model:
+            model_header.append(f"  ·  {manifest.model}", style=f"bold {_BLUE}")
+        else:
+            model_header.append("  ·  inherit", style=_DIM)
         tbl.add_row(model_header)
-        tbl.add_row(Text(f"   uses session model (override available in Phase 4)", style=_FAINT))
+        if not manifest.model:
+            tbl.add_row(Text("   uses session model", style=_FAINT))
         tbl.add_row(Text(""))
 
-        # COLOR — placeholder until Phase 4
+        # COLOR
         color_header = Text()
         color_header.append(" COLOR", style=f"bold {_DIM}")
-        tier_default_color = _tier_color(manifest.source)
-        tier_default_name = {"builtin": "muted", "user": "gold", "project": "green"}.get(manifest.source, "inherit")
-        color_header.append(f"  ·  ● {tier_default_name} (tier default)", style=f"{tier_default_color}")
+        if manifest.source != "builtin":
+            color_header.append("  ")
+            color_header.append(" k ", style=f"bold {_SILVER} on #2a2a2a")
+            color_header.append(" edit", style=_DIM)
+        if manifest.color:
+            color_val = next((c for c, col, _ in _COLOR_OPTIONS if c == manifest.color), _FAINT)
+            color_header.append(f"  ·  ● {manifest.color}", style=color_val)
+        else:
+            tier_default_name = {"builtin": "muted", "user": "gold", "project": "green"}.get(manifest.source, "inherit")
+            tier_default_color = _tier_color(manifest.source)
+            color_header.append(f"  ·  ● {tier_default_name} (tier default)", style=tier_default_color)
         tbl.add_row(color_header)
-        tbl.add_row(Text("   chat badge color — override per-agent in Phase 4", style=_FAINT))
         tbl.add_row(Text(""))
 
         # System prompt preview
@@ -695,20 +820,11 @@ AgentsScreen {{
         return tbl
 
     def _build_tools_section(self, manifest: "AgentRoleManifest") -> Table:
+        """Renders allowed/denied tool rows (no header — caller adds it)."""
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
         tools = manifest.tools  # None = all, [] = none, [...] = subset
-        total = len(_NATIVE_TOOLS)
-
-        header = Text()
-        header.append(" TOOLS", style=f"bold {_DIM}")
-        if tools is None:
-            header.append(" · all allowed", style=_DIM)
-        else:
-            header.append(f" · {len(tools)} of {total} allowed", style=_DIM)
-        tbl.add_row(header)
-        tbl.add_row(Text(""))
 
         if tools is None:
             tbl.add_row(Text("  all native tools allowed", style=_FAINT))
@@ -815,6 +931,269 @@ AgentsScreen {{
             below.append("  ○  below  ", style=_FAINT)
             below.append(_format_source_path(builtin_m), style=_FAINT)
             tbl.add_row(below)
+
+        return tbl
+
+    def _build_preview_run(self) -> Table:
+        """Right-pane content for run mode (TextArea renders below as a live widget)."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        tbl.add_row(Text(""))
+
+        agent = next(
+            (m for m in self._registry.values() if m.name == self._run_agent_name),
+            None,
+        )
+
+        # Identity bar
+        identity = Text()
+        identity.append(" ▌ Run  ", style=f"bold {_ORANGE}")
+        identity.append(self._run_agent_name, style=f"bold {_SILVER}")
+        if agent:
+            identity.append("  ")
+            identity.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
+        tbl.add_row(identity)
+        tbl.add_row(Text(""))
+
+        # Prompt section
+        prompt_h = Text()
+        prompt_h.append(" PROMPT", style=f"bold {_DIM}")
+        prompt_h.append("  ·  describe the task for this subagent", style=_DIM)
+        tbl.add_row(prompt_h)
+        tbl.add_row(Text(""))
+
+        # Context block
+        tbl.add_row(Rule(style=_RULE))
+        ctx_h = Text()
+        ctx_h.append(" CONTEXT", style=f"bold {_DIM}")
+        tbl.add_row(ctx_h)
+
+        cwd_row = Text()
+        cwd_row.append("  cwd    ", style=_DIM)
+        cwd_row.append(str(self._cwd), style=_FAINT)
+        tbl.add_row(cwd_row)
+
+        if agent and agent.tools is not None:
+            tools_row = Text()
+            tools_row.append("  tools  ", style=_DIM)
+            tools_row.append(f"{len(agent.tools)} allowed", style=_FAINT)
+            tbl.add_row(tools_row)
+        elif agent:
+            tools_row = Text()
+            tools_row.append("  tools  ", style=_DIM)
+            tools_row.append("all native tools", style=_FAINT)
+            tbl.add_row(tools_row)
+
+        limit_row = Text()
+        limit_row.append("  limit  ", style=_DIM)
+        limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_FAINT)
+        tbl.add_row(limit_row)
+        tbl.add_row(Text(""))
+
+        dispatch_hint = Text()
+        dispatch_hint.append("  ")
+        dispatch_hint.append(" ctrl+↵ ", style=f"bold {_SILVER} on #2a2a2a")
+        dispatch_hint.append("  dispatch      ", style=_ORANGE)
+        dispatch_hint.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
+        dispatch_hint.append("  cancel", style=_DIM)
+        tbl.add_row(dispatch_hint)
+
+        return tbl
+
+    def _build_preview_color(self, manifest: "AgentRoleManifest") -> Table:
+        """Right-pane color picker for edit_color mode."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        tbl.add_row(Text(""))
+
+        intro = Text()
+        intro.append(" Choose a display color for this agent.", style=_DIM)
+        tbl.add_row(intro)
+        intro2 = Text()
+        intro2.append(" Used in chat output, the agents list, and Inspector.", style=_FAINT)
+        tbl.add_row(intro2)
+        tbl.add_row(Text(""))
+        tbl.add_row(Rule(style=_RULE))
+        tbl.add_row(Text(""))
+
+        current_color = manifest.color or "inherit"
+        for i, (name, color_val, desc) in enumerate(_COLOR_OPTIONS):
+            is_sel = i == self._edit_color_cursor
+            row = Text()
+            if is_sel:
+                row.append("  ▸  ", style=f"bold {_ORANGE}")
+                row.append("● ", style=f"bold {color_val}")
+                row.append(f"{name:<10}", style=f"bold {color_val}")
+            else:
+                row.append("     ", style="")
+                row.append("● ", style=color_val)
+                row.append(f"{name:<10}", style=_DIM if name != current_color else _SILVER)
+            if name == current_color and name != "inherit":
+                row.append(" current  ", style=f"bold {_GREEN} on #0a1208")
+                row.append("  ")
+            elif name == current_color:
+                row.append(" current  ", style=f"{_DIM} on #161614")
+                row.append("  ")
+            else:
+                row.append("          ")
+            row.append(desc, style=_FAINT)
+            tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
+
+        tbl.add_row(Text(""))
+        tbl.add_row(Rule(style=_RULE))
+
+        # Preview
+        sel_name, sel_color, _ = _COLOR_OPTIONS[self._edit_color_cursor]
+        effective_color = sel_color if sel_name != "inherit" else _tier_color(manifest.source)
+        preview = Text()
+        preview.append("  PREVIEW  ", style=_DIM)
+        preview.append(" ▌ ", style=f"bold {effective_color}")
+        preview.append(f"[{manifest.name}]", style=f"bold {effective_color}")
+        preview.append("  done (4.1s)", style=_DIM)
+        tbl.add_row(preview)
+
+        return tbl
+
+    def _build_full_tools(self) -> Table:
+        """Full-screen tools checklist for edit_tools mode."""
+        tbl = Table.grid(expand=True, padding=0)
+        tbl.add_column()
+
+        preamble = Text()
+        preamble.append("  Toggle which tools this agent may call. Tools marked ", style=_DIM)
+        preamble.append("⚠", style=_ORANGE)
+        preamble.append(" have broad capability.", style=_DIM)
+        tbl.add_row(preamble)
+        tbl.add_row(Text(""))
+
+        # Group tools by category in consistent order
+        cat_order = ["filesystem", "shell", "network", "agents", "tasks", "other"]
+        by_cat: dict[str, list[str]] = {}
+        for tool in _NATIVE_TOOLS:
+            cat = _TOOL_CATEGORIES.get(tool, "other")
+            by_cat.setdefault(cat, []).append(tool)
+
+        flat_idx = 0
+        for cat in cat_order:
+            if cat not in by_cat:
+                continue
+            sep = Text(f"  ─── {cat} {'─' * max(0, 60 - len(cat))}", style=_FAINT)
+            tbl.add_row(sep)
+            for tool in by_cat[cat]:
+                is_sel = flat_idx == self._edit_tools_cursor
+                is_allowed = tool in self._edit_tools
+                check = f"[{'✓' if is_allowed else ' '}]"
+                row = Text()
+                if is_sel:
+                    row.append("  ▸ ", style=f"bold {_ORANGE}")
+                else:
+                    row.append("    ", style="")
+                check_style = f"bold {_ORANGE}" if is_allowed else _DIM
+                row.append(f"{check}  ", style=check_style)
+                name_style = _TEXT if is_allowed else _DIM
+                row.append(f"{tool:<24}", style=name_style)
+                desc = _TOOL_DESCRIPTIONS.get(tool, "")
+                row.append(f"{desc:<40}", style=_FAINT)
+                warn = _TOOL_WARN.get(tool, "")
+                if warn:
+                    row.append(f"  {warn}", style=f"bold {_ORANGE}")
+                tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
+                flat_idx += 1
+
+        tbl.add_row(Text(""))
+        tbl.add_row(Rule(style=_RULE))
+
+        # Status bar
+        allowed_count = len(self._edit_tools)
+        denied_count = len(_NATIVE_TOOLS) - allowed_count
+        changes = len(set(self._edit_tools).symmetric_difference(set(self._edit_tools_saved)))
+        status = Text()
+        if changes:
+            status.append("  ● ", style=f"bold {_ORANGE}")
+            status.append("unsaved  ", style=_ORANGE)
+        else:
+            status.append("  ○ ", style=_DIM)
+            status.append("saved     ", style=_DIM)
+        status.append(f" {allowed_count} allowed  ·  {denied_count} denied", style=_DIM)
+        if changes:
+            status.append(f"  ·  {changes} change{'s' if changes != 1 else ''} from saved", style=_ORANGE)
+        tbl.add_row(status)
+
+        return tbl
+
+    def _build_full_model(self) -> Table:
+        """Full-screen model picker for edit_model mode."""
+        from ...config.model_catalog import PROVIDERS, fmt_ctx, fmt_price
+
+        tbl = Table.grid(expand=True, padding=0)
+        tbl.add_column()
+
+        agent = self._current_agent()
+        current_model = agent.model if agent else None
+
+        # Current row
+        current_h = Text()
+        current_h.append("  CURRENT  ", style=_DIM)
+        if current_model:
+            current_h.append(" override ", style=f"bold {_ORANGE} on #1a0800")
+            current_h.append(f"  ·  {current_model}", style=f"bold {_BLUE}")
+        else:
+            current_h.append(" inherit ", style=f"{_DIM} on #161614")
+            current_h.append("  ·  uses session model", style=_DIM)
+        tbl.add_row(current_h)
+        tbl.add_row(Text(""))
+        tbl.add_row(Text(
+            "  ─── pick a model ─────────────────────────────────────────────",
+            style=_FAINT,
+        ))
+
+        # Inherit option (index 0)
+        is_sel = self._edit_model_cursor == 0
+        inherit_row = Text()
+        inherit_row.append("  ▸ " if is_sel else "    ", style=f"bold {_ORANGE}" if is_sel else "")
+        inherit_row.append("● " if is_sel else "○ ", style=f"bold {_SILVER}" if is_sel else _DIM)
+        inherit_row.append(f"{'inherit':<18}", style=f"bold {_SILVER}" if is_sel else _DIM)
+        inherit_row.append("use the session model", style=_FAINT)
+        if current_model is None:
+            inherit_row.append("  ")
+            inherit_row.append(" current ", style=f"bold {_GREEN} on #0a1208")
+        tbl.add_row(inherit_row, style=f"on {_TINT_ORG}" if is_sel else "")
+
+        # Provider/model options
+        flat_idx = 1
+        for provider in PROVIDERS:
+            for model in provider["models"]:
+                is_sel = flat_idx == self._edit_model_cursor
+                is_cur = model["id"] == current_model
+                row = Text()
+                row.append("  ▸ " if is_sel else "    ", style=f"bold {_ORANGE}" if is_sel else "")
+                row.append("● " if is_sel else "○ ", style=f"bold {_SILVER}" if is_sel else _DIM)
+                row.append(f"{provider['name']} › ", style=_DIM)
+                row.append(f"{model['id']:<28}", style=f"bold {_BLUE}" if is_sel else _BLUE)
+                ctx_str = fmt_ctx(model["ctx"])
+                price_str = f"${model['in_price']:.2f}/${model['out_price']:.2f}"
+                row.append(f"  {ctx_str} · {price_str}", style=_FAINT)
+                if is_cur:
+                    row.append("  ")
+                    row.append(" current ", style=f"bold {_GREEN} on #0a1208")
+                tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
+                flat_idx += 1
+
+        tbl.add_row(Text(""))
+        tbl.add_row(Rule(style=_RULE))
+
+        # Preview
+        sel_model = self._edit_model_flat[self._edit_model_cursor] if self._edit_model_flat else None
+        preview = Text()
+        preview.append("  PREVIEW  ", style=_DIM)
+        if sel_model:
+            preview.append(f"{sel_model}", style=f"bold {_BLUE}")
+            preview.append("  ")
+            preview.append(" override ", style=f"bold {_ORANGE} on #1a0800")
+        else:
+            preview.append("inherit ", style=_DIM)
+            preview.append("· uses session model", style=_FAINT)
+        tbl.add_row(preview)
 
         return tbl
 
@@ -964,15 +1343,50 @@ AgentsScreen {{
                 _hint("esc", "cancel"),
             ]
             suffix = ""
+        elif self._mode == "run":
+            hints = [
+                _hint("ctrl+↵", "dispatch agent"),
+                _hint("↵", "newline"),
+                _hint("esc", "cancel"),
+            ]
+            suffix = f"  [{_FAINT}]ctrl+o opens Inspector after dispatch[/]"
+        elif self._mode == "edit_tools":
+            hints = [
+                _hint("↑↓", "nav"),
+                _hint("space", "toggle"),
+                _hint("a", "select all in category"),
+                _hint("↵", "save & close"),
+                _hint("esc", "cancel"),
+            ]
+            suffix = ""
+        elif self._mode == "edit_model":
+            hints = [
+                _hint("↑↓", "nav"),
+                _hint("↵", "select & save"),
+                _hint("esc", "cancel"),
+            ]
+            suffix = ""
+        elif self._mode == "edit_color":
+            hints = [
+                _hint("↑↓", "nav"),
+                _hint("↵", "save & close"),
+                _hint("esc", "cancel"),
+            ]
+            suffix = ""
         elif self._mode == "detail":
             hints = [
                 _hint("↑↓", "scroll"),
-                _hint("v", "view full prompt"),
+                _hint("v", "view prompt"),
             ]
             if not is_builtin:
                 hints += [
+                    _hint("e", "edit file"),
+                    _hint("t", "tools"),
+                    _hint("m", "model"),
+                    _hint("k", "color"),
+                    _hint("s", "prompt"),
                     _hint("r", "run"),
-                    _hint("y", "duplicate"),
+                    _hint("y", "dup"),
                     _hint("d", "delete"),
                 ]
             else:
@@ -996,7 +1410,7 @@ AgentsScreen {{
                 _hint("y", "dup"),
             ]
             if not is_builtin:
-                hints.append(_hint("d", "delete"))
+                hints += [_hint("e", "edit"), _hint("d", "delete")]
             hints.append(_hint("esc", "close"))
             suffix = "" if not is_builtin else f"  [{_FAINT}]read-only — edit/delete hidden[/]"
 
@@ -1009,6 +1423,18 @@ AgentsScreen {{
         return True
 
     def action_nav_up(self) -> None:
+        if self._mode == "edit_tools":
+            self._edit_tools_cursor = max(0, self._edit_tools_cursor - 1)
+            self._refresh()
+            return
+        if self._mode == "edit_model":
+            self._edit_model_cursor = max(0, self._edit_model_cursor - 1)
+            self._refresh()
+            return
+        if self._mode == "edit_color":
+            self._edit_color_cursor = max(0, self._edit_color_cursor - 1)
+            self._refresh()
+            return
         if self._focus_pane == "detail":
             self.query_one("#ag-preview-scroll", VerticalScroll).scroll_relative(y=-3)
             return
@@ -1016,13 +1442,26 @@ AgentsScreen {{
             self._dup_tier = "user"
             self._refresh()
             return
-        if self._mode in ("confirm_delete", "duplicate"):
+        if self._mode in ("confirm_delete", "duplicate", "run"):
             return
         if self._visible:
             self._selected = max(0, self._selected - 1)
             self._refresh()
 
     def action_nav_down(self) -> None:
+        if self._mode == "edit_tools":
+            self._edit_tools_cursor = min(len(_NATIVE_TOOLS) - 1, self._edit_tools_cursor + 1)
+            self._refresh()
+            return
+        if self._mode == "edit_model":
+            max_idx = len(self._edit_model_flat) - 1 if self._edit_model_flat else 0
+            self._edit_model_cursor = min(max_idx, self._edit_model_cursor + 1)
+            self._refresh()
+            return
+        if self._mode == "edit_color":
+            self._edit_color_cursor = min(len(_COLOR_OPTIONS) - 1, self._edit_color_cursor + 1)
+            self._refresh()
+            return
         if self._focus_pane == "detail":
             self.query_one("#ag-preview-scroll", VerticalScroll).scroll_relative(y=3)
             return
@@ -1030,14 +1469,16 @@ AgentsScreen {{
             self._dup_tier = "project"
             self._refresh()
             return
-        if self._mode in ("confirm_delete", "duplicate"):
+        if self._mode in ("confirm_delete", "duplicate", "run"):
             return
         if self._visible:
             self._selected = min(len(self._visible) - 1, self._selected + 1)
             self._refresh()
 
     def action_esc_action(self) -> None:
-        if self._mode in ("confirm_delete", "duplicate", "detail"):
+        edit_modes = ("confirm_delete", "duplicate", "detail", "run",
+                      "edit_tools", "edit_model", "edit_color")
+        if self._mode in edit_modes:
             self._mode = "browse"
             self._del_confirmed = False
             self._dup_name = ""
@@ -1057,7 +1498,13 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
-        if self._mode == "duplicate":
+        if self._mode == "edit_tools":
+            self._do_save_tools()
+        elif self._mode == "edit_model":
+            self._do_save_model()
+        elif self._mode == "edit_color":
+            self._do_save_color()
+        elif self._mode == "duplicate":
             if self._dup_focus == "name":
                 self._dup_focus = "tier"
                 self.query_one("#ag-panel", Vertical).focus()
@@ -1069,7 +1516,7 @@ AgentsScreen {{
             self._focus_pane = "detail"
             self._refresh()
         elif self._mode == "detail":
-            pass  # Enter in detail mode: no-op (run is 'r')
+            pass  # Enter in detail mode: no-op (run is 'r', edit via e/t/m/k/s)
 
     def action_cycle_scope(self) -> None:
         if self._mode == "duplicate":
@@ -1120,7 +1567,34 @@ AgentsScreen {{
         if mode == "duplicate":
             return
 
+        # edit_tools: space to toggle, a to select-all-in-category
+        if mode == "edit_tools":
+            if key == "space":
+                self._toggle_tool_at_cursor()
+                event.stop()
+            elif key == "a":
+                self._toggle_category_at_cursor()
+                event.stop()
+            return
+
+        # Run mode: ctrl+j (ctrl+enter) dispatches
+        if mode == "run":
+            if key in ("ctrl+j", "ctrl+enter"):
+                run_area = self.query_one("#ag-run-input", TextArea)
+                prompt = run_area.text.strip()
+                if prompt:
+                    self.dismiss(f"Use the {self._run_agent_name} subagent to: {prompt}")
+                event.stop()
+            return
+
+        # edit_color / edit_model: only esc/enter handled via BINDINGS — no extra keys
+        if mode in ("edit_color", "edit_model"):
+            return
+
         # Browse / search / detail modes
+        agent = self._current_agent()
+        is_builtin = agent is not None and agent.source == "builtin"
+
         if key == "d":
             self._start_delete()
             event.stop()
@@ -1128,7 +1602,19 @@ AgentsScreen {{
             self._start_duplicate()
             event.stop()
         elif key == "r":
-            self._action_run_stub()
+            self._action_run()
+            event.stop()
+        elif key == "t" and not is_builtin:
+            self._start_edit_tools()
+            event.stop()
+        elif key == "m" and not is_builtin:
+            self._start_edit_model()
+            event.stop()
+        elif key == "k" and not is_builtin:
+            self._start_edit_color()
+            event.stop()
+        elif key in ("e", "s") and not is_builtin:
+            self.run_worker(self._action_edit_file(), exclusive=True)
             event.stop()
         elif key == "slash":
             self.query_one("#ag-search", ModalSearchBar).focus_input()
@@ -1246,9 +1732,177 @@ AgentsScreen {{
         self.query_one("#ag-panel", Vertical).focus()
         self._refresh()
 
-    def _action_run_stub(self) -> None:
-        """Phase 3 placeholder — run flow not yet implemented."""
-        pass
+    # ── Phase 3: Run ──────────────────────────────────────────────────────────
+
+    def _action_run(self) -> None:
+        agent = self._current_agent()
+        if agent is None:
+            return
+        self._run_agent_name = agent.name
+        self._mode = "run"
+        self._focus_pane = "detail"
+        self._refresh()
+        run_area = self.query_one("#ag-run-input", TextArea)
+        run_area.clear()
+        run_area.focus()
+
+    # ── Phase 4: Edit color ────────────────────────────────────────────────────
+
+    def _start_edit_color(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin":
+            return
+        current = agent.color or "inherit"
+        self._edit_color_cursor = next(
+            (i for i, (name, _, _) in enumerate(_COLOR_OPTIONS) if name == current),
+            len(_COLOR_OPTIONS) - 1,  # default to inherit
+        )
+        self._mode = "edit_color"
+        self._refresh()
+
+    def _do_save_color(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source_path is None or agent.source == "builtin":
+            return
+        sel_name, _, _ = _COLOR_OPTIONS[self._edit_color_cursor]
+        from ...agents.persist import update_agent_yaml
+        try:
+            if sel_name == "inherit":
+                update_agent_yaml(agent.source_path, {"color": None})
+            else:
+                update_agent_yaml(agent.source_path, {"color": sel_name})
+        except OSError:
+            return
+        self._registry_changed = True
+        self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self._refresh()
+
+    # ── Phase 4: Edit tools ────────────────────────────────────────────────────
+
+    def _start_edit_tools(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin":
+            return
+        self._edit_tools = list(agent.tools) if agent.tools is not None else list(_NATIVE_TOOLS)
+        self._edit_tools_saved = list(self._edit_tools)
+        self._edit_tools_cursor = 0
+        self._mode = "edit_tools"
+        self._refresh()
+
+    def _toggle_tool_at_cursor(self) -> None:
+        flat_idx = 0
+        cat_order = ["filesystem", "shell", "network", "agents", "tasks", "other"]
+        by_cat: dict[str, list[str]] = {}
+        for tool in _NATIVE_TOOLS:
+            cat = _TOOL_CATEGORIES.get(tool, "other")
+            by_cat.setdefault(cat, []).append(tool)
+        for cat in cat_order:
+            if cat not in by_cat:
+                continue
+            for tool in by_cat[cat]:
+                if flat_idx == self._edit_tools_cursor:
+                    if tool in self._edit_tools:
+                        self._edit_tools.remove(tool)
+                    else:
+                        self._edit_tools.append(tool)
+                    self._refresh()
+                    return
+                flat_idx += 1
+
+    def _toggle_category_at_cursor(self) -> None:
+        flat_idx = 0
+        cat_order = ["filesystem", "shell", "network", "agents", "tasks", "other"]
+        by_cat: dict[str, list[str]] = {}
+        for tool in _NATIVE_TOOLS:
+            cat = _TOOL_CATEGORIES.get(tool, "other")
+            by_cat.setdefault(cat, []).append(tool)
+        for cat in cat_order:
+            if cat not in by_cat:
+                continue
+            tools_in_cat = by_cat[cat]
+            for tool in tools_in_cat:
+                if flat_idx == self._edit_tools_cursor:
+                    all_allowed = all(t in self._edit_tools for t in tools_in_cat)
+                    if all_allowed:
+                        for t in tools_in_cat:
+                            if t in self._edit_tools:
+                                self._edit_tools.remove(t)
+                    else:
+                        for t in tools_in_cat:
+                            if t not in self._edit_tools:
+                                self._edit_tools.append(t)
+                    self._refresh()
+                    return
+                flat_idx += 1
+
+    def _do_save_tools(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source_path is None or agent.source == "builtin":
+            return
+        from ...agents.persist import update_agent_yaml
+        tools_to_save: Optional[list[str]] = self._edit_tools
+        if sorted(self._edit_tools) == sorted(_NATIVE_TOOLS):
+            tools_to_save = None  # save as null → all tools
+        try:
+            update_agent_yaml(agent.source_path, {"tools": tools_to_save})
+        except OSError:
+            return
+        self._registry_changed = True
+        self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self._refresh()
+
+    # ── Phase 4: Edit model ────────────────────────────────────────────────────
+
+    def _start_edit_model(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin":
+            return
+        from ...config.model_catalog import PROVIDERS
+        flat: list[Optional[str]] = [None]
+        flat.extend(m["id"] for p in PROVIDERS for m in p["models"])
+        self._edit_model_flat = flat
+        current = agent.model
+        try:
+            self._edit_model_cursor = self._edit_model_flat.index(current)
+        except ValueError:
+            self._edit_model_cursor = 0
+        self._mode = "edit_model"
+        self._refresh()
+
+    def _do_save_model(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source_path is None or agent.source == "builtin":
+            return
+        sel = self._edit_model_flat[self._edit_model_cursor] if self._edit_model_flat else None
+        from ...agents.persist import update_agent_yaml
+        try:
+            update_agent_yaml(agent.source_path, {"model": sel})
+        except OSError:
+            return
+        self._registry_changed = True
+        self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self._refresh()
+
+    # ── Phase 5: $EDITOR hand-off ─────────────────────────────────────────────
+
+    async def _action_edit_file(self) -> None:
+        import os
+        import subprocess
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        editor = os.environ.get("EDITOR", "nano")
+        with self.app.suspend():
+            subprocess.run([editor, str(agent.source_path)])
+        self._registry_changed = True
+        self._reload_registry()
+        self._refresh()
 
     def _copy_path(self) -> None:
         agent = self._current_agent()

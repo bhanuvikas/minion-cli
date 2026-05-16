@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 from ..context import build_project_context
 from ..context.prompts import build_system_prompt
@@ -683,9 +683,13 @@ async def _run_repl_tui(
         if user_input.startswith("/") and user_input.strip().split()[0] == "/agents":
             from ..tui.screens import AgentsScreen
 
-            async def _on_agents_done(changed: bool) -> None:
+            async def _on_agents_done(result: "Union[bool, str]") -> None:
                 nonlocal agent_registry
-                if changed:
+                if isinstance(result, str) and result:
+                    # Run flow dispatched — prefill the main input with the prompt
+                    tui_app.prefill_input(result)
+                elif result is True:
+                    # Registry changed (delete/duplicate) — reload from disk
                     from ..agents import load_agent_registry as _load_ar
                     agent_registry = _load_ar(project_cwd)
                     ctx.agent_registry = agent_registry
