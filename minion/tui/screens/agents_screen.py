@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -632,24 +633,29 @@ AgentsScreen {{
         tbl.add_row(self._build_tools_section(manifest))
         tbl.add_row(Text(""))
 
-        # Metadata rows
-        meta = Table.grid(expand=True, padding=0)
-        meta.add_column(no_wrap=True, width=10)
-        meta.add_column(ratio=1)
+        # SOURCE
+        source_header = Text()
+        source_header.append(" SOURCE", style=f"bold {_DIM}")
+        tbl.add_row(source_header)
+        tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
+        tbl.add_row(Text(""))
 
-        meta.add_row(
-            Text(" SOURCE", style=_FAINT),
-            Text(f"  {_format_source_path(manifest)}", style=_FAINT),
-        )
-        meta.add_row(
-            Text(" MODEL",  style=_FAINT),
-            Text("  inherit", style=_FAINT),
-        )
-        meta.add_row(
-            Text(" COLOR",  style=_FAINT),
-            Text("  ● inherit", style=_FAINT),
-        )
-        tbl.add_row(meta)
+        # MODEL — placeholder until Phase 4 adds model override to YAML
+        model_header = Text()
+        model_header.append(" MODEL", style=f"bold {_DIM}")
+        model_header.append("  ·  inherit", style=_DIM)
+        tbl.add_row(model_header)
+        tbl.add_row(Text(f"   uses session model (override available in Phase 4)", style=_FAINT))
+        tbl.add_row(Text(""))
+
+        # COLOR — placeholder until Phase 4
+        color_header = Text()
+        color_header.append(" COLOR", style=f"bold {_DIM}")
+        tier_default_color = _tier_color(manifest.source)
+        tier_default_name = {"builtin": "muted", "user": "gold", "project": "green"}.get(manifest.source, "inherit")
+        color_header.append(f"  ·  ● {tier_default_name} (tier default)", style=f"{tier_default_color}")
+        tbl.add_row(color_header)
+        tbl.add_row(Text("   chat badge color — override per-agent in Phase 4", style=_FAINT))
         tbl.add_row(Text(""))
 
         # System prompt preview
@@ -702,16 +708,18 @@ AgentsScreen {{
                         row.append(f"  {warn}", style=f"bold {_ORANGE}")
                     tbl.add_row(row)
 
-            # Denied list
+            # Denied list — vertical, one per line
             denied = [t for t in _NATIVE_TOOLS if t not in tools]
             if denied:
                 tbl.add_row(Text(""))
-                denied_t = Text()
-                denied_t.append("  denied  ", style=_DIM)
-                denied_t.append("  ·  ".join(denied[:6]), style=_FAINT)
-                if len(denied) > 6:
-                    denied_t.append(f"  ·  +{len(denied) - 6} more", style=_FAINT)
-                tbl.add_row(denied_t)
+                tbl.add_row(Text("  denied", style=_DIM))
+                for tool in denied:
+                    row = Text()
+                    row.append(f"    {tool:<22}", style=_FAINT)
+                    desc = _TOOL_DESCRIPTIONS.get(tool, "")
+                    if desc:
+                        row.append(desc, style=_FAINT)
+                    tbl.add_row(row)
 
         return tbl
 
@@ -721,6 +729,7 @@ AgentsScreen {{
 
         lines = manifest.system_prompt.splitlines()
         total = len(lines)
+        max_preview = 5
 
         header = Text()
         header.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
@@ -729,22 +738,30 @@ AgentsScreen {{
             header.append("  ", style=_DIM)
             header.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
             header.append(" view full", style=_DIM)
+        else:
+            header.append("  ", style=_DIM)
+            header.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
+            header.append(" collapse", style=_DIM)
         tbl.add_row(header)
         tbl.add_row(Text(""))
 
-        preview_lines = lines if self._show_full_prompt else lines[:4]
-        for i, line in enumerate(preview_lines):
-            is_last = i == len(preview_lines) - 1
-            glyph = "└" if (is_last and not self._show_full_prompt and total > 4) else "│"
-            row = Text()
-            row.append(f"  {glyph} ", style=_FAINT)
-            row.append(line, style=_FAINT)
-            tbl.add_row(row)
+        preview_lines = lines if self._show_full_prompt else lines[:max_preview]
+        content_parts: list[str] = list(preview_lines)
+        if not self._show_full_prompt and total > max_preview:
+            content_parts.append(f"… +{total - max_preview} more lines")
 
-        if not self._show_full_prompt and total > 4:
-            more = Text()
-            more.append(f"  …  +{total - 4} more lines", style=_FAINT)
-            tbl.add_row(more)
+        content_text = Text()
+        for part in content_parts:
+            content_text.append((part or " ") + "\n", style=_FAINT)
+
+        panel = Panel(
+            content_text,
+            border_style=_RULE,
+            style="on #0f0f0d",
+            padding=(0, 1),
+            expand=True,
+        )
+        tbl.add_row(panel)
 
         return tbl
 
@@ -1097,27 +1114,37 @@ AgentsScreen {{
         elif key == "c":
             self._copy_path()
             event.stop()
+        elif key in ("left", "right") and self._mode in ("browse", "search"):
+            scopes = ["all", "builtin", "user", "project"]
+            idx = scopes.index(self._scope) if self._scope in scopes else 0
+            delta = -1 if key == "left" else 1
+            self._scope = scopes[(idx + delta) % len(scopes)]
+            self._rebuild_visible()
+            self._refresh()
+            event.stop()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "ag-search":
+        if event.input.id == "ag-dup-name":
+            self._dup_name = event.value.strip()
+            self._refresh()
+        else:
+            # ModalSearchBar wraps an Input without exposing its id — treat any
+            # other Input.Changed as the search bar firing.
             self._query = event.value.strip().lower()
             self._mode = "search" if self._query else "browse"
             self._rebuild_visible()
             self._refresh()
-        elif event.input.id == "ag-dup-name":
-            self._dup_name = event.value.strip()
-            self._refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "ag-search":
-            self.query_one("#ag-panel", Vertical).focus()
-            self._mode = "browse" if not self._query else "search"
-            self._refresh()
-        elif event.input.id == "ag-dup-name":
+        if event.input.id == "ag-dup-name":
             if self._dup_name_available():
                 self._dup_focus = "tier"
                 self.query_one("#ag-panel", Vertical).focus()
                 self._refresh()
+        else:
+            self.query_one("#ag-panel", Vertical).focus()
+            self._mode = "browse" if not self._query else "search"
+            self._refresh()
 
     # ── Disk operations ───────────────────────────────────────────────────────
 
