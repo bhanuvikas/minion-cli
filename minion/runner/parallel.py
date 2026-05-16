@@ -94,7 +94,7 @@ async def _execute_parallel_agents_async(
             def _confirm_cb(name, inputs):
                 from ..tools.executor import _diff_lines_for_panel as _dlp
                 from ..tui import is_tui_active as _ita
-                _dlns = _dlp(name, inputs) if _ita() else []
+                _dlns = _dlp(name, inputs) if _ita() else ""
                 return _cm.confirm_sync(name, inputs, diff_lines=_dlns)
         else:
             _confirm_cb = executor._confirm_callback  # type: ignore[assignment]
