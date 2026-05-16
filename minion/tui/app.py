@@ -938,6 +938,23 @@ class MinionApp(App):
 
     # ── Write paths ───────────────────────────────────────────────────────────
 
+    def _on_tui_loop(self) -> bool:
+        """True when the caller is running on the TUI's own event loop.
+
+        asyncio.get_running_loop() also succeeds on worker threads that run a
+        subagent loop (L_sub).  Using it alone to decide whether to call _do()
+        directly would mount Textual widgets on L_sub — their asyncio.Task would
+        be bound to L_sub instead of the TUI loop, crashing gather() at shutdown.
+        We must check the identity of the running loop, not just its existence.
+        """
+        tui_loop = self._loop
+        if tui_loop is None:
+            return False
+        try:
+            return asyncio.get_running_loop() is tui_loop
+        except RuntimeError:
+            return False
+
     def _write_block(self, block) -> None:
         """Append a Rich renderable block as a new Static widget. Thread-safe.
 
@@ -954,10 +971,9 @@ class MinionApp(App):
             if self._conv_area is not None:
                 self._conv_area.append_block(block)
 
-        try:
-            asyncio.get_running_loop()
+        if self._on_tui_loop():
             _do()
-        except RuntimeError:
+        else:
             self.call_from_thread(_do)
 
     def _print_ansi_to_scrollback(self, ansi: str) -> None:
@@ -991,10 +1007,9 @@ class MinionApp(App):
                 self._streaming_widget.update(renderable)
                 self._conv_area.scroll_end(animate=False, x_axis=False)
 
-        try:
-            asyncio.get_running_loop()
+        if self._on_tui_loop():
             _do()
-        except RuntimeError:
+        else:
             self.call_from_thread(_do)
 
     def _pre_finalize_streaming(self) -> None:
@@ -1002,10 +1017,9 @@ class MinionApp(App):
         def _do() -> None:
             self._dismiss_streaming()
 
-        try:
-            asyncio.get_running_loop()
+        if self._on_tui_loop():
             _do()
-        except RuntimeError:
+        else:
             self.call_from_thread(_do)
 
     def _refresh_status(self) -> None:

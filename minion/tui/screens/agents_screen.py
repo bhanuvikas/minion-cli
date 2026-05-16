@@ -16,10 +16,11 @@ Layered esc:
 
 from __future__ import annotations
 
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+
+import yaml
 
 from rich.panel import Panel
 from rich.rule import Rule
@@ -195,7 +196,10 @@ AgentsScreen {{
 #ag-list-scroll {{
     height: 1fr;
     scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
     scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {_DIM};
 }}
 #ag-list {{
     height: auto;
@@ -206,6 +210,11 @@ AgentsScreen {{
 }}
 #ag-preview-scroll {{
     height: 1fr;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
+    scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {_DIM};
 }}
 #ag-preview {{
     height: auto;
@@ -330,10 +339,7 @@ AgentsScreen {{
     def _dup_name_available(self) -> bool:
         if not self._dup_name:
             return False
-        return not any(
-            m.name == self._dup_name and m.source == self._dup_tier
-            for m in self._registry.values()
-        )
+        return not any(m.name == self._dup_name for m in self._registry.values())
 
     def _dup_target_path(self, tier: str) -> Path:
         name = self._dup_name or "unnamed"
@@ -869,13 +875,9 @@ AgentsScreen {{
         avail = self._dup_name_available()
         if self._dup_name:
             if avail:
-                avail_t = Text()
-                avail_t.append("  ✓ available", style=f"bold {_GREEN}")
-                tbl.add_row(avail_t)
+                tbl.add_row(Text("  ✓ available", style=f"bold {_GREEN}"))
             else:
-                avail_t = Text()
-                avail_t.append("  ✗ name taken in this tier", style=f"bold {_ORANGE}")
-                tbl.add_row(avail_t)
+                tbl.add_row(Text("  ✗ name already exists", style=f"bold {_ORANGE}"))
         else:
             tbl.add_row(Text("  enter a unique name", style=_FAINT))
         tbl.add_row(Text(""))
@@ -1191,15 +1193,21 @@ AgentsScreen {{
         if not self._dup_name_available():
             return
         target_path = self._dup_target_path(self._dup_tier)
+        dup_name = self._dup_name
         try:
+            raw = yaml.safe_load(source_agent.source_path.read_text(encoding="utf-8")) or {}
+            raw["name"] = dup_name  # must match filename so registry lookup works
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(source_agent.source_path), str(target_path))
+            target_path.write_text(
+                yaml.dump(raw, default_flow_style=False, allow_unicode=True),
+                encoding="utf-8",
+            )
         except OSError:
             return
         self._reload_registry()
         # Jump focus to the newly created agent
         new_agent_idx = next(
-            (i for i, m in enumerate(self._visible) if m.name == self._dup_name and m.source == self._dup_tier),
+            (i for i, m in enumerate(self._visible) if m.name == dup_name and m.source == self._dup_tier),
             0,
         )
         self._selected = new_agent_idx
@@ -1207,6 +1215,7 @@ AgentsScreen {{
         self._focus_pane = "detail"
         self._dup_name = ""
         self._dup_focus = "name"
+        self.query_one("#ag-panel", Vertical).focus()
         self._refresh()
 
     def _action_run_stub(self) -> None:

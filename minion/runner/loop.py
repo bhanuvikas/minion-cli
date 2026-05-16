@@ -320,23 +320,39 @@ def run_prompt(
     confirmation_manager=None,
     renderer: Optional[OutputRenderer] = None,
 ) -> Optional[str]:
-    """Thin sync wrapper — delegates to run_prompt_async() via asyncio.run().
+    """Sync wrapper — runs run_prompt_async() on an isolated event loop.
+
+    Uses asyncio.new_event_loop() explicitly instead of asyncio.run() to avoid
+    calling asyncio.events.set_event_loop() on the worker thread. In Python
+    3.12.13, asyncio.run() (via Runner._lazy_init) calls set_event_loop() on
+    the calling thread, which contaminates the thread-local loop state. When
+    asyncio.to_thread() reuses that thread later, Textual widget tasks can be
+    created on the wrong loop, causing asyncio.gather() to crash with
+    "future belongs to a different loop" during TUI shutdown.
 
     Safe to call from threads where no event loop is running (including
     asyncio.to_thread()). Do NOT call from a coroutine; use run_prompt_async() directly.
     """
-    return asyncio.run(run_prompt_async(
-        prompt=prompt, client=client, conversation=conversation,
-        system_prompt=system_prompt, dry_run=dry_run, reflect_config=reflect_config,
-        verbose=verbose, memory_tokens=memory_tokens, max_iterations=max_iterations,
-        tools=tools, render_markdown=render_markdown, markdown_title=markdown_title,
-        spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
-        enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
-        agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
-        auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
-        stream_markdown=stream_markdown, hook_runner=hook_runner,
-        tui_app=tui_app, confirmation_manager=confirmation_manager, renderer=renderer,
-    ))
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(run_prompt_async(
+            prompt=prompt, client=client, conversation=conversation,
+            system_prompt=system_prompt, dry_run=dry_run, reflect_config=reflect_config,
+            verbose=verbose, memory_tokens=memory_tokens, max_iterations=max_iterations,
+            tools=tools, render_markdown=render_markdown, markdown_title=markdown_title,
+            spinner_label=spinner_label, mcp_manager=mcp_manager, capture_output=capture_output,
+            enable_agents=enable_agents, agent_depth=agent_depth, agent_registry=agent_registry,
+            agent_label=agent_label, a2a_manager=a2a_manager, confirm_callback=confirm_callback,
+            auto_compact=auto_compact, approval_mode=approval_mode, permission_store=permission_store,
+            stream_markdown=stream_markdown, hook_runner=hook_runner,
+            tui_app=tui_app, confirmation_manager=confirmation_manager, renderer=renderer,
+        ))
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+        finally:
+            loop.close()
 
 
 async def run_prompt_async(
@@ -412,6 +428,7 @@ async def run_prompt_async(
             parent_depth=agent_depth, mcp_manager=mcp_manager,
             _token_accumulator=_subagent_tokens,
             confirm_callback=confirm_callback,
+            confirmation_manager=confirmation_manager,
         )
         system_prompt = system_prompt + "\n\n" + SUBAGENT_GUIDANCE
     else:
