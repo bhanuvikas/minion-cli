@@ -680,6 +680,18 @@ async def _run_repl_tui(
             )
             return
 
+        if user_input.startswith("/") and user_input.strip().split()[0] == "/agents":
+            from ..tui.screens import AgentsScreen
+
+            async def _on_agents_done(result: None) -> None:
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(
+                AgentsScreen(agent_registry=agent_registry, cwd=project_cwd),
+                _on_agents_done,
+            )
+            return
+
         if user_input.startswith("/") and user_input.strip() == "/setup":
             _wire_checklist_callbacks()
             tui_app.show_setup_checklist()

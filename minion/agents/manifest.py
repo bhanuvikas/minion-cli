@@ -31,6 +31,7 @@ class AgentRoleManifest:
     tools         : None = all native tools; [] = no tools; [...] = named subset.
     max_iterations: ReAct loop iteration limit for this role.
     source        : Loading tier — "builtin" | "user" | "project".
+    source_path   : Absolute path to the YAML file on disk. Always set after load.
     """
 
     name: str
@@ -39,6 +40,7 @@ class AgentRoleManifest:
     tools: Optional[list[str]] = None
     max_iterations: int = 20
     source: str = "builtin"
+    source_path: Optional[Path] = None
 
 
 def load_manifest(path: Path, source: str = "builtin") -> AgentRoleManifest:
@@ -67,4 +69,5 @@ def load_manifest(path: Path, source: str = "builtin") -> AgentRoleManifest:
         tools=tools,
         max_iterations=max_iterations,
         source=source,
+        source_path=path,
     )
