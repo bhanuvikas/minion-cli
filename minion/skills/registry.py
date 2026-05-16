@@ -72,5 +72,5 @@ def load_skill_registry(cwd: Path | None = None) -> SkillRegistry:
                 manifest = load_manifest(yaml_path, source=source)
                 skills[manifest.name] = manifest
             except Exception as e:
-                startup_warnings.append(f"[muted]Warning: skipping skill {yaml_path.name}: {e}[/]")
+                startup_warnings.append(f"  [bold #a8a8a8]Warning[/]  [#888888]skipping skill {yaml_path.name}: {e}[/]")
     return SkillRegistry(skills)

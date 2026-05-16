@@ -1180,7 +1180,7 @@ class MinionApp(App):
             # so they render consistently inside get_startup_warning_renderables().
             from .terminal import get_selection_tip as _get_tip
             from ..theme.palette import YELLOW as _YELLOW
-            _tip_markup = f"  [bold {_YELLOW}]Tip[/]  {_get_tip()}"
+            _tip_markup = f"  [bold {_YELLOW}]Tip[/]      [#888888]{_get_tip()}[/]"
             _all_warnings = list(self._startup_warnings) + [_tip_markup]
 
             from ..theme.banner import get_startup_warning_renderables as _get_warn

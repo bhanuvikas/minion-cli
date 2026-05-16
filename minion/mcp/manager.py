@@ -449,7 +449,7 @@ class MCPManager:
             if state.error is not None:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 self._connection_warnings.append(
-                    f"[muted]Warning: MCP server '{name}' failed to connect: {state.error}[/]"
+                    f"  [bold #a8a8a8]Warning[/]  [#888888]MCP server '{name}' failed to connect: {state.error}[/]"
                 )
                 get_tracer().emit(
                     "mcp_server_connect",

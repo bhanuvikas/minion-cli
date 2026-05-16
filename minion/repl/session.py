@@ -162,8 +162,8 @@ async def run_repl_async(
         else:
             _tip_body = f"No MINION.md found in {project_cwd.name}/."
         _all_startup_warnings = [
-            f"  [bold {YELLOW}]Tip[/]  {_tip_body} "
-            f"Run [bold]/init[/] to analyse your codebase and create one."
+            f"  [bold {YELLOW}]Tip[/]      [#888888]{_tip_body} "
+            f"Run [bold]/init[/] to analyse your codebase and create one.[/]"
         ] + _all_startup_warnings
 
     print_startup_warnings(_all_startup_warnings)
