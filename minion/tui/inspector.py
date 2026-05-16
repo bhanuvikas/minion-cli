@@ -148,7 +148,7 @@ def _render_agent_transcript(state: SubagentState) -> list:
                 elif blk.get("type") == "tool_use":
                     name = blk.get("name", "")
                     inp  = blk.get("input", {})
-                    frags = tool_slot_header_frags(name, inp, expanded=True)
+                    frags = tool_slot_header_frags(name, inp)
                     result.append(_frags_to_text(list(frags)))
                     from ..output.display_utils import tool_diff_markup
                     diff_markup = tool_diff_markup(name, inp)
