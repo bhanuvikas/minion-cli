@@ -270,13 +270,16 @@ AgentsScreen {{
     scrollbar-color-active: {_DIM};
 }}
 #ag-run-input.single-line {{
-    height: 6;
+    height: 12;
 }}
 #ag-run-input.prompt-edit {{
     height: 1fr;
 }}
 #ag-run-input:focus {{
     border: solid {_ORANGE};
+}}
+#ag-run-input .text-area--cursor-line {{
+    background: #1a1a1a;
 }}
 #ag-preview-scroll.text-edit-compact {{
     height: auto;
@@ -377,7 +380,8 @@ AgentsScreen {{
     def _rebuild_visible(self) -> None:
         agents = list(self._registry.values())
         agents.sort(key=lambda m: (_TIER_ORDER.get(m.source, 3), m.name))
-        if self._scope != "all":
+        # Scope filter is bypassed while searching — search always covers all tiers.
+        if self._scope != "all" and not self._query:
             agents = [m for m in agents if m.source == self._scope]
         if self._query:
             q = self._query.lower()
@@ -614,6 +618,7 @@ AgentsScreen {{
     # ── List ──────────────────────────────────────────────────────────────────
 
     def _build_scope_chips(self) -> Text:
+        search_overrides = bool(self._query) and self._scope != "all"
         scopes = [
             ("all",     len(self._registry)),
             ("builtin", self._tier_counts().get("builtin", 0)),
@@ -627,9 +632,17 @@ AgentsScreen {{
                 t.append("   ")
             is_active = self._scope == scope
             if is_active:
-                t.append(f" {scope} {count} ", style=f"bold {_ORANGE} on #1a0800")
+                if search_overrides:
+                    # Dim the chip to signal scope is bypassed by the search
+                    t.append(f" {scope} {count} ", style=f"{_DIM} on #161614")
+                else:
+                    t.append(f" {scope} {count} ", style=f"bold {_ORANGE} on #1a0800")
+            elif count == 0:
+                t.append(f" {scope} {count} ", style="#383838 on #0d0d0d")
             else:
                 t.append(f" {scope} {count} ", style=f"{_FAINT} on #161614")
+        if search_overrides:
+            t.append("   · searching all tiers", style=_FAINT)
         return t
 
     def _build_tier_header(self, tier: str) -> Text:
@@ -661,7 +674,7 @@ AgentsScreen {{
     ) -> None:
         is_selected = idx == self._selected
         is_danger   = self._mode == "confirm_delete" and is_selected
-        row_style   = f"on {_TINT_ORG}" if is_selected else ""
+        row_style   = f"on {_TINT_ORG}" if is_danger else ""
 
         # Pointer
         ptr = Text(no_wrap=True)
@@ -675,7 +688,7 @@ AgentsScreen {{
         if is_danger:
             name_t = Text(manifest.name, style=f"strike {_ORANGE}", no_wrap=True)
         elif is_selected:
-            name_t = Text(manifest.name, style=f"bold {_SILVER}", no_wrap=True)
+            name_t = Text(manifest.name, style=f"bold {_ORANGE}", no_wrap=True)
         else:
             name_t = Text(manifest.name, style=_DIM, no_wrap=True)
 
@@ -750,19 +763,27 @@ AgentsScreen {{
 
         name_w = min(max((len(m.name) for m in self._visible), default=8) + 2, 24)
 
-        for i, tier in enumerate(tiers_seen):
+        # When viewing all agents with no filter, always show all 3 tier sections
+        # so users see the tier model even when some tiers are empty.
+        _ALL_TIERS = ["builtin", "user", "project"]
+        tiers_to_render = _ALL_TIERS if (self._scope == "all" and not self._query) else tiers_seen
+
+        for i, tier in enumerate(tiers_to_render):
             if i > 0:
                 outer.add_row(Text(""))
             outer.add_row(self._build_tier_header(tier))
-            inner = self._make_agent_row_table(name_w)
-            for idx in by_tier[tier]:
-                manifest = self._visible[idx]
-                shadowed       = tier == "builtin" and manifest.name in shadow_builtins
-                shadows_builtin = tier == "project" and manifest.name in builtin_names
-                self._add_agent_inner_row(inner, manifest, idx, shadowed, shadows_builtin)
-                if self._mode == "confirm_delete" and idx == self._selected:
-                    self._add_confirm_strip_row(inner)
-            outer.add_row(inner)
+            if tier not in by_tier:
+                outer.add_row(Text(f"   no {tier} agents", style=_FAINT))
+            else:
+                inner = self._make_agent_row_table(name_w)
+                for idx in by_tier[tier]:
+                    manifest = self._visible[idx]
+                    shadowed        = tier == "builtin" and manifest.name in shadow_builtins
+                    shadows_builtin = tier == "project" and manifest.name in builtin_names
+                    self._add_agent_inner_row(inner, manifest, idx, shadowed, shadows_builtin)
+                    if self._mode == "confirm_delete" and idx == self._selected:
+                        self._add_confirm_strip_row(inner)
+                outer.add_row(inner)
 
         if self._query:
             hidden = len(self._registry) - len(self._visible)
@@ -829,7 +850,11 @@ AgentsScreen {{
         tbl.add_row(header)
         tbl.add_row(Text(""))
 
-        # Description (wrapped)
+        # ── Identity band ─────────────────────────────────────────────────────
+        tbl.add_row(Rule(style=_RULE))
+        tbl.add_row(Text(""))
+
+        # DESCRIPTION
         desc_header = Text()
         desc_header.append(" DESCRIPTION", style=f"bold {_DIM}")
         if manifest.source != "builtin":
@@ -843,8 +868,19 @@ AgentsScreen {{
         desc_tbl.add_row(Text(""), Text(manifest.description, style=_TEXT))
         tbl.add_row(desc_tbl)
         tbl.add_row(Text(""))
+        tbl.add_row(Text(""))
 
-        # Tools section
+        # SOURCE
+        tbl.add_row(Text(" SOURCE", style=f"bold {_DIM}"))
+        tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
+        tbl.add_row(Text(""))
+        tbl.add_row(Text(""))
+
+        # ── Capabilities band ─────────────────────────────────────────────────
+        tbl.add_row(Rule(style=_RULE))
+        tbl.add_row(Text(""))
+
+        # TOOLS
         tools_header = Text()
         tools_header.append(" TOOLS", style=f"bold {_DIM}")
         tools_count = manifest.tools
@@ -859,10 +895,6 @@ AgentsScreen {{
         tbl.add_row(tools_header)
         tbl.add_row(self._build_tools_section(manifest))
         tbl.add_row(Text(""))
-
-        # SOURCE
-        tbl.add_row(Text(" SOURCE", style=f"bold {_DIM}"))
-        tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
         tbl.add_row(Text(""))
 
         # MAX ITERATIONS
@@ -874,6 +906,11 @@ AgentsScreen {{
             iter_header.append(" edit", style=_DIM)
         iter_header.append(f"  ·  {manifest.max_iterations}", style=_DIM)
         tbl.add_row(iter_header)
+        tbl.add_row(Text(""))
+        tbl.add_row(Text(""))
+
+        # ── Behavior band ─────────────────────────────────────────────────────
+        tbl.add_row(Rule(style=_RULE))
         tbl.add_row(Text(""))
 
         # MODEL
@@ -891,6 +928,7 @@ AgentsScreen {{
         if not manifest.model:
             tbl.add_row(Text("   uses session model", style=_FAINT))
         tbl.add_row(Text(""))
+        tbl.add_row(Text(""))
 
         # COLOR
         color_header = Text()
@@ -905,11 +943,13 @@ AgentsScreen {{
         else:
             tier_default_name = {"builtin": "muted", "user": "gold", "project": "green"}.get(manifest.source, "inherit")
             tier_default_color = _tier_color(manifest.source)
-            color_header.append(f"  ·  ● {tier_default_name} (tier default)", style=tier_default_color)
+            color_header.append(f"  ·  ● {tier_default_name}", style=tier_default_color)
+            color_header.append(" (tier default)", style=_FAINT)
         tbl.add_row(color_header)
         tbl.add_row(Text(""))
+        tbl.add_row(Text(""))
 
-        # System prompt preview
+        # SYSTEM PROMPT
         prompt_header = Text()
         prompt_header.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
         total_lines = len(manifest.system_prompt.splitlines())
@@ -951,12 +991,14 @@ AgentsScreen {{
                 for tool in by_cat[cat]:
                     row = Text()
                     row.append(f"    {tool:<22}", style=_TEXT)
-                    desc = _TOOL_DESCRIPTIONS.get(tool, "")
-                    if desc:
-                        row.append(f"{desc}", style=_FAINT)
                     warn = _TOOL_WARN.get(tool, "")
                     if warn:
-                        row.append(f"  {warn}", style=f"bold {_ORANGE}")
+                        row.append(f"  {warn:<15}", style=f"bold {_ORANGE}")
+                    else:
+                        row.append("  " + " " * 15)
+                    desc = _TOOL_DESCRIPTIONS.get(tool, "")
+                    if desc:
+                        row.append(desc, style=_FAINT)
                     tbl.add_row(row)
 
             # Denied list — vertical, one per line
@@ -1193,6 +1235,12 @@ AgentsScreen {{
         """Right-pane color picker for edit_color mode."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
+
+        hdr = Text()
+        hdr.append(f" {manifest.name}", style=f"bold {_SILVER}")
+        hdr.append("  ")
+        hdr.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+        tbl.add_row(hdr)
         tbl.add_row(Text(""))
 
         intro = Text()
@@ -1211,18 +1259,16 @@ AgentsScreen {{
             row = Text()
             if is_sel:
                 row.append("  ▸  ", style=f"bold {_ORANGE}")
-                row.append("● ", style=f"bold {color_val}")
+                row.append("●● ", style=f"bold {color_val}")
                 row.append(f"{name:<10}", style=f"bold {color_val}")
             else:
                 row.append("     ", style="")
-                row.append("● ", style=color_val)
+                row.append("●● ", style=color_val)
                 row.append(f"{name:<10}", style=_DIM if name != current_color else _SILVER)
             if name == current_color and name != "inherit":
                 row.append(" current  ", style=f"bold {_GREEN} on #0a1208")
-                row.append("  ")
             elif name == current_color:
                 row.append(" current  ", style=f"{_DIM} on #161614")
-                row.append("  ")
             else:
                 row.append("          ")
             row.append(desc, style=_FAINT)
@@ -1247,6 +1293,15 @@ AgentsScreen {{
         """Right-pane tools checklist for edit_tools mode."""
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
+
+        agent = self._current_agent()
+        if agent:
+            hdr = Text()
+            hdr.append(f" {agent.name}", style=f"bold {_SILVER}")
+            hdr.append("  ")
+            hdr.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
+            tbl.add_row(hdr)
+            tbl.add_row(Text(""))
 
         preamble = Text()
         preamble.append("  Toggle which tools this agent may call. Tools marked ", style=_DIM)
@@ -1280,12 +1335,14 @@ AgentsScreen {{
                 check_style = f"bold {_ORANGE}" if is_allowed else _DIM
                 row.append(f"{check}  ", style=check_style)
                 name_style = _TEXT if is_allowed else _DIM
-                row.append(f"{tool:<20}  ", style=name_style)
-                desc = _TOOL_DESCRIPTIONS.get(tool, "")
-                row.append(desc, style=_FAINT)
+                row.append(f"{tool:<20}   ", style=name_style)
                 warn = _TOOL_WARN.get(tool, "")
                 if warn:
-                    row.append(f"  {warn}", style=f"bold {_ORANGE}")
+                    row.append(f"{warn:<15}", style=f"bold {_ORANGE}")
+                else:
+                    row.append(" " * 15)
+                desc = _TOOL_DESCRIPTIONS.get(tool, "")
+                row.append(desc, style=_FAINT)
                 tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
                 flat_idx += 1
             tbl.add_row(Text(""))
@@ -1305,7 +1362,15 @@ AgentsScreen {{
             status.append("saved     ", style=_DIM)
         status.append(f" {allowed_count} allowed  ·  {denied_count} denied", style=_DIM)
         if changes:
-            status.append(f"  ·  {changes} change{'s' if changes != 1 else ''} from saved", style=_ORANGE)
+            added   = [t for t in self._edit_tools if t not in self._edit_tools_saved]
+            removed = [t for t in self._edit_tools_saved if t not in self._edit_tools]
+            detail_parts = []
+            if added:
+                detail_parts.append(f"+ {', '.join(added[:3])}")
+            if removed:
+                detail_parts.append(f"− {', '.join(removed[:3])}")
+            detail = f"  ({', '.join(detail_parts)})" if detail_parts else ""
+            status.append(f"  ·  {changes} change{'s' if changes != 1 else ''} from saved{detail}", style=_ORANGE)
         tbl.add_row(status)
 
         return tbl
@@ -1318,6 +1383,14 @@ AgentsScreen {{
         tbl.add_column()
 
         agent = self._current_agent()
+        if agent:
+            hdr = Text()
+            hdr.append(f" {agent.name}", style=f"bold {_SILVER}")
+            hdr.append("  ")
+            hdr.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
+            tbl.add_row(hdr)
+            tbl.add_row(Text(""))
+
         current_model = agent.model if agent else None
 
         # Current row
@@ -1356,8 +1429,8 @@ AgentsScreen {{
                 row.append("● " if is_sel else "○ ", style=f"bold {_SILVER}" if is_sel else _DIM)
                 row.append(f"{provider['name']} › ", style=_DIM)
                 row.append(f"{model['id']}", style=f"bold {_BLUE}" if is_sel else _BLUE)
-                ctx_str = fmt_ctx(model["ctx"])
-                price_str = f"${model['in_price']:.2f}/${model['out_price']:.2f}"
+                ctx_str   = f"{fmt_ctx(model['ctx']):>4}"
+                price_str = f"${model['in_price']:>6.2f}/${model['out_price']:>6.2f}"
                 row.append(f"  {ctx_str} · {price_str}", style=_FAINT)
                 if is_cur:
                     row.append("  ")
@@ -1573,25 +1646,24 @@ AgentsScreen {{
             ]
             suffix = ""
         elif self._mode == "detail":
-            hints = [
-                _hint("↑↓", "scroll"),
-            ]
+            bar = f"  [{_FAINT}]|[/]  "
+            nav_h  = dot.join([_hint("↑↓", "scroll")])
             if not is_builtin:
-                hints += [
-                    _hint("b", "desc"),
-                    _hint("i", "iter"),
-                    _hint("t", "tools"),
-                    _hint("m", "model"),
-                    _hint("k", "color"),
-                    _hint("s", "prompt"),
-                    _hint("r", "run"),
-                    _hint("y", "dup"),
-                    _hint("d", "delete"),
-                ]
+                edit_h = dot.join([
+                    _hint("b", "desc"), _hint("i", "iter"), _hint("t", "tools"),
+                    _hint("m", "model"), _hint("k", "color"), _hint("s", "prompt"),
+                ])
+                act_h  = dot.join([_hint("r", "run"), _hint("y", "dup"), _hint("d", "delete")])
             else:
-                hints += [_hint("r", "run"), _hint("y", "duplicate")]
-            hints.append(_hint("esc", "back"))
-            suffix = ""
+                edit_h = ""
+                act_h  = dot.join([_hint("r", "run"), _hint("y", "dup")])
+            exit_h = dot.join([_hint("esc", "back")])
+            parts = [nav_h]
+            if edit_h:
+                parts.append(edit_h)
+            parts += [act_h, exit_h]
+            t = Text.from_markup("  " + bar.join(parts))
+            return t
         elif self._query:
             hints = [
                 _hint("↑↓", "nav matches"),
@@ -1990,6 +2062,7 @@ AgentsScreen {{
             len(_COLOR_OPTIONS) - 1,  # default to inherit
         )
         self._mode = "edit_color"
+        self._focus_pane = "detail"
         self._refresh()
 
     def _do_save_color(self) -> None:
@@ -2021,6 +2094,7 @@ AgentsScreen {{
         self._edit_tools_saved = list(self._edit_tools)
         self._edit_tools_cursor = 0
         self._mode = "edit_tools"
+        self._focus_pane = "detail"
         self._refresh()
 
     def _toggle_tool_at_cursor(self) -> None:
@@ -2103,6 +2177,7 @@ AgentsScreen {{
         except ValueError:
             self._edit_model_cursor = 0
         self._mode = "edit_model"
+        self._focus_pane = "detail"
         self._refresh()
 
     def _do_save_model(self) -> None:
