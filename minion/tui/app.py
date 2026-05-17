@@ -1068,6 +1068,16 @@ class MinionApp(App):
         except Exception:
             pass
 
+    def dispatch_input(self, text: str) -> None:
+        """Submit text directly as if the user had typed and pressed Enter.
+
+        Bypasses the input buffer — goes straight to on_tui_submit which handles
+        history, conversation append, and thinking state. Callers must NOT call
+        set_thinking(False) after this — on_tui_submit sets thinking=True itself.
+        """
+        if text.strip():
+            self.post_message(TuiSubmit(text.strip()))
+
     def show_setup_checklist(self) -> None:
         """Show the setup checklist zone (first-run or /setup re-trigger)."""
         self.checklist.reset()

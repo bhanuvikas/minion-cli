@@ -1581,9 +1581,9 @@ AgentsScreen {{
         if mode == "run":
             if key in ("ctrl+j", "ctrl+enter"):
                 run_area = self.query_one("#ag-run-input", TextArea)
-                prompt = run_area.text.strip()
+                prompt = run_area.text.strip().replace("\n", " ")
                 if prompt:
-                    self.dismiss(f"Use the {self._run_agent_name} subagent to: {prompt}")
+                    self.dismiss(f"/agent {self._run_agent_name} {prompt}")
                 event.stop()
             return
 

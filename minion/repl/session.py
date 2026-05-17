@@ -686,9 +686,11 @@ async def _run_repl_tui(
             async def _on_agents_done(result: "Union[bool, str]") -> None:
                 nonlocal agent_registry
                 if isinstance(result, str) and result:
-                    # Run flow dispatched — prefill the main input with the prompt
-                    tui_app.prefill_input(result)
-                elif result is True:
+                    # Run flow dispatched — submit directly as /agent <name> <task>.
+                    # dispatch_input handles thinking state; don't call set_thinking(False).
+                    tui_app.dispatch_input(result)
+                    return
+                if result is True:
                     # Registry changed (delete/duplicate) — reload from disk
                     from ..agents import load_agent_registry as _load_ar
                     agent_registry = _load_ar(project_cwd)
