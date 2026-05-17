@@ -275,6 +275,18 @@ AgentsScreen {{
     padding: 0 2;
     margin: 0 -1;
 }}
+#ag-edit-input {{
+    height: auto;
+    display: none;
+    background: #1a1a1a;
+    border: solid #3a3a3a;
+    color: #E8E8E8;
+    margin: 0 1;
+    padding: 0 1;
+}}
+#ag-edit-input:focus {{
+    border: solid {_ORANGE};
+}}
 #ag-footer {{
     height: 2;
     padding: 0 2;
@@ -341,6 +353,7 @@ AgentsScreen {{
                     with VerticalScroll(id="ag-preview-scroll"):
                         yield Static("", id="ag-preview")
                     yield Input(placeholder="new agent name…", id="ag-dup-name")
+                    yield Input(placeholder="", id="ag-edit-input")
                     yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
                     yield Static("", id="ag-run-hints")
@@ -352,6 +365,7 @@ AgentsScreen {{
         panel.can_focus = True
         panel.focus()
         self.query_one("#ag-dup-name", Input).display = False
+        self.query_one("#ag-edit-input", Input).display = False
         self.query_one("#ag-run-prompt-label", Static).display = False
         self.query_one("#ag-run-input", TextArea).display = False
         self.query_one("#ag-run-hints", Static).display = False
@@ -455,18 +469,37 @@ AgentsScreen {{
             dup_input.focus()
 
         in_run = (self._mode == "run")
+        in_prompt = (self._mode == "edit_prompt")
+        in_text = (self._mode in ("edit_description", "edit_iterations"))
+        in_compact = in_run or in_prompt or in_text
+
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
-        if in_run:
+        if in_compact:
             preview_scroll.add_class("run-compact")
         else:
             preview_scroll.remove_class("run-compact")
 
-        self.query_one("#ag-run-prompt-label", Static).display = in_run
-        self.query_one("#ag-run-input", TextArea).display = in_run
-        self.query_one("#ag-run-hints", Static).display = in_run
-        if in_run:
-            self.query_one("#ag-run-prompt-label", Static).update(self._build_run_prompt_label())
-            self.query_one("#ag-run-hints", Static).update(self._build_run_hints())
+        # #ag-edit-input: shown for description / iterations editing
+        edit_input = self.query_one("#ag-edit-input", Input)
+        edit_input.display = in_text
+
+        # #ag-run-prompt-label: run + edit_prompt
+        show_label = in_run or in_prompt
+        self.query_one("#ag-run-prompt-label", Static).display = show_label
+        if show_label:
+            label_text = self._build_run_prompt_label() if in_run else self._build_prompt_edit_label()
+            self.query_one("#ag-run-prompt-label", Static).update(label_text)
+
+        # #ag-run-input TextArea: run + edit_prompt
+        show_ta = in_run or in_prompt
+        self.query_one("#ag-run-input", TextArea).display = show_ta
+
+        # #ag-run-hints: run + edit_prompt + description + iterations
+        show_hints = in_run or in_prompt or in_text
+        self.query_one("#ag-run-hints", Static).display = show_hints
+        if show_hints:
+            hints_text = self._build_run_hints() if in_run else self._build_edit_hints()
+            self.query_one("#ag-run-hints", Static).update(hints_text)
 
     # ── Header ────────────────────────────────────────────────────────────────
 
@@ -508,6 +541,23 @@ AgentsScreen {{
             name = agent.name if agent else "agent"
             t.append(f"{name} › ", style=_DIM)
             t.append("edit color", style=f"bold {_ORANGE}")
+        elif self._mode == "edit_description":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit description", style=f"bold {_ORANGE}")
+        elif self._mode == "edit_iterations":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit max iterations", style=f"bold {_ORANGE}")
+        elif self._mode == "edit_prompt":
+            agent = self._current_agent()
+            name = agent.name if agent else "agent"
+            t.append(f"{name} › ", style=_DIM)
+            t.append("edit system prompt", style=f"bold {_ORANGE}")
+            t.append("  ")
+            t.append(" ctrl+↵ to save ", style=f"{_SILVER} on #161614")
         elif self._mode == "detail":
             agent = self._current_agent()
             name = agent.name if agent else "agent"
@@ -722,6 +772,12 @@ AgentsScreen {{
             return self._build_preview_tools()
         if self._mode == "edit_model":
             return self._build_preview_model()
+        if self._mode == "edit_description" and agent:
+            return self._build_preview_edit_field(agent, "DESCRIPTION", agent.description)
+        if self._mode == "edit_iterations" and agent:
+            return self._build_preview_edit_field(agent, "MAX ITERATIONS", str(agent.max_iterations))
+        if self._mode == "edit_prompt" and agent:
+            return self._build_preview_edit_prompt(agent)
         if agent is None:
             tbl = Table.grid(expand=True, padding=0)
             tbl.add_column()
@@ -750,6 +806,13 @@ AgentsScreen {{
         tbl.add_row(Text(""))
 
         # Description (wrapped)
+        desc_header = Text()
+        desc_header.append(" DESCRIPTION", style=f"bold {_DIM}")
+        if manifest.source != "builtin":
+            desc_header.append("  ")
+            desc_header.append(" b ", style=f"bold {_SILVER} on #2a2a2a")
+            desc_header.append(" edit", style=_DIM)
+        tbl.add_row(desc_header)
         desc_tbl = Table.grid(expand=True, padding=0)
         desc_tbl.add_column(width=1, no_wrap=True)
         desc_tbl.add_column(ratio=1)
@@ -775,14 +838,19 @@ AgentsScreen {{
         tbl.add_row(Text(""))
 
         # SOURCE
-        source_header = Text()
-        source_header.append(" SOURCE", style=f"bold {_DIM}")
-        if manifest.source != "builtin":
-            source_header.append("  ")
-            source_header.append(" e ", style=f"bold {_SILVER} on #2a2a2a")
-            source_header.append(" edit file", style=_DIM)
-        tbl.add_row(source_header)
+        tbl.add_row(Text(" SOURCE", style=f"bold {_DIM}"))
         tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
+        tbl.add_row(Text(""))
+
+        # MAX ITERATIONS
+        iter_header = Text()
+        iter_header.append(" MAX ITERATIONS", style=f"bold {_DIM}")
+        if manifest.source != "builtin":
+            iter_header.append("  ")
+            iter_header.append(" i ", style=f"bold {_SILVER} on #2a2a2a")
+            iter_header.append(" edit", style=_DIM)
+        iter_header.append(f"  ·  {manifest.max_iterations}", style=_DIM)
+        tbl.add_row(iter_header)
         tbl.add_row(Text(""))
 
         # MODEL
@@ -819,6 +887,13 @@ AgentsScreen {{
         tbl.add_row(Text(""))
 
         # System prompt preview
+        prompt_header = Text()
+        prompt_header.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
+        if manifest.source != "builtin":
+            prompt_header.append("  ")
+            prompt_header.append(" s ", style=f"bold {_SILVER} on #2a2a2a")
+            prompt_header.append(" edit", style=_DIM)
+        tbl.add_row(prompt_header)
         tbl.add_row(self._build_prompt_preview(manifest))
 
         # Shadowing precedence block for project agents that shadow a builtin
@@ -882,18 +957,12 @@ AgentsScreen {{
         total = len(lines)
         max_preview = 5
 
-        header = Text()
-        header.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
-        header.append(f"  ·  {total} lines", style=_DIM)
-        if not self._show_full_prompt:
-            header.append("  ", style=_DIM)
-            header.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
-            header.append(" view full", style=_DIM)
-        else:
-            header.append("  ", style=_DIM)
-            header.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
-            header.append(" collapse", style=_DIM)
-        tbl.add_row(header)
+        meta = Text()
+        meta.append(f"   {total} lines", style=_DIM)
+        meta.append("  ")
+        meta.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
+        meta.append(" view full" if not self._show_full_prompt else " collapse", style=_DIM)
+        tbl.add_row(meta)
         tbl.add_row(Text(""))
 
         preview_lines = lines if self._show_full_prompt else lines[:max_preview]
@@ -1009,6 +1078,66 @@ AgentsScreen {{
         limit_row.append("  limit   ", style=_DIM)
         limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_FAINT)
         tbl.add_row(limit_row)
+
+        return tbl
+
+    def _build_prompt_edit_label(self) -> Text:
+        """Section heading rendered above the system prompt TextArea."""
+        t = Text()
+        t.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
+        t.append("  ·  edit the full agent system prompt", style=_DIM)
+        return t
+
+    def _build_edit_hints(self) -> Text:
+        """Key hints for edit_description / edit_iterations modes."""
+        dot = f" [{_FAINT}]·[/] "
+        parts = [_hint("↵", "save"), _hint("esc", "cancel")]
+        return Text.from_markup("  " + dot.join(parts))
+
+    def _build_preview_edit_field(
+        self,
+        manifest: "AgentRoleManifest",
+        label: str,
+        current: str,
+    ) -> Table:
+        """Compact identity card shown above an inline Input edit widget."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        tbl.add_row(Text(""))
+
+        header = Text()
+        header.append(f" {manifest.name}", style=f"bold {_SILVER}")
+        header.append("  ")
+        header.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+        tbl.add_row(header)
+        tbl.add_row(Text(""))
+
+        field_label = Text()
+        field_label.append(f" {label}", style=f"bold {_DIM}")
+        field_label.append("  ·  current value:", style=_DIM)
+        tbl.add_row(field_label)
+        tbl.add_row(Text(f"   {current}", style=_FAINT))
+        tbl.add_row(Text(""))
+
+        return tbl
+
+    def _build_preview_edit_prompt(self, manifest: "AgentRoleManifest") -> Table:
+        """Compact identity card shown above the system prompt TextArea."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        tbl.add_row(Text(""))
+
+        header = Text()
+        header.append(f" {manifest.name}", style=f"bold {_SILVER}")
+        header.append("  ")
+        header.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+        tbl.add_row(header)
+        tbl.add_row(Text(""))
+
+        meta = Text()
+        total = len(manifest.system_prompt.splitlines())
+        meta.append(f"   {total} lines", style=_DIM)
+        tbl.add_row(meta)
 
         return tbl
 
@@ -1399,6 +1528,19 @@ AgentsScreen {{
                 _hint("esc", "cancel"),
             ]
             suffix = ""
+        elif self._mode == "edit_description":
+            hints = [_hint("↵", "save"), _hint("esc", "cancel")]
+            suffix = ""
+        elif self._mode == "edit_iterations":
+            hints = [_hint("↵", "save"), _hint("esc", "cancel")]
+            suffix = ""
+        elif self._mode == "edit_prompt":
+            hints = [
+                _hint("ctrl+↵", "save"),
+                _hint("↵", "newline"),
+                _hint("esc", "cancel"),
+            ]
+            suffix = ""
         elif self._mode == "detail":
             hints = [
                 _hint("↑↓", "scroll"),
@@ -1406,7 +1548,8 @@ AgentsScreen {{
             ]
             if not is_builtin:
                 hints += [
-                    _hint("e", "edit file"),
+                    _hint("b", "desc"),
+                    _hint("i", "iter"),
                     _hint("t", "tools"),
                     _hint("m", "model"),
                     _hint("k", "color"),
@@ -1436,7 +1579,7 @@ AgentsScreen {{
                 _hint("y", "dup"),
             ]
             if not is_builtin:
-                hints += [_hint("e", "edit"), _hint("d", "delete")]
+                hints += [_hint("d", "delete")]
             hints.append(_hint("esc", "close"))
             suffix = "" if not is_builtin else f"  [{_FAINT}]read-only — edit/delete hidden[/]"
 
@@ -1503,7 +1646,8 @@ AgentsScreen {{
 
     def action_esc_action(self) -> None:
         edit_modes = ("confirm_delete", "duplicate", "detail", "run",
-                      "edit_tools", "edit_model", "edit_color")
+                      "edit_tools", "edit_model", "edit_color",
+                      "edit_description", "edit_iterations", "edit_prompt")
         if self._mode in edit_modes:
             self._mode = "browse"
             self._del_confirmed = False
@@ -1524,9 +1668,16 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
-        # When the run TextArea has focus, Enter should insert a newline.
-        if self._mode == "run" and isinstance(self.focused, TextArea):
+        # TextArea modes: Enter inserts newline (ctrl+↵ saves)
+        if self._mode in ("run", "edit_prompt") and isinstance(self.focused, TextArea):
             self.query_one("#ag-run-input", TextArea).insert("\n")
+            return
+        # Input edit modes: Enter saves
+        if self._mode == "edit_description":
+            self._do_save_description()
+            return
+        if self._mode == "edit_iterations":
+            self._do_save_iterations()
             return
         if self._mode == "edit_tools":
             self._do_save_tools()
@@ -1577,10 +1728,14 @@ AgentsScreen {{
         except Exception:
             focused = None
         if isinstance(focused, Input):
-            if key == "escape" and focused.id == "ag-dup-name":
-                self._mode = "browse"
-                self._dup_name = ""
-                self._dup_focus = "name"
+            if key == "escape" and focused.id in ("ag-dup-name", "ag-edit-input"):
+                if focused.id == "ag-edit-input":
+                    self._mode = "detail"
+                    self._focus_pane = "detail"
+                else:
+                    self._mode = "browse"
+                    self._dup_name = ""
+                    self._dup_focus = "name"
                 self.query_one("#ag-panel", Vertical).focus()
                 self._refresh()
                 event.stop()
@@ -1607,7 +1762,7 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # Run mode: ctrl+j (ctrl+enter) dispatches
+        # Run mode: ctrl+j dispatches
         if mode == "run":
             if key in ("ctrl+j", "ctrl+enter"):
                 run_area = self.query_one("#ag-run-input", TextArea)
@@ -1617,8 +1772,16 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # edit_color / edit_model: only esc/enter handled via BINDINGS — no extra keys
-        if mode in ("edit_color", "edit_model"):
+        # edit_prompt: ctrl+j saves
+        if mode == "edit_prompt":
+            if key in ("ctrl+j", "ctrl+enter"):
+                self._do_save_prompt()
+                event.stop()
+            return
+
+        # edit_color / edit_model / edit_description / edit_iterations:
+        # only esc/enter handled via BINDINGS — no extra keys
+        if mode in ("edit_color", "edit_model", "edit_description", "edit_iterations"):
             return
 
         # Browse / search / detail modes
@@ -1643,8 +1806,14 @@ AgentsScreen {{
         elif key == "k" and not is_builtin:
             self._start_edit_color()
             event.stop()
-        elif key in ("e", "s") and not is_builtin:
-            self.run_worker(self._action_edit_file(), exclusive=True)
+        elif key == "b" and not is_builtin:
+            self._start_edit_description()
+            event.stop()
+        elif key == "i" and not is_builtin:
+            self._start_edit_iterations()
+            event.stop()
+        elif key == "s" and not is_builtin:
+            self._start_edit_prompt()
             event.stop()
         elif key == "slash":
             self.query_one("#ag-search", ModalSearchBar).focus_input()
@@ -1671,6 +1840,8 @@ AgentsScreen {{
         if event.input.id == "ag-dup-name":
             self._dup_name = event.value.strip()
             self._refresh()
+        elif event.input.id == "ag-edit-input":
+            pass  # no live refresh needed for edit fields
         else:
             # ModalSearchBar wraps an Input without exposing its id — treat any
             # other Input.Changed as the search bar firing.
@@ -1680,6 +1851,9 @@ AgentsScreen {{
             self._refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ag-edit-input":
+            # Handled by action_confirm via priority binding — nothing to do here
+            return
         if event.input.id == "ag-dup-name":
             if self._dup_name_available():
                 self._dup_focus = "tier"
@@ -1919,19 +2093,87 @@ AgentsScreen {{
         self._focus_pane = "detail"
         self._refresh()
 
-    # ── Phase 5: $EDITOR hand-off ─────────────────────────────────────────────
+    # ── Field editors (description / iterations / system prompt) ──────────────
 
-    async def _action_edit_file(self) -> None:
-        import os
-        import subprocess
+    def _start_edit_description(self) -> None:
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        editor = os.environ.get("EDITOR", "nano")
-        with self.app.suspend():
-            subprocess.run([editor, str(agent.source_path)])
+        edit_input = self.query_one("#ag-edit-input", Input)
+        edit_input.value = agent.description
+        self._mode = "edit_description"
+        self._focus_pane = "detail"
+        self._refresh()
+        edit_input.focus()
+
+    def _do_save_description(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        new_val = self.query_one("#ag-edit-input", Input).value.strip()
+        if new_val:
+            from ...agents.persist import update_agent_yaml
+            update_agent_yaml(agent.source_path, {"description": new_val})
+            self._registry_changed = True
+            self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self.query_one("#ag-panel", Vertical).focus()
+        self._refresh()
+
+    def _start_edit_iterations(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        edit_input = self.query_one("#ag-edit-input", Input)
+        edit_input.value = str(agent.max_iterations)
+        self._mode = "edit_iterations"
+        self._focus_pane = "detail"
+        self._refresh()
+        edit_input.focus()
+
+    def _do_save_iterations(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        raw = self.query_one("#ag-edit-input", Input).value.strip()
+        try:
+            val = max(1, int(raw))
+        except ValueError:
+            return
+        from ...agents.persist import update_agent_yaml
+        update_agent_yaml(agent.source_path, {"max_iterations": val})
         self._registry_changed = True
         self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self.query_one("#ag-panel", Vertical).focus()
+        self._refresh()
+
+    def _start_edit_prompt(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        ta = self.query_one("#ag-run-input", TextArea)
+        ta.load_text(agent.system_prompt)
+        self._mode = "edit_prompt"
+        self._focus_pane = "detail"
+        self._refresh()
+        ta.focus()
+
+    def _do_save_prompt(self) -> None:
+        agent = self._current_agent()
+        if agent is None or agent.source == "builtin" or agent.source_path is None:
+            return
+        new_prompt = self.query_one("#ag-run-input", TextArea).text.strip()
+        if new_prompt:
+            from ...agents.persist import update_agent_yaml
+            update_agent_yaml(agent.source_path, {"system_prompt": new_prompt})
+            self._registry_changed = True
+            self._reload_registry()
+        self._mode = "detail"
+        self._focus_pane = "detail"
+        self.query_one("#ag-panel", Vertical).focus()
         self._refresh()
 
     def _copy_path(self) -> None:
