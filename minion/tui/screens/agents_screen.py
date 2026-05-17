@@ -263,15 +263,20 @@ AgentsScreen {{
     border: solid #3a3a3a;
     color: #E8E8E8;
     margin: 0 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
+    scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {_DIM};
 }}
 #ag-run-input.single-line {{
-    height: 3;
+    height: 6;
 }}
 #ag-run-input:focus {{
     border: solid {_ORANGE};
 }}
 #ag-preview-scroll.text-edit-compact {{
-    height: 6;
+    height: auto;
 }}
 #ag-run-hints {{
     height: 2;
@@ -1116,7 +1121,6 @@ AgentsScreen {{
         """Compact identity card shown above the field TextArea."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
-        tbl.add_row(Text(""))
 
         header = Text()
         header.append(f" {manifest.name}", style=f"bold {_SILVER}")
