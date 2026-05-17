@@ -272,6 +272,9 @@ AgentsScreen {{
 #ag-run-input.single-line {{
     height: 6;
 }}
+#ag-run-input.prompt-edit {{
+    height: 1fr;
+}}
 #ag-run-input:focus {{
     border: solid {_ORANGE};
 }}
@@ -473,22 +476,27 @@ AgentsScreen {{
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
         ta = self.query_one("#ag-run-input", TextArea)
 
-        # Compact scroll height: small for field edits, medium for run/prompt
-        if in_field:
-            preview_scroll.remove_class("run-compact")
-            preview_scroll.add_class("text-edit-compact")
-        elif in_run or in_prompt:
+        # Compact scroll height: auto for field/prompt edits, 12 for run
+        if in_run:
             preview_scroll.remove_class("text-edit-compact")
             preview_scroll.add_class("run-compact")
+        elif in_prompt or in_field:
+            preview_scroll.remove_class("run-compact")
+            preview_scroll.add_class("text-edit-compact")
         else:
             preview_scroll.remove_class("run-compact")
             preview_scroll.remove_class("text-edit-compact")
 
-        # TextArea single-line styling for field edits
+        # TextArea size modifiers
         if in_field:
             ta.add_class("single-line")
+            ta.remove_class("prompt-edit")
+        elif in_prompt:
+            ta.remove_class("single-line")
+            ta.add_class("prompt-edit")
         else:
             ta.remove_class("single-line")
+            ta.remove_class("prompt-edit")
 
         # Label above TextArea (run + edit_prompt + field edits)
         show_label = in_any_edit
@@ -1134,19 +1142,14 @@ AgentsScreen {{
         """Compact identity card shown above the system prompt TextArea."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
-        tbl.add_row(Text(""))
 
         header = Text()
         header.append(f" {manifest.name}", style=f"bold {_SILVER}")
         header.append("  ")
         header.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
-        tbl.add_row(header)
-        tbl.add_row(Text(""))
-
-        meta = Text()
         total = len(manifest.system_prompt.splitlines())
-        meta.append(f"   {total} lines", style=_DIM)
-        tbl.add_row(meta)
+        header.append(f"  ·  {total} lines", style=_DIM)
+        tbl.add_row(header)
 
         return tbl
 
