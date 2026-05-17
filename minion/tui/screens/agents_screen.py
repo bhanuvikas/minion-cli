@@ -340,6 +340,8 @@ AgentsScreen {{
         # Phase 4 — edit model
         self._edit_model_cursor: int = 0
         self._edit_model_flat: list[Optional[str]] = []
+        # Field edits
+        self._edit_iterations_val: int = 20
 
     # ── Compose ───────────────────────────────────────────────────────────────
 
@@ -470,7 +472,7 @@ AgentsScreen {{
 
         in_run = (self._mode == "run")
         in_prompt = (self._mode == "edit_prompt")
-        in_field = (self._mode in ("edit_description", "edit_iterations"))
+        in_field = (self._mode == "edit_description")   # iterations uses stepper, not TextArea
         in_any_edit = in_run or in_prompt or in_field
 
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
@@ -506,10 +508,8 @@ AgentsScreen {{
                 label_text = self._build_run_prompt_label()
             elif in_prompt:
                 label_text = self._build_prompt_edit_label()
-            elif self._mode == "edit_description":
+            else:  # edit_description
                 label_text = self._build_field_edit_label("DESCRIPTION")
-            else:
-                label_text = self._build_field_edit_label("MAX ITERATIONS")
             self.query_one("#ag-run-prompt-label", Static).update(label_text)
 
         # TextArea: all edit modes
@@ -572,6 +572,8 @@ AgentsScreen {{
             name = agent.name if agent else "agent"
             t.append(f"{name} › ", style=_DIM)
             t.append("edit max iterations", style=f"bold {_ORANGE}")
+            t.append("  ")
+            t.append(f" {self._edit_iterations_val} ", style=f"bold {_ORANGE} on #1a0800")
         elif self._mode == "edit_prompt":
             agent = self._current_agent()
             name = agent.name if agent else "agent"
@@ -796,7 +798,7 @@ AgentsScreen {{
         if self._mode == "edit_description" and agent:
             return self._build_preview_edit_field(agent, "DESCRIPTION", agent.description)
         if self._mode == "edit_iterations" and agent:
-            return self._build_preview_edit_field(agent, "MAX ITERATIONS", str(agent.max_iterations))
+            return self._build_preview_iterations(agent)
         if self._mode == "edit_prompt" and agent:
             return self._build_preview_edit_prompt(agent)
         if agent is None:
@@ -1150,6 +1152,38 @@ AgentsScreen {{
         total = len(manifest.system_prompt.splitlines())
         header.append(f"  ·  {total} lines", style=_DIM)
         tbl.add_row(header)
+
+        return tbl
+
+    def _build_preview_iterations(self, manifest: "AgentRoleManifest") -> Table:
+        """Inline stepper for edit_iterations mode — ← / → to adjust, ↵ to save."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+
+        # Identity bar
+        header = Text()
+        header.append(f" {manifest.name}", style=f"bold {_SILVER}")
+        header.append("  ")
+        header.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+        tbl.add_row(header)
+        tbl.add_row(Text(""))
+
+        tbl.add_row(Text(" MAX ITERATIONS", style=f"bold {_DIM}"))
+        tbl.add_row(Text(""))
+
+        # Stepper row: [-]  N  [+]  · hint
+        val = self._edit_iterations_val
+        stepper = Text()
+        stepper.append("   ")
+        stepper.append(" ← ", style=f"bold {_SILVER} on #2a2a2a")
+        stepper.append(f"  {val}  ", style=f"bold {_ORANGE}")
+        stepper.append(" → ", style=f"bold {_SILVER} on #2a2a2a")
+        stepper.append(f"  iterations", style=_DIM)
+        tbl.add_row(stepper)
+        tbl.add_row(Text(""))
+
+        # Range note
+        tbl.add_row(Text(f"   range 1 – 100", style=_FAINT))
 
         return tbl
 
@@ -1544,7 +1578,7 @@ AgentsScreen {{
             hints = [_hint("↵", "save"), _hint("esc", "cancel")]
             suffix = ""
         elif self._mode == "edit_iterations":
-            hints = [_hint("↵", "save"), _hint("esc", "cancel")]
+            hints = [_hint("←→", "adjust"), _hint("↵", "save"), _hint("esc", "cancel")]
             suffix = ""
         elif self._mode == "edit_prompt":
             hints = [
@@ -1680,8 +1714,12 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
-        # All TextArea edit modes: Enter inserts newline (ctrl+↵ saves)
-        if self._mode in ("run", "edit_prompt", "edit_description", "edit_iterations") \
+        # Stepper: Enter saves iterations directly
+        if self._mode == "edit_iterations":
+            self._do_save_iterations()
+            return
+        # TextArea modes: Enter inserts newline (ctrl+↵ saves)
+        if self._mode in ("run", "edit_prompt", "edit_description") \
                 and isinstance(self.focused, TextArea):
             self.query_one("#ag-run-input", TextArea).insert("\n")
             return
@@ -1774,15 +1812,25 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # edit_prompt / edit_description / edit_iterations: ctrl+j saves
-        if mode in ("edit_prompt", "edit_description", "edit_iterations"):
+        # edit_iterations: stepper — ← → adjust, ↵ saves (handled by action_confirm)
+        if mode == "edit_iterations":
+            if key == "left":
+                self._edit_iterations_val = max(1, self._edit_iterations_val - 1)
+                self._refresh()
+                event.stop()
+            elif key == "right":
+                self._edit_iterations_val = min(100, self._edit_iterations_val + 1)
+                self._refresh()
+                event.stop()
+            return
+
+        # edit_prompt / edit_description: ctrl+j saves
+        if mode in ("edit_prompt", "edit_description"):
             if key in ("ctrl+j", "ctrl+enter"):
                 if mode == "edit_prompt":
                     self._do_save_prompt()
-                elif mode == "edit_description":
-                    self._do_save_description()
                 else:
-                    self._do_save_iterations()
+                    self._do_save_description()
                 event.stop()
             return
 
@@ -2126,24 +2174,17 @@ AgentsScreen {{
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        ta = self.query_one("#ag-run-input", TextArea)
-        ta.load_text(str(agent.max_iterations))
+        self._edit_iterations_val = agent.max_iterations
         self._mode = "edit_iterations"
         self._focus_pane = "detail"
         self._refresh()
-        ta.focus()
 
     def _do_save_iterations(self) -> None:
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        raw = self.query_one("#ag-run-input", TextArea).text.strip().split("\n")[0]
-        try:
-            val = max(1, int(raw))
-        except ValueError:
-            return
         from ...agents.persist import update_agent_yaml
-        update_agent_yaml(agent.source_path, {"max_iterations": val})
+        update_agent_yaml(agent.source_path, {"max_iterations": self._edit_iterations_val})
         self._registry_changed = True
         self._reload_registry()
         self._mode = "detail"
