@@ -1287,8 +1287,8 @@ AgentsScreen {{
                     row.append(f"  {warn}", style=f"bold {_ORANGE}")
                 tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
                 flat_idx += 1
+            tbl.add_row(Text(""))
 
-        tbl.add_row(Text(""))
         tbl.add_row(Rule(style=_RULE))
 
         # Status bar
