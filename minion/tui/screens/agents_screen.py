@@ -257,7 +257,7 @@ AgentsScreen {{
     margin-top: 1;
 }}
 #ag-run-input {{
-    height: 1fr;
+    height: 8;
     display: none;
     background: #1a1a1a;
     border: solid #3a3a3a;
@@ -268,9 +268,12 @@ AgentsScreen {{
     border: solid {_ORANGE};
 }}
 #ag-run-hints {{
-    height: auto;
+    height: 2;
     display: none;
-    margin-bottom: 1;
+    background: {_BG};
+    border-top: solid {_RULE};
+    padding: 0 2;
+    margin: 0 -1;
 }}
 #ag-full-content {{
     display: none;
@@ -1040,14 +1043,13 @@ AgentsScreen {{
 
     def _build_run_hints(self) -> Text:
         """Key hints rendered below the run TextArea widget."""
-        t = Text()
-        t.append("  ")
-        t.append(" ctrl+↵ ", style=f"bold {_SILVER} on #2a2a2a")
-        t.append("  dispatch  ", style=_ORANGE)
-        t.append("      ")
-        t.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
-        t.append("  cancel", style=_DIM)
-        return t
+        dot = f" [{_FAINT}]·[/] "
+        parts = [
+            _hint("ctrl+↵", "dispatch"),
+            _hint("↵", "newline"),
+            _hint("esc", "cancel"),
+        ]
+        return Text.from_markup("  " + dot.join(parts))
 
     def _build_preview_color(self, manifest: "AgentRoleManifest") -> Table:
         """Right-pane color picker for edit_color mode."""
@@ -1547,6 +1549,10 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
+        # When the run TextArea has focus, Enter should insert a newline.
+        if self._mode == "run" and isinstance(self.focused, TextArea):
+            self.query_one("#ag-run-input", TextArea).insert("\n")
+            return
         if self._mode == "edit_tools":
             self._do_save_tools()
         elif self._mode == "edit_model":
