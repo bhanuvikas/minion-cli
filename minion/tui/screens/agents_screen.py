@@ -328,8 +328,10 @@ AgentsScreen {{
         Binding("up",     "nav_up",        show=False, priority=True),
         Binding("down",   "nav_down",      show=False, priority=True),
         Binding("enter",  "confirm",       show=False, priority=True),
-        Binding("tab",       "cycle_scope",      show=False, priority=True),
-        Binding("shift+tab", "cycle_scope_back", show=False, priority=True),
+        Binding("tab",        "cycle_scope",      show=False, priority=True),
+        Binding("shift+tab",  "cycle_scope_back", show=False, priority=True),
+        Binding("ctrl+enter", "confirm_primary",  show=False, priority=True),
+        Binding("ctrl+j",     "confirm_primary",  show=False, priority=True),
     ]
 
     def __init__(
@@ -535,10 +537,8 @@ AgentsScreen {{
         return f".minion/agents/{name}.yaml"
 
     def _create_scaffold_prompt(self, name: str, desc: str) -> str:
-        body = desc.strip() if desc.strip() else "a helpful assistant"
-        if not body.endswith("."):
-            body += "."
-        return f"# {name}\n\nYou are {body}\n\n## How you work:\n-"
+        body = desc.strip()
+        return f"# {name}\n\n{body}" if body else f"# {name}"
 
     def _get_template_list(self) -> "list[AgentRoleManifest]":
         return sorted(self._registry.values(),
@@ -587,8 +587,11 @@ AgentsScreen {{
 
         # Single divider border changes color: orange = left pane active,
         # blue = right pane active.
+        _NON_BROWSE = {"run", "edit_tools", "edit_model", "edit_color",
+                       "edit_description", "edit_iterations", "edit_prompt",
+                       "duplicate", "create"}
         list_pane = self.query_one("#ag-list-pane", Vertical)
-        if self._focus_pane == "detail":
+        if self._focus_pane == "detail" or self._mode in _NON_BROWSE:
             list_pane.remove_class("lhs-focused")
             list_pane.add_class("rhs-focused")
         else:
@@ -1346,9 +1349,9 @@ AgentsScreen {{
         parts: list[str] = [_hint("tab / shift+tab", "next / prev field")]
         parts.append(_hint("↑↓", "switch option"))
         if is_armed:
-            parts.append(f"[bold {_ORANGE} on #2a2a2a] ↵ [/] [{_ORANGE}]create & edit[/]")
+            parts.append(f"[bold {_ORANGE} on #2a2a2a] ctrl+↵ [/] [{_ORANGE}]create & edit[/]")
         else:
-            parts.append(f"[{_FAINT}]↵  create & edit[/]")
+            parts.append(f"[{_FAINT}]ctrl+↵  create & edit[/]")
         parts.append(_hint("esc", "cancel"))
         return Text.from_markup("  " + dot.join(parts))
 
@@ -1894,7 +1897,7 @@ AgentsScreen {{
             color_hex  = _GOLD if self._create_tier == "user" else _GREEN
             tbl.add_row(_prow("color", f"● {color_name} (tier default)", color_hex))
             prompt_name = self._create_name or "<name>"
-            tbl.add_row(_prow("system prompt", f"# {prompt_name} — 4 lines, scaffold"))
+            tbl.add_row(_prow("system prompt", f"# {prompt_name}" + (" + description" if self._create_desc.strip() else " only")))
         else:
             templates = self._get_template_list()
             if 0 <= self._create_template_cursor < len(templates):
@@ -2160,9 +2163,9 @@ AgentsScreen {{
                 _hint("↑↓", "switch option"),
             ]
             if is_armed:
-                hints.append(f"[bold {_ORANGE} on #2a2a2a] ↵ [/] [{_ORANGE}]create & edit[/]")
+                hints.append(f"[bold {_ORANGE} on #2a2a2a] ctrl+↵ [/] [{_ORANGE}]create & edit[/]")
             else:
-                hints.append(f"[{_FAINT}]↵ disabled[/]")
+                hints.append(f"[{_FAINT}]ctrl+↵  create & edit[/]")
             hints.append(_hint("esc", "cancel"))
             suffix = ""
         elif self._query:
@@ -2306,7 +2309,8 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
-        # Create mode: Enter submits when armed, or advances focus
+        # Create mode: Enter inserts newline in textarea or advances from name input.
+        # Submission is via ctrl+enter (handled in on_key).
         if self._mode == "create":
             focused = self.focused
             if isinstance(focused, TextArea) and focused.id == "ag-run-input":
@@ -2314,12 +2318,10 @@ AgentsScreen {{
                 return
             if isinstance(focused, Input) and focused.id == "ag-dup-name":
                 if self._create_name_available():
-                    self._create_focus = "tier"
+                    self._create_focus = "description"
                     self._update_create_widget_focus()
                     self._refresh()
                 return
-            if self._create_name_valid() and self._create_name_available():
-                self._do_create()
             return
         # Stepper: Enter saves iterations directly
         if self._mode == "edit_iterations":
@@ -2349,6 +2351,22 @@ AgentsScreen {{
             self._refresh()
         elif self._mode == "detail":
             pass  # Enter in detail mode: no-op (run is 'r', edit via e/t/m/k/s)
+
+    def action_confirm_primary(self) -> None:
+        """ctrl+enter / ctrl+j — submit create, save prompt/description, dispatch run."""
+        mode = self._mode
+        if mode == "create":
+            if self._create_name_valid() and self._create_name_available():
+                self._do_create()
+        elif mode == "edit_prompt":
+            self._do_save_prompt()
+        elif mode == "edit_description":
+            self._do_save_description()
+        elif mode == "run":
+            run_area = self.query_one("#ag-run-input", TextArea)
+            prompt = run_area.text.strip().replace("\n", " ")
+            if prompt:
+                self.dismiss(f"/agent {self._run_agent_name} {prompt}")
 
     def action_cycle_scope(self) -> None:
         if self._mode == "create":
@@ -2468,14 +2486,8 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # Run mode: ctrl+j dispatches
+        # Run mode: all other keys ignored (ctrl+enter handled by action_confirm_primary)
         if mode == "run":
-            if key in ("ctrl+j", "ctrl+enter"):
-                run_area = self.query_one("#ag-run-input", TextArea)
-                prompt = run_area.text.strip().replace("\n", " ")
-                if prompt:
-                    self.dismiss(f"/agent {self._run_agent_name} {prompt}")
-                event.stop()
             return
 
         # edit_iterations: stepper — ← → adjust, ↵ saves (handled by action_confirm)
@@ -2490,18 +2502,12 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # edit_prompt / edit_description: ctrl+j saves
-        if mode in ("edit_prompt", "edit_description"):
-            if key in ("ctrl+j", "ctrl+enter"):
-                if mode == "edit_prompt":
-                    self._do_save_prompt()
-                else:
-                    self._do_save_description()
-                event.stop()
+        # edit_prompt / edit_description / create: ctrl+enter handled by action_confirm_primary
+        if mode in ("edit_prompt", "edit_description", "create"):
             return
 
-        # edit_color / edit_model / create: only esc/enter handled via BINDINGS
-        if mode in ("edit_color", "edit_model", "create"):
+        # edit_color / edit_model: only esc/enter handled via BINDINGS
+        if mode in ("edit_color", "edit_model"):
             return
 
         # Browse / search / detail modes
@@ -2747,7 +2753,7 @@ AgentsScreen {{
         )
         self._selected = new_idx
         self._mode = "browse"
-        self._focus_pane = "list"
+        self._focus_pane = "detail"
         self._reset_create_state()
         self.query_one("#ag-panel", Vertical).focus()
         self._refresh()
