@@ -785,20 +785,6 @@ AgentsScreen {{
                         self._add_confirm_strip_row(inner)
                 outer.add_row(inner)
 
-        if self._query:
-            hidden = len(self._registry) - len(self._visible)
-            if hidden > 0:
-                outer.add_row(Text(""))
-                outer.add_row(Text(
-                    "  ─── HIDDEN BY FILTER ─────────────────────────────────",
-                    style=_FAINT,
-                ))
-                noun = "agent" if hidden == 1 else "agents"
-                outer.add_row(Text(
-                    f"  {hidden} {noun} hidden  ·  esc clears search",
-                    style=_DIM,
-                ))
-
         return outer
 
     # ── Preview / right pane ──────────────────────────────────────────────────
