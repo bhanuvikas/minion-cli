@@ -201,7 +201,7 @@ AgentsScreen {{
     height: 1fr;
 }}
 #ag-list-pane {{
-    width: 60%;
+    width: 50%;
     border-right: solid {_RULE};
 }}
 #ag-list-pane.lhs-focused {{
@@ -222,7 +222,7 @@ AgentsScreen {{
     height: auto;
 }}
 #ag-preview-pane {{
-    width: 40%;
+    width: 50%;
     padding: 0 1;
 }}
 #ag-preview-scroll {{
@@ -598,11 +598,12 @@ AgentsScreen {{
 
     def _make_agent_row_table(self) -> Table:
         t = Table.grid(expand=True, padding=0)
-        t.add_column(no_wrap=True, width=3)   # pointer
-        t.add_column(no_wrap=True, ratio=1)   # name
-        t.add_column(no_wrap=True, width=9)   # tier badge
-        t.add_column(ratio=2)                  # description
-        t.add_column(no_wrap=True, width=4)   # tool count
+        t.add_column(no_wrap=True, width=3)                        # pointer
+        t.add_column(no_wrap=True, ratio=1)                        # name
+        t.add_column(no_wrap=True, width=9)                        # tier badge
+        t.add_column(no_wrap=True, ratio=2, overflow="ellipsis")   # description
+        t.add_column(no_wrap=True, width=2)                        # spacer
+        t.add_column(no_wrap=True, width=4)                        # tool count
         return t
 
     def _add_agent_inner_row(
@@ -638,8 +639,6 @@ AgentsScreen {{
 
         # Description (with shadowing annotation)
         desc = manifest.description
-        if len(desc) > 55:
-            desc = desc[:52] + "…"
         if is_danger:
             desc_t = Text(desc, style=f"strike {_FAINT}")
         elif self._query:
@@ -662,7 +661,7 @@ AgentsScreen {{
             count_style = _ORANGE if is_selected else _DIM
         count_t = Text(count_str, style=count_style, no_wrap=True)
 
-        inner.add_row(ptr, name_t, tier_t, desc_t, count_t, style=row_style)
+        inner.add_row(ptr, name_t, tier_t, desc_t, Text(""), count_t, style=row_style)
 
     def _add_confirm_strip_row(self, inner: Table) -> None:
         ptr = Text("▌  ", style=f"bold {_ORANGE}", no_wrap=True)
@@ -672,7 +671,7 @@ AgentsScreen {{
         msg.append(" confirm  ·  ", style=_DIM)
         msg.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
         msg.append(" cancel", style=_DIM)
-        inner.add_row(ptr, msg, Text(""), Text(""), Text(""), style=f"on {_TINT_ORG}")
+        inner.add_row(ptr, msg, Text(""), Text(""), Text(""), Text(""), style=f"on {_TINT_ORG}")
 
     def _build_list(self) -> Table:
         outer = Table.grid(expand=True, padding=0)
