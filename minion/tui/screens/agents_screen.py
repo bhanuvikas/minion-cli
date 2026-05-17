@@ -254,7 +254,6 @@ AgentsScreen {{
 #ag-run-prompt-label {{
     height: auto;
     display: none;
-    padding: 0 1;
     margin-top: 1;
 }}
 #ag-run-input {{
@@ -271,7 +270,6 @@ AgentsScreen {{
 #ag-run-hints {{
     height: auto;
     display: none;
-    padding: 0 1;
     margin-bottom: 1;
 }}
 #ag-full-content {{
