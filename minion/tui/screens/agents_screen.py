@@ -264,8 +264,14 @@ AgentsScreen {{
     color: #E8E8E8;
     margin: 0 1;
 }}
+#ag-run-input.single-line {{
+    height: 3;
+}}
 #ag-run-input:focus {{
     border: solid {_ORANGE};
+}}
+#ag-preview-scroll.text-edit-compact {{
+    height: 6;
 }}
 #ag-run-hints {{
     height: 2;
@@ -274,18 +280,6 @@ AgentsScreen {{
     border-top: solid {_RULE};
     padding: 0 2;
     margin: 0 -1;
-}}
-#ag-edit-input {{
-    height: auto;
-    display: none;
-    background: #1a1a1a;
-    border: solid #3a3a3a;
-    color: #E8E8E8;
-    margin: 0 1;
-    padding: 0 1;
-}}
-#ag-edit-input:focus {{
-    border: solid {_ORANGE};
 }}
 #ag-footer {{
     height: 2;
@@ -353,7 +347,6 @@ AgentsScreen {{
                     with VerticalScroll(id="ag-preview-scroll"):
                         yield Static("", id="ag-preview")
                     yield Input(placeholder="new agent name…", id="ag-dup-name")
-                    yield Input(placeholder="", id="ag-edit-input")
                     yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
                     yield Static("", id="ag-run-hints")
@@ -365,7 +358,6 @@ AgentsScreen {{
         panel.can_focus = True
         panel.focus()
         self.query_one("#ag-dup-name", Input).display = False
-        self.query_one("#ag-edit-input", Input).display = False
         self.query_one("#ag-run-prompt-label", Static).display = False
         self.query_one("#ag-run-input", TextArea).display = False
         self.query_one("#ag-run-hints", Static).display = False
@@ -470,32 +462,48 @@ AgentsScreen {{
 
         in_run = (self._mode == "run")
         in_prompt = (self._mode == "edit_prompt")
-        in_text = (self._mode in ("edit_description", "edit_iterations"))
-        in_compact = in_run or in_prompt or in_text
+        in_field = (self._mode in ("edit_description", "edit_iterations"))
+        in_any_edit = in_run or in_prompt or in_field
 
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
-        if in_compact:
+        ta = self.query_one("#ag-run-input", TextArea)
+
+        # Compact scroll height: small for field edits, medium for run/prompt
+        if in_field:
+            preview_scroll.remove_class("run-compact")
+            preview_scroll.add_class("text-edit-compact")
+        elif in_run or in_prompt:
+            preview_scroll.remove_class("text-edit-compact")
             preview_scroll.add_class("run-compact")
         else:
             preview_scroll.remove_class("run-compact")
+            preview_scroll.remove_class("text-edit-compact")
 
-        # #ag-edit-input: shown for description / iterations editing
-        edit_input = self.query_one("#ag-edit-input", Input)
-        edit_input.display = in_text
+        # TextArea single-line styling for field edits
+        if in_field:
+            ta.add_class("single-line")
+        else:
+            ta.remove_class("single-line")
 
-        # #ag-run-prompt-label: run + edit_prompt
-        show_label = in_run or in_prompt
+        # Label above TextArea (run + edit_prompt + field edits)
+        show_label = in_any_edit
         self.query_one("#ag-run-prompt-label", Static).display = show_label
         if show_label:
-            label_text = self._build_run_prompt_label() if in_run else self._build_prompt_edit_label()
+            if in_run:
+                label_text = self._build_run_prompt_label()
+            elif in_prompt:
+                label_text = self._build_prompt_edit_label()
+            elif self._mode == "edit_description":
+                label_text = self._build_field_edit_label("DESCRIPTION")
+            else:
+                label_text = self._build_field_edit_label("MAX ITERATIONS")
             self.query_one("#ag-run-prompt-label", Static).update(label_text)
 
-        # #ag-run-input TextArea: run + edit_prompt
-        show_ta = in_run or in_prompt
-        self.query_one("#ag-run-input", TextArea).display = show_ta
+        # TextArea: all edit modes
+        ta.display = in_any_edit
 
-        # #ag-run-hints: run + edit_prompt + description + iterations
-        show_hints = in_run or in_prompt or in_text
+        # Hints strip
+        show_hints = in_any_edit
         self.query_one("#ag-run-hints", Static).display = show_hints
         if show_hints:
             hints_text = self._build_run_hints() if in_run else self._build_edit_hints()
@@ -1088,10 +1096,15 @@ AgentsScreen {{
         t.append("  ·  edit the full agent system prompt", style=_DIM)
         return t
 
+    def _build_field_edit_label(self, label: str) -> Text:
+        t = Text()
+        t.append(f" {label}", style=f"bold {_DIM}")
+        return t
+
     def _build_edit_hints(self) -> Text:
-        """Key hints for edit_description / edit_iterations modes."""
+        """Key hints for field / prompt edit modes."""
         dot = f" [{_FAINT}]·[/] "
-        parts = [_hint("↵", "save"), _hint("esc", "cancel")]
+        parts = [_hint("ctrl+↵", "save"), _hint("esc", "cancel")]
         return Text.from_markup("  " + dot.join(parts))
 
     def _build_preview_edit_field(
@@ -1100,7 +1113,7 @@ AgentsScreen {{
         label: str,
         current: str,
     ) -> Table:
-        """Compact identity card shown above an inline Input edit widget."""
+        """Compact identity card shown above the field TextArea."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
         tbl.add_row(Text(""))
@@ -1110,14 +1123,6 @@ AgentsScreen {{
         header.append("  ")
         header.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
         tbl.add_row(header)
-        tbl.add_row(Text(""))
-
-        field_label = Text()
-        field_label.append(f" {label}", style=f"bold {_DIM}")
-        field_label.append("  ·  current value:", style=_DIM)
-        tbl.add_row(field_label)
-        tbl.add_row(Text(f"   {current}", style=_FAINT))
-        tbl.add_row(Text(""))
 
         return tbl
 
@@ -1668,16 +1673,10 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
-        # TextArea modes: Enter inserts newline (ctrl+↵ saves)
-        if self._mode in ("run", "edit_prompt") and isinstance(self.focused, TextArea):
+        # All TextArea edit modes: Enter inserts newline (ctrl+↵ saves)
+        if self._mode in ("run", "edit_prompt", "edit_description", "edit_iterations") \
+                and isinstance(self.focused, TextArea):
             self.query_one("#ag-run-input", TextArea).insert("\n")
-            return
-        # Input edit modes: Enter saves
-        if self._mode == "edit_description":
-            self._do_save_description()
-            return
-        if self._mode == "edit_iterations":
-            self._do_save_iterations()
             return
         if self._mode == "edit_tools":
             self._do_save_tools()
@@ -1728,14 +1727,10 @@ AgentsScreen {{
         except Exception:
             focused = None
         if isinstance(focused, Input):
-            if key == "escape" and focused.id in ("ag-dup-name", "ag-edit-input"):
-                if focused.id == "ag-edit-input":
-                    self._mode = "detail"
-                    self._focus_pane = "detail"
-                else:
-                    self._mode = "browse"
-                    self._dup_name = ""
-                    self._dup_focus = "name"
+            if key == "escape" and focused.id == "ag-dup-name":
+                self._mode = "browse"
+                self._dup_name = ""
+                self._dup_focus = "name"
                 self.query_one("#ag-panel", Vertical).focus()
                 self._refresh()
                 event.stop()
@@ -1772,16 +1767,20 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # edit_prompt: ctrl+j saves
-        if mode == "edit_prompt":
+        # edit_prompt / edit_description / edit_iterations: ctrl+j saves
+        if mode in ("edit_prompt", "edit_description", "edit_iterations"):
             if key in ("ctrl+j", "ctrl+enter"):
-                self._do_save_prompt()
+                if mode == "edit_prompt":
+                    self._do_save_prompt()
+                elif mode == "edit_description":
+                    self._do_save_description()
+                else:
+                    self._do_save_iterations()
                 event.stop()
             return
 
-        # edit_color / edit_model / edit_description / edit_iterations:
-        # only esc/enter handled via BINDINGS — no extra keys
-        if mode in ("edit_color", "edit_model", "edit_description", "edit_iterations"):
+        # edit_color / edit_model: only esc/enter handled via BINDINGS
+        if mode in ("edit_color", "edit_model"):
             return
 
         # Browse / search / detail modes
@@ -1840,8 +1839,6 @@ AgentsScreen {{
         if event.input.id == "ag-dup-name":
             self._dup_name = event.value.strip()
             self._refresh()
-        elif event.input.id == "ag-edit-input":
-            pass  # no live refresh needed for edit fields
         else:
             # ModalSearchBar wraps an Input without exposing its id — treat any
             # other Input.Changed as the search bar firing.
@@ -1851,9 +1848,6 @@ AgentsScreen {{
             self._refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "ag-edit-input":
-            # Handled by action_confirm via priority binding — nothing to do here
-            return
         if event.input.id == "ag-dup-name":
             if self._dup_name_available():
                 self._dup_focus = "tier"
@@ -2099,18 +2093,18 @@ AgentsScreen {{
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        edit_input = self.query_one("#ag-edit-input", Input)
-        edit_input.value = agent.description
+        ta = self.query_one("#ag-run-input", TextArea)
+        ta.load_text(agent.description)
         self._mode = "edit_description"
         self._focus_pane = "detail"
         self._refresh()
-        edit_input.focus()
+        ta.focus()
 
     def _do_save_description(self) -> None:
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        new_val = self.query_one("#ag-edit-input", Input).value.strip()
+        new_val = self.query_one("#ag-run-input", TextArea).text.strip().replace("\n", " ")
         if new_val:
             from ...agents.persist import update_agent_yaml
             update_agent_yaml(agent.source_path, {"description": new_val})
@@ -2125,18 +2119,18 @@ AgentsScreen {{
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        edit_input = self.query_one("#ag-edit-input", Input)
-        edit_input.value = str(agent.max_iterations)
+        ta = self.query_one("#ag-run-input", TextArea)
+        ta.load_text(str(agent.max_iterations))
         self._mode = "edit_iterations"
         self._focus_pane = "detail"
         self._refresh()
-        edit_input.focus()
+        ta.focus()
 
     def _do_save_iterations(self) -> None:
         agent = self._current_agent()
         if agent is None or agent.source == "builtin" or agent.source_path is None:
             return
-        raw = self.query_one("#ag-edit-input", Input).value.strip()
+        raw = self.query_one("#ag-run-input", TextArea).text.strip().split("\n")[0]
         try:
             val = max(1, int(raw))
         except ValueError:
