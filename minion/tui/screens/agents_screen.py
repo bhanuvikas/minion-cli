@@ -98,6 +98,9 @@ _NATIVE_TOOLS = list(_TOOL_DESCRIPTIONS.keys())
 
 _TIER_ORDER: dict[str, int] = {"builtin": 0, "user": 1, "project": 2}
 
+# Default tool set for new agents created with the blank starting point
+_BLANK_TOOLS: list[str] = ["read_file", "list_directory", "search_file", "get_file_outline"]
+
 # Named color options for the color picker (Phase 4)
 _COLOR_OPTIONS: list[tuple[str, str, str]] = [
     ("gold",    _GOLD,    "user-tier default"),
@@ -309,6 +312,15 @@ AgentsScreen {{
     background: {_BG};
     border-top: solid {_RULE};
 }}
+#ag-create-banner {{
+    height: auto;
+    display: none;
+    padding: 0 1;
+    color: {_ORANGE};
+}}
+#ag-run-input.inherited {{
+    color: {_DIM};
+}}
 """
 
     BINDINGS = [
@@ -355,6 +367,17 @@ AgentsScreen {{
         self._edit_model_flat: list[Optional[str]] = []
         # Field edits
         self._edit_iterations_val: int = 20
+        # Create form state
+        self._create_name: str = ""
+        self._create_tier: str = "user"           # "user" | "project"
+        self._create_desc: str = ""
+        self._create_desc_inherited: bool = False  # True until user edits desc after template pick
+        self._create_starting_point: str = "blank" # "blank" | "template"
+        self._create_template_cursor: int = 0      # index into _get_template_list()
+        self._create_focus: str = "name"           # "name"|"tier"|"description"|"starting_point"|"template_picker"
+        # Post-create undo
+        self._create_undo_path: Optional[Path] = None
+        self._create_undo_active: bool = False
 
     # ── Compose ───────────────────────────────────────────────────────────────
 
@@ -363,6 +386,7 @@ AgentsScreen {{
             yield Static("", id="ag-header")
             with Horizontal(id="ag-body"):
                 with Vertical(id="ag-list-pane"):
+                    yield Static("", id="ag-create-banner")
                     yield ModalSearchBar(placeholder="search agents…", id="ag-search")
                     with VerticalScroll(id="ag-list-scroll"):
                         yield Static("", id="ag-list")
@@ -388,6 +412,7 @@ AgentsScreen {{
         self.query_one("#ag-run-prompt-label", Static).display = False
         self.query_one("#ag-run-input", TextArea).display = False
         self.query_one("#ag-run-hints", Static).display = False
+        self.query_one("#ag-create-banner", Static).display = False
         self._refresh()
 
     # ── Data ──────────────────────────────────────────────────────────────────
@@ -475,6 +500,81 @@ AgentsScreen {{
             return None
         return max(candidates, key=lambda m: _TIER_ORDER.get(m.source, 0))
 
+    # ── Create form helpers ───────────────────────────────────────────────────
+
+    def _create_name_valid(self) -> bool:
+        import re
+        return bool(re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', self._create_name))
+
+    def _create_name_available(self) -> bool:
+        return self._create_name_valid() and not any(
+            m.name == self._create_name for m in self._registry.values()
+        )
+
+    def _create_suggest(self) -> str:
+        """Return first available name by integer suffix: {name}-2, {name}-3, …"""
+        existing = {m.name for m in self._registry.values()}
+        n = 2
+        while True:
+            candidate = f"{self._create_name}-{n}"
+            if candidate not in existing:
+                return candidate
+            n += 1
+
+    def _create_target_path(self, tier: str) -> Path:
+        name = self._create_name or "unnamed"
+        if tier == "user":
+            return Path.home() / ".minion" / "agents" / f"{name}.yaml"
+        return self._cwd / ".minion" / "agents" / f"{name}.yaml"
+
+    def _create_target_path_preview(self, tier: str) -> str:
+        name = self._create_name or "<name>"
+        if tier == "user":
+            return f"~/.minion/agents/{name}.yaml"
+        return f".minion/agents/{name}.yaml"
+
+    def _create_scaffold_prompt(self, name: str, desc: str) -> str:
+        body = desc.strip() if desc.strip() else "a helpful assistant"
+        if not body.endswith("."):
+            body += "."
+        return f"# {name}\n\nYou are {body}\n\n## How you work:\n-"
+
+    def _get_template_list(self) -> "list[AgentRoleManifest]":
+        return sorted(self._registry.values(),
+                      key=lambda m: (_TIER_ORDER.get(m.source, 3), m.name))
+
+    def _template_capability_summary(self, m: "AgentRoleManifest") -> str:
+        tools = m.tools if m.tools is not None else _NATIVE_TOOLS
+        count = len(tools)
+        has_shell = "run_shell" in tools
+        has_write = any(t in tools for t in ("write_file", "edit_file", "delete_file"))
+        if has_shell:
+            kind = "edits + shell"
+        elif has_write:
+            kind = "edits files"
+        else:
+            kind = "read-only"
+        lines = len(m.system_prompt.splitlines())
+        return f"{kind} · {count} tools · {lines} lines"
+
+    def _update_create_widget_focus(self) -> None:
+        if self._create_focus == "name":
+            self.query_one("#ag-dup-name", Input).focus()
+        elif self._create_focus == "description":
+            self.query_one("#ag-run-input", TextArea).focus()
+        else:
+            self.query_one("#ag-panel", Vertical).focus()
+
+    def _sync_template_selection(self) -> None:
+        """Populate description from selected template; mark as inherited."""
+        templates = self._get_template_list()
+        if 0 <= self._create_template_cursor < len(templates):
+            tmpl = templates[self._create_template_cursor]
+            ta = self.query_one("#ag-run-input", TextArea)
+            ta.load_text(tmpl.description)
+            self._create_desc = tmpl.description
+            self._create_desc_inherited = True
+
     # ── Refresh ───────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
@@ -494,19 +594,38 @@ AgentsScreen {{
             list_pane.remove_class("rhs-focused")
             list_pane.add_class("lhs-focused")
 
-        in_dup = (self._mode == "duplicate")
+        in_dup    = (self._mode == "duplicate")
+        in_create = (self._mode == "create")
+        in_either = in_dup or in_create
         agent = self._current_agent()
-        self.query_one("#ag-dup-top", Static).display = in_dup
-        if in_dup and agent:
+
+        # ── dup-top / dup-name / dup-validation ──────────────────────────────
+        self.query_one("#ag-dup-top", Static).display = in_either
+        if in_create:
+            self.query_one("#ag-dup-top", Static).update(self._build_create_top())
+        elif in_dup and agent:
             self.query_one("#ag-dup-top", Static).update(self._build_dup_top(agent))
-        self.query_one("#ag-dup-validation", Static).display = in_dup
-        if in_dup:
+
+        self.query_one("#ag-dup-validation", Static).display = in_either
+        if in_create:
+            self.query_one("#ag-dup-validation", Static).update(self._build_create_validation())
+        elif in_dup:
             self.query_one("#ag-dup-validation", Static).update(self._build_dup_validation())
+
         dup_input = self.query_one("#ag-dup-name", Input)
-        dup_input.display = in_dup
-        if in_dup and self._dup_focus == "name":
+        dup_input.display = in_either
+        if in_create and self._create_focus == "name":
+            dup_input.focus()
+        elif in_dup and self._dup_focus == "name":
             dup_input.focus()
 
+        # ── banner ────────────────────────────────────────────────────────────
+        banner = self.query_one("#ag-create-banner", Static)
+        banner.display = self._create_undo_active
+        if self._create_undo_active:
+            banner.update(self._build_create_banner())
+
+        # ── TextArea / label / hints ──────────────────────────────────────────
         in_run = (self._mode == "run")
         in_prompt = (self._mode == "edit_prompt")
         in_field = (self._mode == "edit_description")   # iterations uses stepper, not TextArea
@@ -515,11 +634,11 @@ AgentsScreen {{
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
         ta = self.query_one("#ag-run-input", TextArea)
 
-        # Compact scroll height: auto for field/prompt edits, 12 for run
+        # Compact scroll height: auto for field/prompt edits, 12 for run, auto for create
         if in_run:
             preview_scroll.remove_class("text-edit-compact")
             preview_scroll.add_class("run-compact")
-        elif in_prompt or in_field:
+        elif in_prompt or in_field or in_create:
             preview_scroll.remove_class("run-compact")
             preview_scroll.add_class("text-edit-compact")
         else:
@@ -527,7 +646,7 @@ AgentsScreen {{
             preview_scroll.remove_class("text-edit-compact")
 
         # TextArea size modifiers
-        if in_field:
+        if in_field or in_create:
             ta.add_class("single-line")
             ta.remove_class("prompt-edit")
         elif in_prompt or in_run:
@@ -537,11 +656,19 @@ AgentsScreen {{
             ta.remove_class("single-line")
             ta.remove_class("prompt-edit")
 
-        # Label above TextArea (run + edit_prompt + field edits)
-        show_label = in_any_edit
+        # Inherited-description styling
+        if in_create and self._create_desc_inherited:
+            ta.add_class("inherited")
+        else:
+            ta.remove_class("inherited")
+
+        # Label above TextArea (run + edit_prompt + field edits + create)
+        show_label = in_any_edit or in_create
         self.query_one("#ag-run-prompt-label", Static).display = show_label
         if show_label:
-            if in_run:
+            if in_create:
+                label_text = self._build_create_desc_label()
+            elif in_run:
                 label_text = self._build_run_prompt_label()
             elif in_prompt:
                 label_text = self._build_prompt_edit_label()
@@ -549,10 +676,12 @@ AgentsScreen {{
                 label_text = self._build_field_edit_label("DESCRIPTION")
             self.query_one("#ag-run-prompt-label", Static).update(label_text)
 
-        # TextArea: all edit modes
-        ta.display = in_any_edit
+        # TextArea: all edit modes + create
+        ta.display = in_any_edit or in_create
+        if in_create and self._create_focus == "description":
+            ta.focus()
 
-        # Hints strip
+        # Hints strip (not shown in create — hints are in footer)
         show_hints = in_any_edit
         self.query_one("#ag-run-hints", Static).display = show_hints
         if show_hints:
@@ -565,9 +694,12 @@ AgentsScreen {{
         t = Text()
         t.append("┌─ ", style=_FAINT)
         t.append("/agents", style="bold")
-        t.append(" — ", style=_DIM)
+        sep = " › " if self._mode == "create" else " — "
+        t.append(sep, style=_DIM)
 
-        if self._mode == "confirm_delete":
+        if self._mode == "create":
+            t.append("create new agent", style=f"bold {_ORANGE}")
+        elif self._mode == "confirm_delete":
             t.append("delete agent", style=_DIM)
             t.append("  ")
             t.append(" press d again to confirm ", style=f"bold {_ORANGE} on #2a0e06")
@@ -635,7 +767,7 @@ AgentsScreen {{
 
         # Tier counter only in browse context; edit/run modes already have the breadcrumb
         _NON_BROWSE = {"run", "edit_tools", "edit_model", "edit_color",
-                       "edit_description", "edit_iterations", "edit_prompt", "duplicate"}
+                       "edit_description", "edit_iterations", "edit_prompt", "duplicate", "create"}
         row = Table.grid(expand=True, padding=0)
         row.add_column(ratio=1)
         row.add_column(no_wrap=True, justify="right")
@@ -751,6 +883,11 @@ AgentsScreen {{
         if shadows_builtin:
             desc_t.append("  ↳ overrides builtin", style=_FAINT)
 
+        # In create mode: mark the agent whose name would be shadowed
+        if (self._mode == "create" and self._create_name
+                and manifest.name == self._create_name):
+            name_t.append("  ← shadows", style=f"bold #7a3a26")
+
         # Tool count — always dim (selection signalled by caret + name color)
         tools = manifest.tools
         if tools is None:
@@ -813,7 +950,15 @@ AgentsScreen {{
                 outer.add_row(Text(""))
             outer.add_row(self._build_tier_header(tier))
             if tier not in by_tier:
-                outer.add_row(Text(f"   no {tier} agents", style=_FAINT))
+                if self._scope == "all" and not self._query and tier in ("user", "project"):
+                    hint = Text()
+                    hint.append(f"   no {tier} agents", style=_DIM)
+                    hint.append("  ·  press ", style=_FAINT)
+                    hint.append(" n ", style=f"bold {_SILVER} on #2a2a2a")
+                    hint.append(" to create one", style=_DIM)
+                    outer.add_row(hint)
+                else:
+                    outer.add_row(Text(f"   no {tier} agents", style=_FAINT))
             else:
                 inner = self._make_agent_row_table(name_w)
                 # Column header row (ptr, name, desc, spacer, count)
@@ -839,6 +984,8 @@ AgentsScreen {{
 
     def _build_preview(self) -> Table:
         agent = self._current_agent()
+        if self._mode == "create":
+            return self._build_preview_create()
         if self._mode == "confirm_delete" and agent:
             return self._build_preview_delete(agent)
         if self._mode == "duplicate" and agent:
@@ -1541,6 +1688,249 @@ AgentsScreen {{
 
         return tbl
 
+    # ── Create form widget-content builders ────────────────────────────────────
+
+    def _build_create_top(self) -> Text:
+        """FROM header shown in #ag-dup-top for create mode."""
+        t = Text()
+        t.append(" FROM  ", style=_DIM)
+        if self._create_starting_point == "blank":
+            t.append("— blank slate —", style=f"bold {_ORANGE}")
+        else:
+            templates = self._get_template_list()
+            if 0 <= self._create_template_cursor < len(templates):
+                tmpl = templates[self._create_template_cursor]
+                t.append(f" {tmpl.name} ", style=f"bold {_SILVER}")
+                t.append(f" {tmpl.source} ", style=f"bold {_tier_color(tmpl.source)} on #161614")
+                t.append(f"  ·  {_format_source_path(tmpl)}", style=_FAINT)
+            else:
+                t.append("— pick a template below —", style=_FAINT)
+        t.append("\n\n")
+        t.append("─── name ───────────────────────────────────────────────────", style=_DIM)
+        return t
+
+    def _build_create_validation(self) -> Text:
+        """Validation line shown in #ag-dup-validation for create mode."""
+        t = Text()
+        if not self._create_name:
+            t.append("  letters, digits, dashes  ·  2–40 chars", style=_FAINT)
+        elif not self._create_name_valid():
+            t.append("  ✗  invalid format", style=f"bold {_ORANGE}")
+            t.append("  ·  letters, digits, dashes · must start with letter or digit",
+                     style=_FAINT)
+        elif not self._create_name_available():
+            t.append("  ✗  name already exists", style=f"bold {_ORANGE}")
+            conflict = next((m for m in self._registry.values()
+                             if m.name == self._create_name), None)
+            if conflict:
+                t.append(f"  ·  conflict: {conflict.source}  "
+                         f"{_format_source_path(conflict)}", style=_FAINT)
+            suggestion = self._create_suggest()
+            t.append("  ·  try ", style=_FAINT)
+            t.append(suggestion, style=_DIM)
+            t.append("  (tab)", style=_FAINT)
+        else:
+            t.append("  ✓  available", style=f"bold {_GREEN}")
+            t.append(f"  ·  {self._create_target_path_preview(self._create_tier)}", style=_FAINT)
+        return t
+
+    def _build_create_desc_label(self) -> Text:
+        """Label shown in #ag-run-prompt-label above the description TextArea in create mode."""
+        t = Text()
+        t.append("  ── description ────────────────────────────────────────────", style=_DIM)
+        if self._create_desc_inherited:
+            templates = self._get_template_list()
+            if 0 <= self._create_template_cursor < len(templates):
+                tmpl_name = templates[self._create_template_cursor].name
+                t.append(f"\n  inherited from {tmpl_name}", style=_FAINT)
+                t.append("  ·  edit to override", style=_FAINT)
+        else:
+            t.append("\n  optional — describes what this agent does", style=_FAINT)
+        return t
+
+    def _build_create_banner(self) -> Text:
+        """Post-create undo banner shown in #ag-create-banner."""
+        t = Text()
+        name_display = self._create_undo_path.stem if self._create_undo_path else ""
+        if self._create_undo_path:
+            try:
+                path_display = "~/" + str(self._create_undo_path.relative_to(Path.home()))
+            except ValueError:
+                path_display = str(self._create_undo_path)
+        else:
+            path_display = ""
+        t.append("  ✓  created ", style=f"bold {_ORANGE}")
+        t.append(name_display, style="bold")
+        t.append(f"  ·  {path_display}", style=_FAINT)
+        t.append("  ·  undo with ", style=_FAINT)
+        t.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
+        t.append(" within 5s", style=_FAINT)
+        return t
+
+    def _build_preview_create(self) -> Table:
+        """Scroll content for create mode: tier + starting point + template picker + preview."""
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        tbl.add_row(Text(""))
+
+        # ── Tier selector ─────────────────────────────────────────────────────
+        tbl.add_row(Text(" ─── tier ─────────────────────────────────────────────", style=_DIM))
+        tbl.add_row(Text(""))
+        tier_focused = (self._create_focus == "tier")
+        _unsel_dim = {"user": _GOLD_DIM, "project": _GREEN_DIM}
+        for tier in ["user", "project"]:
+            is_sel  = self._create_tier == tier
+            bullet  = "●" if is_sel else "○"
+            ptr_sty = f"bold {_ORANGE}" if (is_sel and tier_focused) else (_DIM if not is_sel else _SILVER)
+            # Collides if name is typed, valid, unavailable, and the conflict is in this tier's path
+            collides = (
+                bool(self._create_name)
+                and self._create_name_valid()
+                and not self._create_name_available()
+                and any(m.name == self._create_name and m.source == tier
+                        for m in self._registry.values())
+            )
+            row = Text()
+            row.append(f"  {'▸' if (is_sel and tier_focused) else ' '} {bullet} ", style=ptr_sty)
+            row.append(f"{tier:<8}", style=f"bold {_tier_color(tier)}" if is_sel
+                       else _unsel_dim.get(tier, _DIM))
+            row.append(f"  {self._create_target_path_preview(tier)}", style=_FAINT)
+            if collides:
+                row.append("  ← collides", style=f"bold {_ORANGE}")
+            tbl.add_row(row, style=f"on {_TINT_ORG}" if (is_sel and tier_focused) else "")
+        tbl.add_row(Text(""))
+
+        # ── Starting point ────────────────────────────────────────────────────
+        tbl.add_row(Text(" ─── starting point ───────────────────────────────────", style=_DIM))
+        tbl.add_row(Text(""))
+        sp_focused = (self._create_focus == "starting_point")
+        for option, label in [("blank",    "fresh agent · read-only filesystem tools"),
+                               ("template", "copy fields from an existing agent")]:
+            is_sel  = self._create_starting_point == option
+            bullet  = "●" if is_sel else "○"
+            ptr_sty = f"bold {_ORANGE}" if (is_sel and sp_focused) else ""
+            row = Text()
+            row.append(f"  {'▸' if (is_sel and sp_focused) else ' '} {bullet} ", style=ptr_sty)
+            row.append(f"{option:<16}", style=f"bold {_SILVER}" if is_sel else _DIM)
+            row.append(label, style=_TEXT if is_sel else _DIM)
+            tbl.add_row(row, style=f"on {_TINT_ORG}" if (is_sel and sp_focused) else "")
+
+        # Template picker (only when starting_point == "template")
+        if self._create_starting_point == "template":
+            tbl.add_row(Text(""))
+            tbl.add_row(Text("      ── pick a template ──────────────────────────────────",
+                             style=_FAINT))
+            templates = self._get_template_list()
+            _tdim = {"builtin": _DIM, "user": _GOLD_DIM, "project": _GREEN_DIM}
+            for i, tmpl in enumerate(templates):
+                is_sel  = (i == self._create_template_cursor)
+                ptr     = "  ▸" if is_sel else "   "
+                row = Text()
+                row.append(f"    {ptr} ", style=f"bold {_ORANGE}" if is_sel else _DIM)
+                row.append(f"{tmpl.name:<20}", style=f"bold {_tier_color(tmpl.source)}"
+                           if is_sel else _tdim.get(tmpl.source, _DIM))
+                row.append(f"  {tmpl.source:<9}", style=_DIM)
+                row.append(self._template_capability_summary(tmpl), style=_FAINT)
+                tbl.add_row(row, style=f"on {_TINT_ORG}" if is_sel else "")
+        tbl.add_row(Text(""))
+
+        # ── What will be created (preview block) ──────────────────────────────
+        tbl.add_row(Text(" ─── what will be created ─────────────────────────────", style=_DIM))
+        tbl.add_row(Text(""))
+        is_valid = self._create_name_valid() and self._create_name_available()
+
+        def _prow(label: str, value: str, value_style: str = _TEXT) -> Text:
+            row = Text()
+            row.append("  ✓  " if is_valid else "  ·  ",
+                       style=f"bold {_GREEN}" if is_valid else _DIM)
+            row.append(f"{label:<16}", style=_DIM if is_valid else _FAINT)
+            row.append(value, style=value_style if is_valid else _FAINT)
+            return row
+
+        if self._create_name:
+            name_sty = (f"bold {_tier_color(self._create_tier)}" if is_valid
+                        else f"strike {_FAINT}")
+            tbl.add_row(_prow("name", self._create_name, name_sty))
+        else:
+            ph = Text()
+            ph.append("  ·  ", style=_DIM)
+            ph.append("name            ", style=_DIM)
+            ph.append("<name>", style=_FAINT)
+            tbl.add_row(ph)
+
+        tier_str = f"{self._create_tier}  ·  {self._create_target_path_preview(self._create_tier)}"
+        tbl.add_row(_prow("tier", tier_str, f"bold {_tier_color(self._create_tier)}"))
+
+        if self._create_starting_point == "blank":
+            desc_val = self._create_desc.strip()
+            desc_disp = (desc_val[:35] + "…") if len(desc_val) > 35 else desc_val
+            tbl.add_row(_prow("description", desc_disp if desc_disp else "scaffolded if empty"))
+            tbl.add_row(_prow("tools",
+                              "read_file · list_directory · search_file · get_file_outline"))
+            tbl.add_row(_prow("model", "inherit", _BLUE))
+            tbl.add_row(_prow("max_iterations", "20"))
+            color_name = "gold" if self._create_tier == "user" else "green"
+            color_hex  = _GOLD if self._create_tier == "user" else _GREEN
+            tbl.add_row(_prow("color", f"● {color_name} (tier default)", color_hex))
+            prompt_name = self._create_name or "<name>"
+            tbl.add_row(_prow("system prompt", f"# {prompt_name} — 4 lines, scaffold"))
+        else:
+            templates = self._get_template_list()
+            if 0 <= self._create_template_cursor < len(templates):
+                tmpl = templates[self._create_template_cursor]
+                # Description row — show inherited prefix if not overridden
+                desc_src = self._create_desc.strip() or tmpl.description
+                desc_disp = (desc_src[:35] + "…") if len(desc_src) > 35 else desc_src
+                t_desc = Text()
+                t_desc.append("  ✓  " if is_valid else "  ·  ",
+                               style=f"bold {_GREEN}" if is_valid else _DIM)
+                t_desc.append("description     ", style=_DIM if is_valid else _FAINT)
+                if self._create_desc_inherited:
+                    t_desc.append("inherited — ", style=f"italic {_DIM}" if is_valid else _FAINT)
+                t_desc.append(desc_disp, style=_TEXT if is_valid else _FAINT)
+                tbl.add_row(t_desc)
+                # Tools
+                tool_count = len(tmpl.tools) if tmpl.tools is not None else len(_NATIVE_TOOLS)
+                t_tools = Text()
+                t_tools.append("  ✓  " if is_valid else "  ·  ",
+                                style=f"bold {_GREEN}" if is_valid else _DIM)
+                t_tools.append("tools           ", style=_DIM if is_valid else _FAINT)
+                t_tools.append("copied — ", style=f"italic {_DIM}" if is_valid else _FAINT)
+                t_tools.append(f"{tool_count} tools", style=_TEXT if is_valid else _FAINT)
+                tbl.add_row(t_tools)
+                # Model
+                model_val = tmpl.model or "inherit"
+                model_sty = _BLUE if tmpl.model is None else _TEXT
+                t_model = Text()
+                t_model.append("  ✓  " if is_valid else "  ·  ",
+                                style=f"bold {_GREEN}" if is_valid else _DIM)
+                t_model.append("model           ", style=_DIM if is_valid else _FAINT)
+                t_model.append("copied — ", style=f"italic {_DIM}" if is_valid else _FAINT)
+                t_model.append(model_val, style=model_sty if is_valid else _FAINT)
+                tbl.add_row(t_model)
+                tbl.add_row(_prow("max_iterations", str(tmpl.max_iterations)))
+                # System prompt
+                prompt_lines = len(tmpl.system_prompt.splitlines())
+                t_prompt = Text()
+                t_prompt.append("  ✓  " if is_valid else "  ·  ",
+                                 style=f"bold {_GREEN}" if is_valid else _DIM)
+                t_prompt.append("system prompt   ", style=_DIM if is_valid else _FAINT)
+                t_prompt.append("copied — ", style=f"italic {_DIM}" if is_valid else _FAINT)
+                t_prompt.append(f"{prompt_lines} lines from {tmpl.name}",
+                                 style=_TEXT if is_valid else _FAINT)
+                tbl.add_row(t_prompt)
+            else:
+                tbl.add_row(Text("  pick a template above", style=_FAINT))
+
+        if not is_valid and self._create_name:
+            tbl.add_row(Text(""))
+            tbl.add_row(Text("  △ resolve the name to continue", style=f"bold {_ORANGE}"))
+        elif not self._create_name:
+            tbl.add_row(Text(""))
+            tbl.add_row(Text("  opens in detail view after create", style=_FAINT))
+
+        return tbl
+
     def _build_dup_top(self, manifest: "AgentRoleManifest") -> Text:
         """FROM line + new-name section heading rendered above the Input widget."""
         t = Text()
@@ -1736,6 +2126,18 @@ AgentsScreen {{
             parts += [act_h, exit_h]
             t = Text.from_markup("  " + bar.join(parts))
             return t
+        elif self._mode == "create":
+            is_armed = self._create_name_valid() and self._create_name_available()
+            hints = [
+                _hint("tab", "next field"),
+                _hint("↑↓", "switch option"),
+            ]
+            if is_armed:
+                hints.append(f"[bold {_ORANGE} on #2a2a2a] ↵ [/] [{_ORANGE}]create & edit[/]")
+            else:
+                hints.append(f"[{_FAINT}]↵ disabled[/]")
+            hints.append(_hint("esc", "cancel"))
+            suffix = ""
         elif self._query:
             hints = [
                 _hint("↑↓", "nav matches"),
@@ -1749,6 +2151,7 @@ AgentsScreen {{
                 _hint("tab", "scope"),
                 _hint("↵", "focus"),
                 _hint("/", "search"),
+                f"[bold {_ORANGE} on #2a2a2a] n [/] [{_ORANGE}]new[/]",
                 _hint("r", "run"),
                 _hint("y", "dup"),
             ]
@@ -1766,6 +2169,18 @@ AgentsScreen {{
         return True
 
     def action_nav_up(self) -> None:
+        if self._mode == "create":
+            if self._create_focus == "tier":
+                self._create_tier = "user"
+                self._refresh()
+            elif self._create_focus == "starting_point":
+                self._create_starting_point = "blank"
+                self._refresh()
+            elif self._create_focus == "template_picker":
+                self._create_template_cursor = max(0, self._create_template_cursor - 1)
+                self._sync_template_selection()
+                self._refresh()
+            return
         if self._mode == "edit_tools":
             self._edit_tools_cursor = max(0, self._edit_tools_cursor - 1)
             self._refresh()
@@ -1792,6 +2207,23 @@ AgentsScreen {{
             self._refresh()
 
     def action_nav_down(self) -> None:
+        if self._mode == "create":
+            if self._create_focus == "tier":
+                self._create_tier = "project"
+                self._refresh()
+            elif self._create_focus == "starting_point":
+                self._create_starting_point = "template"
+                self._create_focus = "template_picker"
+                self._sync_template_selection()
+                self._refresh()
+            elif self._create_focus == "template_picker":
+                templates = self._get_template_list()
+                self._create_template_cursor = min(
+                    len(templates) - 1, self._create_template_cursor + 1
+                )
+                self._sync_template_selection()
+                self._refresh()
+            return
         if self._mode == "edit_tools":
             self._edit_tools_cursor = min(len(_NATIVE_TOOLS) - 1, self._edit_tools_cursor + 1)
             self._refresh()
@@ -1819,15 +2251,21 @@ AgentsScreen {{
             self._refresh()
 
     def action_esc_action(self) -> None:
+        if self._create_undo_active:
+            self._do_undo_create()
+            return
         edit_modes = ("confirm_delete", "duplicate", "detail", "run",
                       "edit_tools", "edit_model", "edit_color",
-                      "edit_description", "edit_iterations", "edit_prompt")
+                      "edit_description", "edit_iterations", "edit_prompt", "create")
         if self._mode in edit_modes:
+            was_create = (self._mode == "create")
             self._mode = "browse"
             self._del_confirmed = False
             self._dup_name = ""
             self._dup_focus = "name"
             self._focus_pane = "list"
+            if was_create:
+                self._reset_create_state()
             self.query_one("#ag-panel", Vertical).focus()
             self._refresh()
         elif self._query:
@@ -1841,6 +2279,21 @@ AgentsScreen {{
             self.dismiss(self._registry_changed)
 
     def action_confirm(self) -> None:
+        # Create mode: Enter submits when armed, or advances focus
+        if self._mode == "create":
+            focused = self.focused
+            if isinstance(focused, TextArea) and focused.id == "ag-run-input":
+                focused.insert("\n")
+                return
+            if isinstance(focused, Input) and focused.id == "ag-dup-name":
+                if self._create_name_available():
+                    self._create_focus = "tier"
+                    self._update_create_widget_focus()
+                    self._refresh()
+                return
+            if self._create_name_valid() and self._create_name_available():
+                self._do_create()
+            return
         # Stepper: Enter saves iterations directly
         if self._mode == "edit_iterations":
             self._do_save_iterations()
@@ -1871,6 +2324,26 @@ AgentsScreen {{
             pass  # Enter in detail mode: no-op (run is 'r', edit via e/t/m/k/s)
 
     def action_cycle_scope(self) -> None:
+        if self._mode == "create":
+            order = ["name", "tier", "description", "starting_point"]
+            if self._create_starting_point == "template":
+                sp_idx = order.index("starting_point")
+                order.insert(sp_idx + 1, "template_picker")
+            curr = self._create_focus if self._create_focus in order else "name"
+            # Tab when name conflicts: accept suggestion instead of advancing
+            if curr == "name" and not self._create_name_available() and self._create_name_valid():
+                focused = self.focused
+                if isinstance(focused, Input) and focused.id == "ag-dup-name":
+                    suggestion = self._create_suggest()
+                    focused.value = suggestion
+                    self._create_name = suggestion
+                    self._refresh()
+                    return
+            next_focus = order[(order.index(curr) + 1) % len(order)]
+            self._create_focus = next_focus
+            self._update_create_widget_focus()
+            self._refresh()
+            return
         if self._mode == "duplicate":
             if self._dup_focus == "name":
                 self._dup_focus = "tier"
@@ -1900,15 +2373,20 @@ AgentsScreen {{
             focused = None
         if isinstance(focused, Input):
             if key == "escape" and focused.id == "ag-dup-name":
+                prev_mode = self._mode
                 self._mode = "browse"
-                self._dup_name = ""
-                self._dup_focus = "name"
+                if prev_mode == "create":
+                    self._reset_create_state()
+                else:
+                    self._dup_name = ""
+                    self._dup_focus = "name"
                 self.query_one("#ag-panel", Vertical).focus()
                 self._refresh()
                 event.stop()
             elif (
                 key == "tab"
                 and focused.id == "ag-dup-name"
+                and self._mode == "duplicate"
                 and self._dup_name
                 and not self._dup_name_available()
             ):
@@ -1973,15 +2451,18 @@ AgentsScreen {{
                 event.stop()
             return
 
-        # edit_color / edit_model: only esc/enter handled via BINDINGS
-        if mode in ("edit_color", "edit_model"):
+        # edit_color / edit_model / create: only esc/enter handled via BINDINGS
+        if mode in ("edit_color", "edit_model", "create"):
             return
 
         # Browse / search / detail modes
         agent = self._current_agent()
         is_builtin = agent is not None and agent.source == "builtin"
 
-        if key == "d":
+        if key == "n":
+            self._start_create()
+            event.stop()
+        elif key == "d":
             self._start_delete()
             event.stop()
         elif key == "y":
@@ -2027,7 +2508,10 @@ AgentsScreen {{
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "ag-dup-name":
-            self._dup_name = event.value.strip()
+            if self._mode == "create":
+                self._create_name = event.value.strip()
+            else:
+                self._dup_name = event.value.strip()
             self._refresh()
         else:
             # ModalSearchBar wraps an Input without exposing its id — treat any
@@ -2039,13 +2523,25 @@ AgentsScreen {{
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "ag-dup-name":
-            if self._dup_name_available():
+            if self._mode == "create":
+                if self._create_name_available():
+                    self._create_focus = "tier"
+                    self._update_create_widget_focus()
+                    self._refresh()
+            elif self._dup_name_available():
                 self._dup_focus = "tier"
                 self.query_one("#ag-panel", Vertical).focus()
                 self._refresh()
         else:
             self.query_one("#ag-panel", Vertical).focus()
             self._mode = "browse" if not self._query else "search"
+            self._refresh()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._mode == "create" and event.text_area.id == "ag-run-input":
+            self._create_desc = event.text_area.text
+            if self._create_desc_inherited:
+                self._create_desc_inherited = False
             self._refresh()
 
     # ── Disk operations ───────────────────────────────────────────────────────
@@ -2118,6 +2614,113 @@ AgentsScreen {{
         self._dup_name = ""
         self._dup_focus = "name"
         self.query_one("#ag-panel", Vertical).focus()
+        self._refresh()
+
+    # ── Create new agent ──────────────────────────────────────────────────────
+
+    def _start_create(self) -> None:
+        self._reset_create_state()
+        self._mode = "create"
+        self._refresh()
+        inp = self.query_one("#ag-dup-name", Input)
+        inp.value = ""
+        inp.focus()
+
+    def _reset_create_state(self) -> None:
+        self._create_name = ""
+        self._create_tier = "user"
+        self._create_desc = ""
+        self._create_desc_inherited = False
+        self._create_starting_point = "blank"
+        self._create_template_cursor = 0
+        self._create_focus = "name"
+        # Clear the TextArea content if the widget is already mounted
+        try:
+            ta = self.query_one("#ag-run-input", TextArea)
+            ta.load_text("")
+        except Exception:
+            pass
+
+    def _do_create(self) -> None:
+        name = self._create_name
+        tier = self._create_tier
+        desc = self._create_desc.strip()
+
+        if self._create_starting_point == "blank":
+            tools: Optional[list[str]] = list(_BLANK_TOOLS)
+            model: Optional[str] = None
+            max_iterations = 20
+            system_prompt = self._create_scaffold_prompt(name, desc)
+        else:
+            templates = self._get_template_list()
+            if not (0 <= self._create_template_cursor < len(templates)):
+                return
+            tmpl = templates[self._create_template_cursor]
+            tools = list(tmpl.tools) if tmpl.tools is not None else None
+            model = tmpl.model
+            max_iterations = tmpl.max_iterations
+            system_prompt = tmpl.system_prompt
+            if not desc:
+                desc = tmpl.description
+
+        desc_val = desc if desc else "a helpful assistant."
+        raw: dict[str, object] = {
+            "name": name,
+            "description": desc_val,
+            "system_prompt": system_prompt,
+            "max_iterations": max_iterations,
+        }
+        if tools is not None:
+            raw["tools"] = tools
+        if model:
+            raw["model"] = model
+
+        target = self._create_target_path(tier)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(
+                yaml.dump(raw, default_flow_style=False, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            tmp.rename(target)
+        except OSError:
+            return
+
+        self._registry_changed = True
+        self._create_undo_path = target
+        self._create_undo_active = True
+
+        self._reload_registry()
+        new_idx = next(
+            (i for i, m in enumerate(self._visible) if m.name == name and m.source == tier),
+            0,
+        )
+        self._selected = new_idx
+        self._mode = "browse"
+        self._focus_pane = "list"
+        self._reset_create_state()
+        self.query_one("#ag-panel", Vertical).focus()
+        self._refresh()
+        self.set_timer(5.0, self._expire_undo)
+
+    def _expire_undo(self) -> None:
+        self._create_undo_active = False
+        self._create_undo_path = None
+        self._refresh()
+
+    def _do_undo_create(self) -> None:
+        if not self._create_undo_active or self._create_undo_path is None:
+            return
+        try:
+            self._create_undo_path.unlink()
+        except OSError:
+            pass
+        self._create_undo_active = False
+        self._create_undo_path = None
+        self._registry_changed = True
+        self._reload_registry()
+        self._selected = min(self._selected, max(0, len(self._visible) - 1))
         self._refresh()
 
     # ── Phase 3: Run ──────────────────────────────────────────────────────────
