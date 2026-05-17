@@ -237,6 +237,16 @@ AgentsScreen {{
 #ag-preview {{
     height: auto;
 }}
+#ag-dup-top {{
+    height: auto;
+    display: none;
+    padding: 1 1 0 1;
+}}
+#ag-dup-validation {{
+    height: auto;
+    display: none;
+    padding: 0 1;
+}}
 #ag-dup-name {{
     height: auto;
     display: none;
@@ -357,9 +367,11 @@ AgentsScreen {{
                     with VerticalScroll(id="ag-list-scroll"):
                         yield Static("", id="ag-list")
                 with Vertical(id="ag-preview-pane"):
+                    yield Static("", id="ag-dup-top")
+                    yield Input(placeholder="new agent name…", id="ag-dup-name")
+                    yield Static("", id="ag-dup-validation")
                     with VerticalScroll(id="ag-preview-scroll"):
                         yield Static("", id="ag-preview")
-                    yield Input(placeholder="new agent name…", id="ag-dup-name")
                     yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
                     yield Static("", id="ag-run-hints")
@@ -370,7 +382,9 @@ AgentsScreen {{
         panel = self.query_one("#ag-panel", Vertical)
         panel.can_focus = True
         panel.focus()
+        self.query_one("#ag-dup-top", Static).display = False
         self.query_one("#ag-dup-name", Input).display = False
+        self.query_one("#ag-dup-validation", Static).display = False
         self.query_one("#ag-run-prompt-label", Static).display = False
         self.query_one("#ag-run-input", TextArea).display = False
         self.query_one("#ag-run-hints", Static).display = False
@@ -425,6 +439,17 @@ AgentsScreen {{
             return False
         return not any(m.name == self._dup_name for m in self._registry.values())
 
+    def _dup_suggest(self) -> str:
+        """Return a non-colliding name based on _dup_name, trying -copy, -copy-2, etc."""
+        existing = {m.name for m in self._registry.values()}
+        base = self._dup_name
+        candidate = f"{base}-copy"
+        n = 2
+        while candidate in existing:
+            candidate = f"{base}-copy-{n}"
+            n += 1
+        return candidate
+
     def _dup_target_path(self, tier: str) -> Path:
         name = self._dup_name or "unnamed"
         if tier == "user":
@@ -469,9 +494,17 @@ AgentsScreen {{
             list_pane.remove_class("rhs-focused")
             list_pane.add_class("lhs-focused")
 
+        in_dup = (self._mode == "duplicate")
+        agent = self._current_agent()
+        self.query_one("#ag-dup-top", Static).display = in_dup
+        if in_dup and agent:
+            self.query_one("#ag-dup-top", Static).update(self._build_dup_top(agent))
+        self.query_one("#ag-dup-validation", Static).display = in_dup
+        if in_dup:
+            self.query_one("#ag-dup-validation", Static).update(self._build_dup_validation())
         dup_input = self.query_one("#ag-dup-name", Input)
-        dup_input.display = (self._mode == "duplicate")
-        if self._mode == "duplicate" and self._dup_focus == "name":
+        dup_input.display = in_dup
+        if in_dup and self._dup_focus == "name":
             dup_input.focus()
 
         in_run = (self._mode == "run")
@@ -602,7 +635,7 @@ AgentsScreen {{
 
         # Tier counter only in browse context; edit/run modes already have the breadcrumb
         _NON_BROWSE = {"run", "edit_tools", "edit_model", "edit_color",
-                       "edit_description", "edit_iterations", "edit_prompt"}
+                       "edit_description", "edit_iterations", "edit_prompt", "duplicate"}
         row = Table.grid(expand=True, padding=0)
         row.add_column(ratio=1)
         row.add_column(no_wrap=True, justify="right")
@@ -694,12 +727,13 @@ AgentsScreen {{
         else:
             ptr.append("   ")
 
-        # Name — tier-tinted when unselected
-        _tier_dim = {"builtin": _DIM, "user": _GOLD_DIM, "project": _GREEN_DIM}
+        # Name — tier color at full brightness when selected, dimmed when not
+        _tier_bright = {"builtin": _ORANGE, "user": _GOLD, "project": _GREEN}
+        _tier_dim    = {"builtin": _DIM,    "user": _GOLD_DIM, "project": _GREEN_DIM}
         if is_danger:
             name_t = Text(manifest.name, style=f"strike {_ORANGE}", no_wrap=True)
         elif is_selected:
-            name_t = Text(manifest.name, style=f"bold {_ORANGE}", no_wrap=True)
+            name_t = Text(manifest.name, style=f"bold {_tier_bright.get(manifest.source, _ORANGE)}", no_wrap=True)
         else:
             name_t = Text(manifest.name, style=_tier_dim.get(manifest.source, _DIM), no_wrap=True)
 
@@ -1507,40 +1541,51 @@ AgentsScreen {{
 
         return tbl
 
+    def _build_dup_top(self, manifest: "AgentRoleManifest") -> Text:
+        """FROM line + new-name section heading rendered above the Input widget."""
+        t = Text()
+        t.append(" FROM  ", style=_DIM)
+        t.append(f"  {manifest.name}  ", style=f"bold {_SILVER}")
+        t.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+        if manifest.source == "builtin":
+            # D.11: call out read-only constraint so the user knows why they're duplicating
+            t.append("  ·  read-only", style=_FAINT)
+        t.append(f"  ·  {_format_source_path(manifest)}", style=_FAINT)
+        t.append("\n\n")
+        t.append("─── new name ───────────────────────────────────────────────", style=_DIM)
+        return t
+
+    def _build_dup_validation(self) -> Text:
+        """Validation line rendered immediately below the Input widget.
+
+        Glyph rule: ✗ = validation error (name conflict, missing field)
+                    △ = capability/risk warning (destructive, read-only, recursion)
+        """
+        t = Text()
+        if not self._dup_name:
+            t.append("  enter a unique name", style=_FAINT)
+        elif self._dup_name_available():
+            t.append("  ✓  available", style=f"bold {_GREEN}")
+        else:
+            t.append("  ✗  name already exists", style=f"bold {_ORANGE}")
+            suggestion = self._dup_suggest()
+            t.append("  ·  try ", style=_FAINT)
+            t.append(suggestion, style=_DIM)
+            t.append("  (tab)", style=_FAINT)
+        return t
+
     def _build_preview_duplicate(self, manifest: "AgentRoleManifest") -> Table:
+        """Scrollable portion of the dup form: tier selector + checklist + result.
+
+        The FROM line, name heading, Input widget, and validation line are
+        rendered as separate widgets above this scroll area (see _build_dup_top
+        and _build_dup_validation), so this method starts at the tier selector.
+        """
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
-
-        # FROM section
-        from_t = Text()
-        from_t.append(" FROM  ", style=_DIM)
-        from_t.append(f"  {manifest.name}  ", style=f"bold {_SILVER}")
-        from_t.append(manifest.source, style=_tier_color(manifest.source))
-        from_t.append(f"  ·  {_format_source_path(manifest)}", style=_FAINT)
-        tbl.add_row(from_t)
-        tbl.add_row(Text(""))
-        tbl.add_row(Text(
-            " Tools and system prompt are copied verbatim.",
-            style=_FAINT,
-        ))
         tbl.add_row(Text(""))
 
-        # Name section (Input widget appears below this Static)
-        tbl.add_row(Text(" ─── new name ────────────────────────────────────────", style=_DIM))
-        tbl.add_row(Text(""))
-
-        # Availability indicator
-        avail = self._dup_name_available()
-        if self._dup_name:
-            if avail:
-                tbl.add_row(Text("  ✓ available", style=f"bold {_GREEN}"))
-            else:
-                tbl.add_row(Text("  ✗ name already exists", style=f"bold {_ORANGE}"))
-        else:
-            tbl.add_row(Text("  enter a unique name", style=_FAINT))
-        tbl.add_row(Text(""))
-
-        # Tier selector
+        # Tier selector — D.6: unselected project label uses _GREEN_DIM
         tbl.add_row(Text(" ─── target tier ─────────────────────────────────────", style=_DIM))
         tbl.add_row(Text(""))
         for tier in ["user", "project"]:
@@ -1548,36 +1593,63 @@ AgentsScreen {{
             tier_focused = self._dup_focus == "tier"
             bullet = "●" if is_sel else "○"
             ptr_style = f"bold {_ORANGE}" if (is_sel and tier_focused) else (_DIM if not is_sel else _SILVER)
+            _unsel_dim = {"user": _GOLD_DIM, "project": _GREEN_DIM}
             row = Text()
             row.append(f"  {'▸' if (is_sel and tier_focused) else ' '} {bullet} ", style=ptr_style)
-            row.append(f"{tier:<8}", style=f"bold {_tier_color(tier)}" if is_sel else _DIM)
+            row.append(f"{tier:<8}", style=f"bold {_tier_color(tier)}" if is_sel else _unsel_dim.get(tier, _DIM))
             row.append(f"  {self._dup_target_path_preview(tier)}", style=_FAINT)
             tbl.add_row(row, style=f"on {_TINT_ORG}" if (is_sel and tier_focused) else "")
         tbl.add_row(Text(""))
 
-        # What gets copied
+        # What gets copied — D.8: exhaustive checklist covering every field.
+        # All fields are copied verbatim because _do_duplicate() rewrites the raw
+        # YAML changing only the name key.
         tbl.add_row(Text(" ─── what gets copied ────────────────────────────────", style=_DIM))
         tbl.add_row(Text(""))
         tools = manifest.tools
-        tools_str = f"{len(tools)} tools" if tools is not None else "all tools"
+        tools_str = f"{len(tools)} tools" if tools is not None else "all native tools"
         prompt_lines = len(manifest.system_prompt.splitlines())
-        for item, value in [("tools", tools_str), ("system prompt", f"{prompt_lines} lines")]:
+        desc_preview = (manifest.description[:30] + "…") if len(manifest.description) > 30 else manifest.description
+        model_val = manifest.model if manifest.model else "inherit"
+        color_val = manifest.color if manifest.color else "tier default"
+        checklist = [
+            ("description",    desc_preview or "—"),
+            ("tools",          tools_str),
+            ("system prompt",  f"{prompt_lines} lines"),
+            ("max_iterations", str(manifest.max_iterations)),
+            ("model",          model_val),
+            ("color",          color_val),
+        ]
+        for item, value in checklist:
             row = Text()
             row.append("  ✓  ", style=f"bold {_GREEN}")
             row.append(f"{item:<16}", style=_DIM)
             row.append(value, style=_FAINT)
             tbl.add_row(row)
+        tbl.add_row(Text(""))
 
-        # Result preview
-        if self._dup_name and avail:
-            tbl.add_row(Text(""))
-            tbl.add_row(Rule(style=_RULE))
-            result = Text()
-            result.append("  RESULT  ", style=_DIM)
-            result.append(f"new {self._dup_tier} agent  ", style=_DIM)
-            result.append(self._dup_name, style=f"bold {_tier_color(self._dup_tier)}")
-            result.append(f"  at  {self._dup_target_path_preview(self._dup_tier)}", style=_FAINT)
-            tbl.add_row(result)
+        # Result preview — D.4: always rendered; struck-through on conflict.
+        # D.10: use ── result ── rule to match other section headings.
+        avail = self._dup_name_available()
+        tbl.add_row(Text(" ─── result ──────────────────────────────────────────", style=_DIM))
+        tbl.add_row(Text(""))
+        result = Text()
+        name_display = self._dup_name if self._dup_name else "<name>"
+        path_display = self._dup_target_path_preview(self._dup_tier)
+        if avail:
+            result.append(f" new {self._dup_tier} agent  ", style=_DIM)
+            result.append(name_display, style=f"bold {_tier_color(self._dup_tier)}")
+            result.append(f"  at  {path_display}", style=_FAINT)
+            result.append("  ·  opens in detail", style=_DIM)
+        elif self._dup_name:
+            # D.4: struck-through result on conflict — no layout shift
+            result.append(f" new {self._dup_tier} agent  ", style=f"strike {_FAINT}")
+            result.append(name_display, style=f"strike {_ORANGE}")
+            result.append(f"  at  {path_display}", style=f"strike {_FAINT}")
+            result.append("  ·  resolve name conflict first", style=_FAINT)
+        else:
+            result.append("fill in name above to preview", style=_FAINT)
+        tbl.add_row(result)
 
         return tbl
 
@@ -1596,9 +1668,9 @@ AgentsScreen {{
             suffix = f"  [{_FAINT}]irreversible — no backup[/]"
         elif self._mode == "duplicate":
             hints = [
-                _hint("tab", "next field"),
+                _hint("tab", "next field / accept suggestion"),
                 _hint("↑↓", "switch tier"),
-                _hint("↵", "duplicate & open"),
+                _hint("↵", "create & edit"),
                 _hint("esc", "cancel"),
             ]
             suffix = ""
@@ -1832,6 +1904,18 @@ AgentsScreen {{
                 self._dup_name = ""
                 self._dup_focus = "name"
                 self.query_one("#ag-panel", Vertical).focus()
+                self._refresh()
+                event.stop()
+            elif (
+                key == "tab"
+                and focused.id == "ag-dup-name"
+                and self._dup_name
+                and not self._dup_name_available()
+            ):
+                # D.5: tab in conflict state accepts the auto-suggested non-colliding name
+                suggestion = self._dup_suggest()
+                focused.value = suggestion
+                self._dup_name = suggestion
                 self._refresh()
                 event.stop()
             return
