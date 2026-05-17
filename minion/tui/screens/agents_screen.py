@@ -328,7 +328,8 @@ AgentsScreen {{
         Binding("up",     "nav_up",        show=False, priority=True),
         Binding("down",   "nav_down",      show=False, priority=True),
         Binding("enter",  "confirm",       show=False, priority=True),
-        Binding("tab",    "cycle_scope",   show=False, priority=True),
+        Binding("tab",       "cycle_scope",      show=False, priority=True),
+        Binding("shift+tab", "cycle_scope_back", show=False, priority=True),
     ]
 
     def __init__(
@@ -394,10 +395,10 @@ AgentsScreen {{
                     yield Static("", id="ag-dup-top")
                     yield Input(placeholder="new agent name…", id="ag-dup-name")
                     yield Static("", id="ag-dup-validation")
-                    with VerticalScroll(id="ag-preview-scroll"):
-                        yield Static("", id="ag-preview")
                     yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
+                    with VerticalScroll(id="ag-preview-scroll"):
+                        yield Static("", id="ag-preview")
                     yield Static("", id="ag-run-hints")
             yield Static("", id="ag-footer")
 
@@ -634,11 +635,13 @@ AgentsScreen {{
         preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
         ta = self.query_one("#ag-run-input", TextArea)
 
-        # Compact scroll height: auto for field/prompt edits, 12 for run, auto for create
+        # Compact scroll height: auto for field/prompt edits, 12 for run
+        # Create mode keeps height: 1fr so the scroll fills remaining space
+        # and the hints strip stays pinned to the bottom of the pane.
         if in_run:
             preview_scroll.remove_class("text-edit-compact")
             preview_scroll.add_class("run-compact")
-        elif in_prompt or in_field or in_create:
+        elif in_prompt or in_field:
             preview_scroll.remove_class("run-compact")
             preview_scroll.add_class("text-edit-compact")
         else:
@@ -681,11 +684,16 @@ AgentsScreen {{
         if in_create and self._create_focus == "description":
             ta.focus()
 
-        # Hints strip (not shown in create — hints are in footer)
-        show_hints = in_any_edit
+        # Hints strip
+        show_hints = in_any_edit or in_create
         self.query_one("#ag-run-hints", Static).display = show_hints
         if show_hints:
-            hints_text = self._build_run_hints() if in_run else self._build_edit_hints()
+            if in_create:
+                hints_text: Text = self._build_create_hints()
+            elif in_run:
+                hints_text = self._build_run_hints()
+            else:
+                hints_text = self._build_edit_hints()
             self.query_one("#ag-run-hints", Static).update(hints_text)
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -1331,6 +1339,19 @@ AgentsScreen {{
         parts = [_hint("ctrl+↵", "save"), _hint("esc", "cancel")]
         return Text.from_markup("  " + dot.join(parts))
 
+    def _build_create_hints(self) -> Text:
+        """Key hints strip shown inside the preview pane during create mode."""
+        dot = f" [{_FAINT}]·[/] "
+        is_armed = self._create_name_valid() and self._create_name_available()
+        parts: list[str] = [_hint("tab / shift+tab", "next / prev field")]
+        parts.append(_hint("↑↓", "switch option"))
+        if is_armed:
+            parts.append(f"[bold {_ORANGE} on #2a2a2a] ↵ [/] [{_ORANGE}]create & edit[/]")
+        else:
+            parts.append(f"[{_FAINT}]↵  create & edit[/]")
+        parts.append(_hint("esc", "cancel"))
+        return Text.from_markup("  " + dot.join(parts))
+
     def _build_preview_edit_field(
         self,
         manifest: "AgentRoleManifest",
@@ -1925,9 +1946,15 @@ AgentsScreen {{
         if not is_valid and self._create_name:
             tbl.add_row(Text(""))
             tbl.add_row(Text("  △ resolve the name to continue", style=f"bold {_ORANGE}"))
-        elif not self._create_name:
+        else:
             tbl.add_row(Text(""))
-            tbl.add_row(Text("  opens in detail view after create", style=_FAINT))
+            note = Text()
+            note.append("  ·  ", style=_DIM)
+            note.append("opens in detail view", style=_FAINT)
+            note.append("  —  ", style=_FAINT)
+            note.append("model, system prompt, tools, color", style=_DIM)
+            note.append(" editable there", style=_FAINT)
+            tbl.add_row(note)
 
         return tbl
 
@@ -2129,7 +2156,7 @@ AgentsScreen {{
         elif self._mode == "create":
             is_armed = self._create_name_valid() and self._create_name_available()
             hints = [
-                _hint("tab", "next field"),
+                _hint("tab / shift+tab", "next / prev field"),
                 _hint("↑↓", "switch option"),
             ]
             if is_armed:
@@ -2325,7 +2352,7 @@ AgentsScreen {{
 
     def action_cycle_scope(self) -> None:
         if self._mode == "create":
-            order = ["name", "tier", "description", "starting_point"]
+            order = ["name", "description", "tier", "starting_point"]
             if self._create_starting_point == "template":
                 sp_idx = order.index("starting_point")
                 order.insert(sp_idx + 1, "template_picker")
@@ -2360,6 +2387,28 @@ AgentsScreen {{
         self._scope = scopes[(idx + 1) % len(scopes)]
         self._rebuild_visible()
         self._refresh()
+
+    def action_cycle_scope_back(self) -> None:
+        if self._mode == "create":
+            order = ["name", "description", "tier", "starting_point"]
+            if self._create_starting_point == "template":
+                sp_idx = order.index("starting_point")
+                order.insert(sp_idx + 1, "template_picker")
+            curr = self._create_focus if self._create_focus in order else "name"
+            prev_focus = order[(order.index(curr) - 1) % len(order)]
+            self._create_focus = prev_focus
+            self._update_create_widget_focus()
+            self._refresh()
+            return
+        if self._mode == "duplicate":
+            if self._dup_focus == "tier":
+                self._dup_focus = "name"
+                self.query_one("#ag-dup-name", Input).focus()
+            else:
+                self._dup_focus = "tier"
+                self.query_one("#ag-panel", Vertical).focus()
+            self._refresh()
+            return
 
     # ── Key dispatch ──────────────────────────────────────────────────────────
 
