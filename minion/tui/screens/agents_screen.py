@@ -835,7 +835,6 @@ AgentsScreen {{
             desc_header.append(" b ", style=f"bold {_SILVER} on #2a2a2a")
             desc_header.append(" edit", style=_DIM)
         tbl.add_row(desc_header)
-        tbl.add_row(Text(""))
         desc_tbl = Table.grid(expand=True, padding=0)
         desc_tbl.add_column(width=1, no_wrap=True)
         desc_tbl.add_column(ratio=1)
@@ -856,13 +855,11 @@ AgentsScreen {{
             tools_header.append(" t ", style=f"bold {_SILVER} on #2a2a2a")
             tools_header.append(" edit", style=_DIM)
         tbl.add_row(tools_header)
-        tbl.add_row(Text(""))
         tbl.add_row(self._build_tools_section(manifest))
         tbl.add_row(Text(""))
 
         # SOURCE
         tbl.add_row(Text(" SOURCE", style=f"bold {_DIM}"))
-        tbl.add_row(Text(""))
         tbl.add_row(Text(f"   {_format_source_path(manifest)}", style=_FAINT))
         tbl.add_row(Text(""))
 
@@ -920,7 +917,6 @@ AgentsScreen {{
             prompt_header.append(" s ", style=f"bold {_SILVER} on #2a2a2a")
             prompt_header.append(" edit", style=_DIM)
         tbl.add_row(prompt_header)
-        tbl.add_row(Text(""))
         tbl.add_row(self._build_prompt_preview(manifest))
 
         # Shadowing precedence block for project agents that shadow a builtin
