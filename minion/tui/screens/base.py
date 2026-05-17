@@ -7,6 +7,10 @@ consistent across all wizard-style overlays.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
@@ -14,6 +18,121 @@ from textual.widget import Widget
 from textual.widgets import Input
 
 from ..theme import DIM, GOLD, GREEN, SILVER
+
+
+# ── Shared color tokens (used by agents_screen and skills_screen) ─────────────
+
+_ORANGE    = "#d97757"    # selected row, delete, warnings
+_GOLD      = "#c8a84b"    # user-tier color
+_GOLD_DIM  = "#b8a030"    # dim gold for labels
+_GREEN     = "#7ec8a0"    # project-tier color
+_GREEN_DIM = "#5a9070"    # dim green for unselected project names
+_BLUE      = "#6aa3d4"    # model names, accents
+_SILVER    = "#bbbbbb"    # body text, keycaps
+_DIM       = "#888888"    # secondary text
+_FAINT     = "#555555"    # tertiary, section labels
+_RULE      = "#2a2820"    # border lines
+_TEXT      = "#d8cfb8"    # primary warm-white text
+_TINT_ORG  = "#1a0800"    # faint orange background (selected rows)
+_BG        = "#0d0d0d"    # panel background
+
+# ── Shared tool data (used by agents_screen and skills_screen) ────────────────
+
+_TOOL_CATEGORIES: dict[str, str] = {
+    "read_file":        "filesystem",
+    "write_file":       "filesystem",
+    "edit_file":        "filesystem",
+    "list_directory":   "filesystem",
+    "delete_file":      "filesystem",
+    "glob":             "filesystem",
+    "get_file_outline": "filesystem",
+    "search_file":      "filesystem",
+    "run_shell":        "shell",
+    "web_fetch":        "network",
+    "spawn_agent":      "agents",
+    "todo_read":        "tasks",
+    "todo_write":       "tasks",
+}
+
+_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "read_file":        "read any file by path",
+    "write_file":       "write or replace a file",
+    "edit_file":        "edit a file in-place",
+    "list_directory":   "enumerate a directory",
+    "delete_file":      "remove a file",
+    "glob":             "glob file patterns",
+    "get_file_outline": "get code outline of a file",
+    "search_file":      "search file for pattern",
+    "run_shell":        "execute a shell command",
+    "web_fetch":        "fetch URL contents",
+    "spawn_agent":      "spawn a child subagent",
+    "todo_read":        "read task list",
+    "todo_write":       "write task list",
+}
+
+_TOOL_WARN: dict[str, str] = {
+    "run_shell":   "⚠ broad",
+    "delete_file": "⚠ destructive",
+    "spawn_agent": "⚠ recursion",
+}
+
+_NATIVE_TOOLS: list[str] = list(_TOOL_DESCRIPTIONS.keys())
+
+_TIER_ORDER: dict[str, int] = {"builtin": 0, "user": 1, "project": 2}
+
+# ── Shared helper functions ───────────────────────────────────────────────────
+
+
+def _age(path: Optional[Path]) -> str:
+    """Return a human-readable relative age from file mtime."""
+    if path is None or not path.exists():
+        return "unknown"
+    try:
+        mtime = path.stat().st_mtime
+        dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        secs = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+        if secs < 60:
+            return "just now"
+        if secs < 3600:
+            return f"{int(secs / 60)}m ago"
+        if secs < 86400:
+            return f"{int(secs / 3600)}h ago"
+        return f"{int(secs / 86400)}d ago"
+    except (OSError, OverflowError, ValueError):
+        return "unknown"
+
+
+def _highlight(text: str, query: str, base_style: str = _TEXT) -> Text:
+    """Return a Rich Text with all occurrences of query highlighted in orange."""
+    if not query:
+        return Text(text, style=base_style)
+    t = Text()
+    lower_text = text.lower()
+    lower_q = query.lower()
+    pos = 0
+    while True:
+        idx = lower_text.find(lower_q, pos)
+        if idx == -1:
+            t.append(text[pos:], style=base_style)
+            break
+        t.append(text[pos:idx], style=base_style)
+        t.append(text[idx : idx + len(query)], style=f"bold {_ORANGE}")
+        pos = idx + len(query)
+    return t
+
+
+def _tier_color(tier: str) -> str:
+    if tier == "builtin":
+        return _FAINT
+    if tier == "user":
+        return _GOLD
+    if tier == "project":
+        return _GREEN
+    return _DIM
+
+
+def _hint(key: str, label: str) -> str:
+    return f"[bold {_SILVER} on #2a2a2a] {key} [/] [{_DIM}]{label}[/]"
 
 
 # ── Shared reusable widgets ───────────────────────────────────────────────────

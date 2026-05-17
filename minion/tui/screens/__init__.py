@@ -6,5 +6,6 @@ from .config_panel import ConfigPanelScreen
 from .help_screen import HelpScreen
 from .memories_screen import MemoriesScreen
 from .model_config import ModelConfigScreen
+from .skills_screen import SkillsScreen
 
-__all__ = ["AgentsScreen", "CompletionSetupScreen", "ConfigPanelScreen", "HelpScreen", "MemoriesScreen", "ModelConfigScreen"]
+__all__ = ["AgentsScreen", "CompletionSetupScreen", "ConfigPanelScreen", "HelpScreen", "MemoriesScreen", "ModelConfigScreen", "SkillsScreen"]

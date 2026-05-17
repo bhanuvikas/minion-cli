@@ -59,6 +59,7 @@ REPL_COMMANDS: dict[str, str] = {
     "/mcp":     "MCP servers: /mcp | /mcp resource <uri> | /mcp prompt <name> | /mcp reload",
     "/agents":  "List available agent roles (toggle: /config agents [on|off])",
     "/agent":   "Run a role directly: /agent <role> <task>",
+    "/skills":  "Browse, run, create and edit skill workflows",
     "/remote":  "Remote agents: /remote | /remote list | /remote run <agent> <task>",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",

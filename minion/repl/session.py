@@ -703,6 +703,27 @@ async def _run_repl_tui(
             )
             return
 
+        if user_input.startswith("/") and user_input.strip().split()[0] == "/skills":
+            from ..tui.screens import SkillsScreen
+
+            async def _on_skills_done(result: "Union[bool, str]") -> None:
+                if isinstance(result, str) and result:
+                    tui_app.dispatch_input(result)
+                    return
+                if result is True:
+                    from ..skills.registry import load_skill_registry as _load_sr
+                    ctx.skill_registry = _load_sr(project_cwd)
+                tui_app.set_thinking(False)
+
+            _active_skill_registry = skill_registry or __import__(
+                "minion.skills.registry", fromlist=["load_skill_registry"]
+            ).load_skill_registry(project_cwd)
+            tui_app.push_screen(
+                SkillsScreen(skill_registry=_active_skill_registry, cwd=project_cwd),
+                _on_skills_done,
+            )
+            return
+
         if user_input.startswith("/") and user_input.strip() == "/setup":
             _wire_checklist_callbacks()
             tui_app.show_setup_checklist()
