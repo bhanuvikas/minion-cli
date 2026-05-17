@@ -248,6 +248,15 @@ AgentsScreen {{
 #ag-dup-name:focus {{
     border: solid {_ORANGE};
 }}
+#ag-preview-scroll.run-compact {{
+    height: 12;
+}}
+#ag-run-prompt-label {{
+    height: auto;
+    display: none;
+    padding: 0 1;
+    margin-top: 1;
+}}
 #ag-run-input {{
     height: 1fr;
     display: none;
@@ -258,6 +267,12 @@ AgentsScreen {{
 }}
 #ag-run-input:focus {{
     border: solid {_ORANGE};
+}}
+#ag-run-hints {{
+    height: auto;
+    display: none;
+    padding: 0 1;
+    margin-bottom: 1;
 }}
 #ag-full-content {{
     display: none;
@@ -338,7 +353,9 @@ AgentsScreen {{
                     with VerticalScroll(id="ag-preview-scroll"):
                         yield Static("", id="ag-preview")
                     yield Input(placeholder="new agent name…", id="ag-dup-name")
+                    yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
+                    yield Static("", id="ag-run-hints")
             with VerticalScroll(id="ag-full-content"):
                 yield Static("", id="ag-full-static")
             yield Static("", id="ag-footer")
@@ -349,7 +366,9 @@ AgentsScreen {{
         panel.can_focus = True
         panel.focus()
         self.query_one("#ag-dup-name", Input).display = False
+        self.query_one("#ag-run-prompt-label", Static).display = False
         self.query_one("#ag-run-input", TextArea).display = False
+        self.query_one("#ag-run-hints", Static).display = False
         self._refresh()
 
     # ── Data ──────────────────────────────────────────────────────────────────
@@ -461,8 +480,19 @@ AgentsScreen {{
         if self._mode == "duplicate" and self._dup_focus == "name":
             dup_input.focus()
 
-        run_area = self.query_one("#ag-run-input", TextArea)
-        run_area.display = (self._mode == "run")
+        in_run = (self._mode == "run")
+        preview_scroll = self.query_one("#ag-preview-scroll", VerticalScroll)
+        if in_run:
+            preview_scroll.add_class("run-compact")
+        else:
+            preview_scroll.remove_class("run-compact")
+
+        self.query_one("#ag-run-prompt-label", Static).display = in_run
+        self.query_one("#ag-run-input", TextArea).display = in_run
+        self.query_one("#ag-run-hints", Static).display = in_run
+        if in_run:
+            self.query_one("#ag-run-prompt-label", Static).update(self._build_run_prompt_label())
+            self.query_one("#ag-run-hints", Static).update(self._build_run_hints())
 
     # ── Header ────────────────────────────────────────────────────────────────
 
@@ -935,7 +965,7 @@ AgentsScreen {{
         return tbl
 
     def _build_preview_run(self) -> Table:
-        """Right-pane content for run mode (TextArea renders below as a live widget)."""
+        """Agent context shown in the scrollable upper portion of run mode."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
         tbl.add_row(Text(""))
@@ -952,53 +982,74 @@ AgentsScreen {{
         if agent:
             identity.append("  ")
             identity.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
+            if agent.model:
+                identity.append(f"  ·  {agent.model}", style=_BLUE)
         tbl.add_row(identity)
         tbl.add_row(Text(""))
 
-        # Prompt section
-        prompt_h = Text()
-        prompt_h.append(" PROMPT", style=f"bold {_DIM}")
-        prompt_h.append("  ·  describe the task for this subagent", style=_DIM)
-        tbl.add_row(prompt_h)
-        tbl.add_row(Text(""))
+        # Description
+        if agent and agent.description:
+            desc_tbl = Table.grid(expand=True, padding=0)
+            desc_tbl.add_column(width=1, no_wrap=True)
+            desc_tbl.add_column(ratio=1)
+            desc_tbl.add_row(Text(""), Text(agent.description, style=_TEXT))
+            tbl.add_row(desc_tbl)
+            tbl.add_row(Text(""))
 
-        # Context block
+        # Compact context
         tbl.add_row(Rule(style=_RULE))
         ctx_h = Text()
         ctx_h.append(" CONTEXT", style=f"bold {_DIM}")
         tbl.add_row(ctx_h)
-
-        cwd_row = Text()
-        cwd_row.append("  cwd    ", style=_DIM)
-        cwd_row.append(str(self._cwd), style=_FAINT)
-        tbl.add_row(cwd_row)
-
-        if agent and agent.tools is not None:
-            tools_row = Text()
-            tools_row.append("  tools  ", style=_DIM)
-            tools_row.append(f"{len(agent.tools)} allowed", style=_FAINT)
-            tbl.add_row(tools_row)
-        elif agent:
-            tools_row = Text()
-            tools_row.append("  tools  ", style=_DIM)
-            tools_row.append("all native tools", style=_FAINT)
-            tbl.add_row(tools_row)
-
-        limit_row = Text()
-        limit_row.append("  limit  ", style=_DIM)
-        limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_FAINT)
-        tbl.add_row(limit_row)
         tbl.add_row(Text(""))
 
-        dispatch_hint = Text()
-        dispatch_hint.append("  ")
-        dispatch_hint.append(" ctrl+↵ ", style=f"bold {_SILVER} on #2a2a2a")
-        dispatch_hint.append("  dispatch      ", style=_ORANGE)
-        dispatch_hint.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
-        dispatch_hint.append("  cancel", style=_DIM)
-        tbl.add_row(dispatch_hint)
+        # Tools (count only, not expanded list)
+        if agent:
+            if agent.tools is None:
+                tools_str = f"all {len(_NATIVE_TOOLS)} native tools"
+            else:
+                tools_str = f"{len(agent.tools)} of {len(_NATIVE_TOOLS)} allowed"
+        else:
+            tools_str = "unknown"
+        tools_row = Text()
+        tools_row.append("  tools   ", style=_DIM)
+        tools_row.append(tools_str, style=_FAINT)
+        tbl.add_row(tools_row)
+
+        # Model
+        model_row = Text()
+        model_row.append("  model   ", style=_DIM)
+        if agent and agent.model:
+            model_row.append(agent.model, style=_BLUE)
+        else:
+            model_row.append("inherit · session model", style=_FAINT)
+        tbl.add_row(model_row)
+
+        # Iteration limit
+        limit_row = Text()
+        limit_row.append("  limit   ", style=_DIM)
+        limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_FAINT)
+        tbl.add_row(limit_row)
 
         return tbl
+
+    def _build_run_prompt_label(self) -> Text:
+        """Section heading rendered above the run TextArea widget."""
+        t = Text()
+        t.append(" PROMPT", style=f"bold {_DIM}")
+        t.append("  ·  describe the task for this subagent", style=_DIM)
+        return t
+
+    def _build_run_hints(self) -> Text:
+        """Key hints rendered below the run TextArea widget."""
+        t = Text()
+        t.append("  ")
+        t.append(" ctrl+↵ ", style=f"bold {_SILVER} on #2a2a2a")
+        t.append("  dispatch  ", style=_ORANGE)
+        t.append("      ")
+        t.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
+        t.append("  cancel", style=_DIM)
+        return t
 
     def _build_preview_color(self, manifest: "AgentRoleManifest") -> Table:
         """Right-pane color picker for edit_color mode."""
