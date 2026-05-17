@@ -44,6 +44,7 @@ _ORANGE   = "#d97757"    # selected row, delete, warnings
 _GOLD     = "#c8a84b"    # user-tier color
 _GOLD_DIM = "#b8a030"    # dim gold for labels
 _GREEN    = "#7ec8a0"    # project-tier color
+_GREEN_DIM = "#5a9070"   # dim green for unselected project names
 _BLUE     = "#6aa3d4"    # model names, accents
 _SILVER   = "#bbbbbb"    # body text, keycaps
 _DIM      = "#888888"    # secondary text
@@ -496,7 +497,7 @@ AgentsScreen {{
         if in_field:
             ta.add_class("single-line")
             ta.remove_class("prompt-edit")
-        elif in_prompt:
+        elif in_prompt or in_run:
             ta.remove_class("single-line")
             ta.add_class("prompt-edit")
         else:
@@ -599,20 +600,23 @@ AgentsScreen {{
         else:
             t.append("browse agents", style=_DIM)
 
-        # Right-aligned counts
-        counts = self._tier_counts()
-        right = Text(justify="right")
-        right.append(f" {counts.get('builtin', 0)} builtin ", style=f"{_FAINT} on #161614")
-        right.append(" · ", style=_FAINT)
-        right.append(f" {counts.get('user', 0)} user ", style=f"{_GOLD_DIM} on #161614")
-        right.append(" · ", style=_FAINT)
-        right.append(f" {counts.get('project', 0)} project ", style=f"{_GREEN} on #0a1208")
-
-        # Combine left + right into a two-column table row
+        # Tier counter only in browse context; edit/run modes already have the breadcrumb
+        _NON_BROWSE = {"run", "edit_tools", "edit_model", "edit_color",
+                       "edit_description", "edit_iterations", "edit_prompt"}
         row = Table.grid(expand=True, padding=0)
         row.add_column(ratio=1)
         row.add_column(no_wrap=True, justify="right")
-        row.add_row(t, right)
+        if self._mode not in _NON_BROWSE:
+            counts = self._tier_counts()
+            right = Text(justify="right")
+            right.append(f" {counts.get('builtin', 0)} builtin ", style=f"{_FAINT} on #161614")
+            right.append(" · ", style=_FAINT)
+            right.append(f" {counts.get('user', 0)} user ", style=f"{_GOLD_DIM} on #161614")
+            right.append(" · ", style=_FAINT)
+            right.append(f" {counts.get('project', 0)} project ", style=f"{_GREEN} on #0a1208")
+            row.add_row(t, right)
+        else:
+            row.add_row(t, Text(""))
         return row  # type: ignore[return-value]
 
     # ── List ──────────────────────────────────────────────────────────────────
@@ -646,22 +650,28 @@ AgentsScreen {{
         return t
 
     def _build_tier_header(self, tier: str) -> Text:
+        t = Text(no_wrap=True)
         if tier == "builtin":
-            label = "─── BUILTIN  read-only  ─────────────────────────────────"
+            t.append("  ─── BUILTIN ", style=_FAINT)
+            t.append("agents/builtin/", style=f"italic {_FAINT}")
+            t.append("  read-only  ─────────────────────────────────────────", style=_FAINT)
         elif tier == "user":
-            label = "─── USER  ───────────────────────────────────────────────"
+            t.append("  ─── USER ", style=f"bold {_GOLD_DIM}")
+            t.append("~/.minion/agents/", style=f"italic {_FAINT}")
+            t.append("  ─────────────────────────────────────────────────────", style=_FAINT)
         else:
-            label = "─── PROJECT  ────────────────────────────────────────────"
-        return Text(f"  {label}", style=_FAINT)
+            t.append("  ─── PROJECT ", style=f"bold {_GREEN_DIM}")
+            t.append(".minion/agents/", style=f"italic {_FAINT}")
+            t.append("  ──────────────────────────────────────────────────────", style=_FAINT)
+        return t
 
     def _make_agent_row_table(self, name_w: int = 18) -> Table:
         t = Table.grid(expand=True, padding=0)
         t.add_column(no_wrap=True, width=3)                        # pointer
         t.add_column(no_wrap=True, width=name_w)                   # name (content-sized)
-        t.add_column(no_wrap=True, width=9)                        # tier badge
         t.add_column(no_wrap=True, ratio=1, overflow="ellipsis")   # description
         t.add_column(no_wrap=True, width=2)                        # spacer
-        t.add_column(no_wrap=True, width=4)                        # tool count
+        t.add_column(no_wrap=True, width=6)                        # tool count
         return t
 
     def _add_agent_inner_row(
@@ -684,18 +694,16 @@ AgentsScreen {{
         else:
             ptr.append("   ")
 
-        # Name
+        # Name — tier-tinted when unselected
+        _tier_dim = {"builtin": _DIM, "user": _GOLD_DIM, "project": _GREEN_DIM}
         if is_danger:
             name_t = Text(manifest.name, style=f"strike {_ORANGE}", no_wrap=True)
         elif is_selected:
             name_t = Text(manifest.name, style=f"bold {_ORANGE}", no_wrap=True)
         else:
-            name_t = Text(manifest.name, style=_DIM, no_wrap=True)
+            name_t = Text(manifest.name, style=_tier_dim.get(manifest.source, _DIM), no_wrap=True)
 
-        # Tier badge
-        tier_t = Text(manifest.source, style=_tier_color(manifest.source), no_wrap=True)
-
-        # Description (with shadowing annotation)
+        # Description (with shadowing annotation — no separate tier badge column)
         desc = manifest.description
         if is_danger:
             desc_t = Text(desc, style=f"strike {_FAINT}")
@@ -707,19 +715,17 @@ AgentsScreen {{
         if shadowed:
             desc_t.append("  ↳ shadowed", style=_FAINT)
         if shadows_builtin:
-            tier_t.append("  ↳", style=_FAINT)
+            desc_t.append("  ↳ overrides builtin", style=_FAINT)
 
-        # Tool count
+        # Tool count — always dim (selection signalled by caret + name color)
         tools = manifest.tools
         if tools is None:
             count_str = "all"
-            count_style = _FAINT
         else:
             count_str = str(len(tools))
-            count_style = _ORANGE if is_selected else _DIM
-        count_t = Text(count_str, style=count_style, no_wrap=True)
+        count_t = Text(count_str, style=_DIM, no_wrap=True)
 
-        inner.add_row(ptr, name_t, tier_t, desc_t, Text(""), count_t, style=row_style)
+        inner.add_row(ptr, name_t, desc_t, Text(""), count_t, style=row_style)
 
     def _add_confirm_strip_row(self, inner: Table) -> None:
         ptr = Text("▌  ", style=f"bold {_ORANGE}", no_wrap=True)
@@ -729,7 +735,7 @@ AgentsScreen {{
         msg.append(" confirm  ·  ", style=_DIM)
         msg.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
         msg.append(" cancel", style=_DIM)
-        inner.add_row(ptr, msg, Text(""), Text(""), Text(""), Text(""), style=f"on {_TINT_ORG}")
+        inner.add_row(ptr, msg, Text(""), Text(""), style=f"on {_TINT_ORG}")
 
     def _build_list(self) -> Table:
         outer = Table.grid(expand=True, padding=0)
@@ -776,6 +782,14 @@ AgentsScreen {{
                 outer.add_row(Text(f"   no {tier} agents", style=_FAINT))
             else:
                 inner = self._make_agent_row_table(name_w)
+                # Column header row (ptr, name, desc, spacer, count)
+                inner.add_row(
+                    Text(""),
+                    Text("name", style=_FAINT),
+                    Text("description", style=_FAINT),
+                    Text(""),
+                    Text("tools", style=_FAINT),
+                )
                 for idx in by_tier[tier]:
                     manifest = self._visible[idx]
                     shadowed        = tier == "builtin" and manifest.name in shadow_builtins
@@ -1052,39 +1066,32 @@ AgentsScreen {{
         """Agent context shown in the scrollable upper portion of run mode."""
         tbl = Table.grid(expand=True, padding=(0, 1))
         tbl.add_column()
-        tbl.add_row(Text(""))
 
         agent = next(
             (m for m in self._registry.values() if m.name == self._run_agent_name),
             None,
         )
 
-        # Identity bar
+        # Identity bar — same style as edit screens (name + tier chip + timestamp)
         identity = Text()
-        identity.append(" ▌ Run  ", style=f"bold {_ORANGE}")
-        identity.append(self._run_agent_name, style=f"bold {_SILVER}")
+        identity.append(f" {self._run_agent_name}", style=f"bold {_SILVER}")
         if agent:
             identity.append("  ")
             identity.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
-            if agent.model:
-                identity.append(f"  ·  {agent.model}", style=_BLUE)
+            if agent.source != "builtin" and agent.source_path:
+                mtime = _age(agent.source_path)
+                if mtime != "unknown":
+                    identity.append(f"  ·  edited {mtime}", style=_DIM)
         tbl.add_row(identity)
         tbl.add_row(Text(""))
 
         # Description
         if agent and agent.description:
-            desc_tbl = Table.grid(expand=True, padding=0)
-            desc_tbl.add_column(width=1, no_wrap=True)
-            desc_tbl.add_column(ratio=1)
-            desc_tbl.add_row(Text(""), Text(agent.description, style=_TEXT))
-            tbl.add_row(desc_tbl)
+            tbl.add_row(Text(f"  {agent.description}", style=_TEXT))
             tbl.add_row(Text(""))
 
-        # Compact context
+        # Compact context — R.3: keys=_FAINT (secondary), values=_TEXT (primary)
         tbl.add_row(Rule(style=_RULE))
-        ctx_h = Text()
-        ctx_h.append(" CONTEXT", style=f"bold {_DIM}")
-        tbl.add_row(ctx_h)
         tbl.add_row(Text(""))
 
         # Tools (count only, not expanded list)
@@ -1096,24 +1103,32 @@ AgentsScreen {{
         else:
             tools_str = "unknown"
         tools_row = Text()
-        tools_row.append("  tools   ", style=_DIM)
-        tools_row.append(tools_str, style=_FAINT)
+        tools_row.append("  tools   ", style=_FAINT)
+        tools_row.append(tools_str, style=_TEXT)
         tbl.add_row(tools_row)
 
         # Model
         model_row = Text()
-        model_row.append("  model   ", style=_DIM)
+        model_row.append("  model   ", style=_FAINT)
         if agent and agent.model:
             model_row.append(agent.model, style=_BLUE)
         else:
-            model_row.append("inherit · session model", style=_FAINT)
+            model_row.append("inherit session model", style=_TEXT)
         tbl.add_row(model_row)
 
         # Iteration limit
         limit_row = Text()
-        limit_row.append("  limit   ", style=_DIM)
-        limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_FAINT)
+        limit_row.append("  limit   ", style=_FAINT)
+        limit_row.append(f"{agent.max_iterations if agent else 20} iterations", style=_TEXT)
         tbl.add_row(limit_row)
+
+        # R.5: dispatch destination hint
+        tbl.add_row(Text(""))
+        dispatch_row = Text()
+        dispatch_row.append("  dispatches as  ", style=_FAINT)
+        dispatch_row.append("spawn_agent", style=_DIM)
+        dispatch_row.append("  →  subagent worker", style=_FAINT)
+        tbl.add_row(dispatch_row)
 
         return tbl
 
@@ -1204,7 +1219,6 @@ AgentsScreen {{
         """Section heading rendered above the run TextArea widget."""
         t = Text()
         t.append(" PROMPT", style=f"bold {_DIM}")
-        t.append("  ·  describe the task for this subagent", style=_DIM)
         return t
 
     def _build_run_hints(self) -> Text:
