@@ -641,12 +641,12 @@ AgentsScreen {{
             label = "─── PROJECT  ────────────────────────────────────────────"
         return Text(f"  {label}", style=_FAINT)
 
-    def _make_agent_row_table(self) -> Table:
+    def _make_agent_row_table(self, name_w: int = 18) -> Table:
         t = Table.grid(expand=True, padding=0)
         t.add_column(no_wrap=True, width=3)                        # pointer
-        t.add_column(no_wrap=True, ratio=1)                        # name
+        t.add_column(no_wrap=True, width=name_w)                   # name (content-sized)
         t.add_column(no_wrap=True, width=9)                        # tier badge
-        t.add_column(no_wrap=True, ratio=2, overflow="ellipsis")   # description
+        t.add_column(no_wrap=True, ratio=1, overflow="ellipsis")   # description
         t.add_column(no_wrap=True, width=2)                        # spacer
         t.add_column(no_wrap=True, width=4)                        # tool count
         return t
@@ -748,11 +748,13 @@ AgentsScreen {{
                 by_tier[m.source] = []
             by_tier[m.source].append(idx)
 
+        name_w = min(max((len(m.name) for m in self._visible), default=8) + 2, 24)
+
         for i, tier in enumerate(tiers_seen):
             if i > 0:
                 outer.add_row(Text(""))
             outer.add_row(self._build_tier_header(tier))
-            inner = self._make_agent_row_table()
+            inner = self._make_agent_row_table(name_w)
             for idx in by_tier[tier]:
                 manifest = self._visible[idx]
                 shadowed       = tier == "builtin" and manifest.name in shadow_builtins
