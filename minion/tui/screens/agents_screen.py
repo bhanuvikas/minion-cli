@@ -704,7 +704,9 @@ AgentsScreen {{
                 by_tier[m.source] = []
             by_tier[m.source].append(idx)
 
-        for tier in tiers_seen:
+        for i, tier in enumerate(tiers_seen):
+            if i > 0:
+                outer.add_row(Text(""))
             outer.add_row(self._build_tier_header(tier))
             inner = self._make_agent_row_table()
             for idx in by_tier[tier]:
