@@ -319,7 +319,6 @@ AgentsScreen {{
         self._selected: int = 0
         self._focus_pane: str = "list"
         self._visible: list[AgentRoleManifest] = []
-        self._show_full_prompt: bool = False
         # Phase 2 — delete
         self._del_confirmed: bool = False
         # Phase 2 — duplicate
@@ -912,6 +911,8 @@ AgentsScreen {{
         # System prompt preview
         prompt_header = Text()
         prompt_header.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
+        total_lines = len(manifest.system_prompt.splitlines())
+        prompt_header.append(f"  ·  {total_lines} lines", style=_DIM)
         if manifest.source != "builtin":
             prompt_header.append("  ")
             prompt_header.append(" s ", style=f"bold {_SILVER} on #2a2a2a")
@@ -976,25 +977,8 @@ AgentsScreen {{
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
-        lines = manifest.system_prompt.splitlines()
-        total = len(lines)
-        max_preview = 5
-
-        meta = Text()
-        meta.append(f"   {total} lines", style=_DIM)
-        meta.append("  ")
-        meta.append(" v ", style=f"bold {_SILVER} on #2a2a2a")
-        meta.append(" view full" if not self._show_full_prompt else " collapse", style=_DIM)
-        tbl.add_row(meta)
-        tbl.add_row(Text(""))
-
-        preview_lines = lines if self._show_full_prompt else lines[:max_preview]
-        content_parts: list[str] = list(preview_lines)
-        if not self._show_full_prompt and total > max_preview:
-            content_parts.append(f"… +{total - max_preview} more lines")
-
         content_text = Text()
-        for part in content_parts:
+        for part in manifest.system_prompt.splitlines():
             content_text.append((part or " ") + "\n", style=_FAINT)
 
         panel = Panel(
@@ -1590,7 +1574,6 @@ AgentsScreen {{
         elif self._mode == "detail":
             hints = [
                 _hint("↑↓", "scroll"),
-                _hint("v", "view prompt"),
             ]
             if not is_builtin:
                 hints += [
@@ -1699,7 +1682,6 @@ AgentsScreen {{
             self._del_confirmed = False
             self._dup_name = ""
             self._dup_focus = "name"
-            self._show_full_prompt = False
             self._focus_pane = "list"
             self.query_one("#ag-panel", Vertical).focus()
             self._refresh()
@@ -1872,10 +1854,6 @@ AgentsScreen {{
         elif key == "slash":
             self.query_one("#ag-search", ModalSearchBar).focus_input()
             self._mode = "search"
-            self._refresh()
-            event.stop()
-        elif key == "v":
-            self._show_full_prompt = not self._show_full_prompt
             self._refresh()
             event.stop()
         elif key == "c":
