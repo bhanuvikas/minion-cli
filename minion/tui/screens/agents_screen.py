@@ -275,19 +275,6 @@ AgentsScreen {{
     padding: 0 2;
     margin: 0 -1;
 }}
-#ag-full-content {{
-    display: none;
-    height: 1fr;
-    padding: 0 2;
-    scrollbar-size-vertical: 1;
-    scrollbar-background: #111111;
-    scrollbar-color: #2a2a2a;
-    scrollbar-color-hover: #444444;
-    scrollbar-color-active: {_DIM};
-}}
-#ag-full-static {{
-    height: auto;
-}}
 #ag-footer {{
     height: 2;
     padding: 0 2;
@@ -357,8 +344,6 @@ AgentsScreen {{
                     yield Static("", id="ag-run-prompt-label")
                     yield TextArea("", id="ag-run-input")
                     yield Static("", id="ag-run-hints")
-            with VerticalScroll(id="ag-full-content"):
-                yield Static("", id="ag-full-static")
             yield Static("", id="ag-footer")
 
     def on_mount(self) -> None:
@@ -451,20 +436,8 @@ AgentsScreen {{
         self.query_one("#ag-header", Static).update(self._build_header())
         self.query_one("#ag-footer", Static).update(self._build_footer())
 
-        # Full-screen modes (edit_tools, edit_model) replace the two-pane body
-        full_mode = self._mode in ("edit_tools", "edit_model")
-        body = self.query_one("#ag-body", Horizontal)
-        full_area = self.query_one("#ag-full-content", VerticalScroll)
-        body.display = not full_mode
-        full_area.display = full_mode
-        if full_mode:
-            if self._mode == "edit_tools":
-                self.query_one("#ag-full-static", Static).update(self._build_full_tools())
-            else:
-                self.query_one("#ag-full-static", Static).update(self._build_full_model())
-        else:
-            self.query_one("#ag-list", Static).update(self._build_list())
-            self.query_one("#ag-preview", Static).update(self._build_preview())
+        self.query_one("#ag-list", Static).update(self._build_list())
+        self.query_one("#ag-preview", Static).update(self._build_preview())
 
         # Single divider border changes color: orange = left pane active,
         # blue = right pane active.
@@ -745,6 +718,10 @@ AgentsScreen {{
             return self._build_preview_run()
         if self._mode == "edit_color" and agent:
             return self._build_preview_color(agent)
+        if self._mode == "edit_tools":
+            return self._build_preview_tools()
+        if self._mode == "edit_model":
+            return self._build_preview_model()
         if agent is None:
             tbl = Table.grid(expand=True, padding=0)
             tbl.add_column()
@@ -1106,8 +1083,8 @@ AgentsScreen {{
 
         return tbl
 
-    def _build_full_tools(self) -> Table:
-        """Full-screen tools checklist for edit_tools mode."""
+    def _build_preview_tools(self) -> Table:
+        """Right-pane tools checklist for edit_tools mode."""
         tbl = Table.grid(expand=True, padding=0)
         tbl.add_column()
 
@@ -1129,7 +1106,7 @@ AgentsScreen {{
         for cat in cat_order:
             if cat not in by_cat:
                 continue
-            sep = Text(f"  ─── {cat} {'─' * max(0, 60 - len(cat))}", style=_FAINT)
+            sep = Text(f"  ─── {cat}", style=_FAINT)
             tbl.add_row(sep)
             for tool in by_cat[cat]:
                 is_sel = flat_idx == self._edit_tools_cursor
@@ -1143,9 +1120,9 @@ AgentsScreen {{
                 check_style = f"bold {_ORANGE}" if is_allowed else _DIM
                 row.append(f"{check}  ", style=check_style)
                 name_style = _TEXT if is_allowed else _DIM
-                row.append(f"{tool:<24}", style=name_style)
+                row.append(f"{tool:<20}  ", style=name_style)
                 desc = _TOOL_DESCRIPTIONS.get(tool, "")
-                row.append(f"{desc:<40}", style=_FAINT)
+                row.append(desc, style=_FAINT)
                 warn = _TOOL_WARN.get(tool, "")
                 if warn:
                     row.append(f"  {warn}", style=f"bold {_ORANGE}")
@@ -1173,8 +1150,8 @@ AgentsScreen {{
 
         return tbl
 
-    def _build_full_model(self) -> Table:
-        """Full-screen model picker for edit_model mode."""
+    def _build_preview_model(self) -> Table:
+        """Right-pane model picker for edit_model mode."""
         from ...config.model_catalog import PROVIDERS, fmt_ctx, fmt_price
 
         tbl = Table.grid(expand=True, padding=0)
@@ -1194,17 +1171,14 @@ AgentsScreen {{
             current_h.append("  ·  uses session model", style=_DIM)
         tbl.add_row(current_h)
         tbl.add_row(Text(""))
-        tbl.add_row(Text(
-            "  ─── pick a model ─────────────────────────────────────────────",
-            style=_FAINT,
-        ))
+        tbl.add_row(Text("  ─── pick a model", style=_FAINT))
 
         # Inherit option (index 0)
         is_sel = self._edit_model_cursor == 0
         inherit_row = Text()
         inherit_row.append("  ▸ " if is_sel else "    ", style=f"bold {_ORANGE}" if is_sel else "")
         inherit_row.append("● " if is_sel else "○ ", style=f"bold {_SILVER}" if is_sel else _DIM)
-        inherit_row.append(f"{'inherit':<18}", style=f"bold {_SILVER}" if is_sel else _DIM)
+        inherit_row.append("inherit  ", style=f"bold {_SILVER}" if is_sel else _DIM)
         inherit_row.append("use the session model", style=_FAINT)
         if current_model is None:
             inherit_row.append("  ")
@@ -1221,7 +1195,7 @@ AgentsScreen {{
                 row.append("  ▸ " if is_sel else "    ", style=f"bold {_ORANGE}" if is_sel else "")
                 row.append("● " if is_sel else "○ ", style=f"bold {_SILVER}" if is_sel else _DIM)
                 row.append(f"{provider['name']} › ", style=_DIM)
-                row.append(f"{model['id']:<28}", style=f"bold {_BLUE}" if is_sel else _BLUE)
+                row.append(f"{model['id']}", style=f"bold {_BLUE}" if is_sel else _BLUE)
                 ctx_str = fmt_ctx(model["ctx"])
                 price_str = f"${model['in_price']:.2f}/${model['out_price']:.2f}"
                 row.append(f"  {ctx_str} · {price_str}", style=_FAINT)
