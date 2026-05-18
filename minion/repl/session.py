@@ -188,6 +188,7 @@ async def run_repl_async(
         cwd=project_cwd,
         permission_store=permission_store,
         hook_runner=hook_runner,
+        confirmation_manager=confirmation_manager,
     )
 
     _use_tui = (

@@ -86,6 +86,7 @@ class CommandContext:
     cwd: Optional[Path] = None
     permission_store: Any = None
     hook_runner: Any = None
+    confirmation_manager: Any = None
 
     @property
     def base_system_prompt(self) -> str:

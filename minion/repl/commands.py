@@ -375,7 +375,9 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         skill = skill_registry.get(cmd[1:])
         if skill is not None:
             from ..skills.runner import execute_skill
-            execute_skill(skill, arg, client, conversation, ctx.base_system_prompt, skill_registry, state)
+            execute_skill(skill, arg, client, conversation, ctx.base_system_prompt, skill_registry, state,
+                          confirmation_manager=ctx.confirmation_manager, hook_runner=ctx.hook_runner,
+                          permission_store=ctx.permission_store, approval_mode=state.approval_mode if state else "off")
             return True
 
     if cmd.startswith("/"):

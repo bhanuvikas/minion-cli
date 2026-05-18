@@ -21,6 +21,7 @@ class TuiRenderer(OutputRenderer):
     def __init__(self, app: "MinionApp") -> None:
         self._app = app
         self._printed_prefix: bool = False
+        self._silent_render: bool = False
 
     # ── Streaming assistant turn ──────────────────────────────────────────────
 
@@ -31,7 +32,8 @@ class TuiRenderer(OutputRenderer):
         stream_markdown: bool = False,
         silent: bool = False,
     ) -> None:
-        # Opens a streaming turn in the TUI buffer; stream_markdown/silent ignored (TUI handles styling)
+        # Stream always starts so the user sees live output; panel replaces it on end.
+        self._silent_render = silent
         self._app.conversation.start_assistant_turn()
         self._printed_prefix = True
 
@@ -46,13 +48,21 @@ class TuiRenderer(OutputRenderer):
         pass  # no-op — TUI has no tool-accumulation spinner to stop
 
     def on_narration_flush(self, text: str, *, display_name: str = "minion") -> None:
-        pass  # text is already in the conversation buffer from streaming
+        # LLM emitted narration before a tool call — commit it so the user sees it.
+        # on_assistant_end() will then find an empty streaming zone and abandon it.
+        if self._silent_render:
+            self._app.conversation.finalize_turn()
+            self._silent_render = False
 
     def on_assistant_end(self) -> None:
         # Guard prevents double-finalize if on_cancellation() already closed the turn
         if self._printed_prefix:
-            self._app.conversation.finalize_turn()
+            if self._silent_render:
+                self._app.conversation.abandon_streaming_turn()
+            else:
+                self._app.conversation.finalize_turn()
             self._printed_prefix = False
+            self._silent_render = False
 
     # ── Tool call display ─────────────────────────────────────────────────────
 
@@ -138,7 +148,11 @@ class TuiRenderer(OutputRenderer):
     def on_markdown_panel(self, text: str, title: Optional[str] = None) -> None:
         from rich.markdown import Markdown
         from rich.panel import Panel
+        from rich.text import Text
         from ..theme import YELLOW
+        prefix = Text()
+        prefix.append("▌ minion ›", style="bold #1E90FF")
+        self._app.conversation.append_block(prefix)
         panel = Panel(
             Markdown(text),
             title=f"[bold {YELLOW}]{title or 'Response'}[/]",

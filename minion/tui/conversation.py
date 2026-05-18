@@ -171,6 +171,17 @@ class ConversationBuffer:
             self._last_was_assistant = True
         self._refresh()
 
+    def abandon_streaming_turn(self) -> None:
+        """Clear the streaming zone without committing text to the scrollback.
+
+        Used when a markdown panel will replace the streamed content.
+        """
+        with self._lock:
+            self._is_streaming = False
+            self._streaming_text = ""
+        if self._pre_finalize_fn:
+            self._pre_finalize_fn()
+
     def append_system(self, rich_markup: str) -> None:
         """Emit a system/status message (rendered from Rich markup)."""
         with self._lock:
