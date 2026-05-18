@@ -719,19 +719,20 @@ AgentsScreen {{
         return t
 
     def _build_tier_header(self, tier: str) -> Text:
+        _FILL = "─" * 120
         t = Text(no_wrap=True)
         if tier == "builtin":
             t.append("  ─── BUILTIN ", style=_FAINT)
             t.append("agents/builtin/", style=f"italic {_FAINT}")
-            t.append("  read-only  ─────────────────────────────────────────", style=_FAINT)
+            t.append("  read-only  " + _FILL, style=_FAINT)
         elif tier == "user":
             t.append("  ─── USER ", style=f"bold {_GOLD_DIM}")
             t.append("~/.minion/agents/", style=f"italic {_FAINT}")
-            t.append("  ─────────────────────────────────────────────────────", style=_FAINT)
+            t.append("  " + _FILL, style=_FAINT)
         else:
             t.append("  ─── PROJECT ", style=f"bold {_GREEN_DIM}")
             t.append(".minion/agents/", style=f"italic {_FAINT}")
-            t.append("  ──────────────────────────────────────────────────────", style=_FAINT)
+            t.append("  " + _FILL, style=_FAINT)
         return t
 
     def _make_agent_row_table(self, name_w: int = 18) -> Table:
@@ -814,7 +815,7 @@ AgentsScreen {{
 
     def _build_list(self) -> Table:
         outer = Table.grid(expand=True, padding=0)
-        outer.add_column()
+        outer.add_column(overflow="crop", no_wrap=True)
 
         outer.add_row(self._build_scope_chips())
         outer.add_row(Text(""))
