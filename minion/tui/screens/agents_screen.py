@@ -163,6 +163,9 @@ AgentsScreen {{
     display: none;
     margin-top: 1;
 }}
+#ag-run-prompt-label.no-top-margin {{
+    margin-top: 0;
+}}
 #ag-run-input {{
     height: 8;
     display: none;
@@ -563,17 +566,26 @@ AgentsScreen {{
 
         # Label above TextArea (run + edit_prompt + field edits + create)
         show_label = in_any_edit or in_create
-        self.query_one("#ag-run-prompt-label", Static).display = show_label
+        lbl = self.query_one("#ag-run-prompt-label", Static)
+        lbl.display = show_label
         if show_label:
             if in_create:
                 label_text = self._build_create_desc_label()
+                lbl.remove_class("no-top-margin")
             elif in_run:
                 label_text = self._build_run_prompt_label()
+                lbl.remove_class("no-top-margin")
             elif in_prompt:
-                label_text = self._build_prompt_edit_label()
-            else:  # edit_description
-                label_text = self._build_field_edit_label("DESCRIPTION")
-            self.query_one("#ag-run-prompt-label", Static).update(label_text)
+                agent = self._current_agent()
+                label_text = self._build_prompt_edit_label(agent)
+                lbl.add_class("no-top-margin")
+            else:  # edit_description — identity card sits flush with the top of the pane
+                agent = self._current_agent()
+                label_text = self._build_field_edit_label("DESCRIPTION", agent)
+                lbl.add_class("no-top-margin")
+            lbl.update(label_text)
+        else:
+            lbl.remove_class("no-top-margin")
 
         # TextArea: all edit modes + create
         ta.display = in_any_edit or in_create
@@ -903,12 +915,16 @@ AgentsScreen {{
             return self._build_preview_tools()
         if self._mode == "edit_model":
             return self._build_preview_model()
-        if self._mode == "edit_description" and agent:
-            return self._build_preview_edit_field(agent, "DESCRIPTION", agent.description)
+        if self._mode == "edit_description":
+            tbl = Table.grid(expand=True, padding=0)
+            tbl.add_column()
+            return tbl  # identity card shown in label above the TextArea
         if self._mode == "edit_iterations" and agent:
             return self._build_preview_iterations(agent)
-        if self._mode == "edit_prompt" and agent:
-            return self._build_preview_edit_prompt(agent)
+        if self._mode == "edit_prompt":
+            tbl = Table.grid(expand=True, padding=0)
+            tbl.add_column()
+            return tbl  # identity card shown in label above the TextArea
         if agent is None:
             tbl = Table.grid(expand=True, padding=0)
             tbl.add_column()
@@ -1216,16 +1232,27 @@ AgentsScreen {{
 
         return tbl
 
-    def _build_prompt_edit_label(self) -> Text:
+    def _build_prompt_edit_label(self, manifest: "AgentRoleManifest | None" = None) -> Text:
         """Section heading rendered above the system prompt TextArea."""
         t = Text()
+        if manifest is not None:
+            t.append(f" {manifest.name}", style=f"bold {_SILVER}")
+            t.append("  ")
+            t.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+            t.append("\n\n")
         t.append(" SYSTEM PROMPT", style=f"bold {_DIM}")
-        t.append("  ·  edit the full agent system prompt", style=_DIM)
+        t.append("\n")
         return t
 
-    def _build_field_edit_label(self, label: str) -> Text:
+    def _build_field_edit_label(self, label: str, manifest: "AgentRoleManifest | None" = None) -> Text:
         t = Text()
+        if manifest is not None:
+            t.append(f" {manifest.name}", style=f"bold {_SILVER}")
+            t.append("  ")
+            t.append(f" {manifest.source} ", style=f"bold {_tier_color(manifest.source)} on #161614")
+            t.append("\n\n")
         t.append(f" {label}", style=f"bold {_DIM}")
+        t.append("\n")
         return t
 
     def _build_edit_hints(self) -> Text:
@@ -1340,6 +1367,9 @@ AgentsScreen {{
         tbl.add_row(hdr)
         tbl.add_row(Text(""))
 
+        tbl.add_row(Text(" COLOR", style=f"bold {_DIM}"))
+        tbl.add_row(Text(""))
+
         intro = Text()
         intro.append(" Choose a display color for this agent.", style=_DIM)
         tbl.add_row(intro)
@@ -1399,6 +1429,9 @@ AgentsScreen {{
             hdr.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
             tbl.add_row(hdr)
             tbl.add_row(Text(""))
+
+        tbl.add_row(Text(" TOOLS", style=f"bold {_DIM}"))
+        tbl.add_row(Text(""))
 
         preamble = Text()
         preamble.append("  Toggle which tools this agent may call. Tools marked ", style=_DIM)
@@ -1487,6 +1520,9 @@ AgentsScreen {{
             hdr.append(f" {agent.source} ", style=f"bold {_tier_color(agent.source)} on #161614")
             tbl.add_row(hdr)
             tbl.add_row(Text(""))
+
+        tbl.add_row(Text(" MODEL", style=f"bold {_DIM}"))
+        tbl.add_row(Text(""))
 
         current_model = agent.model if agent else None
 
@@ -2091,6 +2127,9 @@ AgentsScreen {{
         return True
 
     def action_nav_up(self) -> None:
+        if self._mode in ("edit_prompt", "edit_description") and isinstance(self.focused, TextArea):
+            self.query_one("#ag-run-input", TextArea).action_cursor_up()
+            return
         if self._mode == "create":
             if self._create_focus == "tier":
                 self._create_tier = "user"
@@ -2129,6 +2168,9 @@ AgentsScreen {{
             self._refresh()
 
     def action_nav_down(self) -> None:
+        if self._mode in ("edit_prompt", "edit_description") and isinstance(self.focused, TextArea):
+            self.query_one("#ag-run-input", TextArea).action_cursor_down()
+            return
         if self._mode == "create":
             if self._create_focus == "tier":
                 self._create_tier = "project"

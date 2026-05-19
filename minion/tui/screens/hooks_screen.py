@@ -243,6 +243,9 @@ HooksScreen {{
     scrollbar-color-hover: #444444;
     scrollbar-color-active: {_DIM};
 }}
+#hk-preview-scroll.text-edit-compact {{
+    height: auto;
+}}
 #hk-preview {{
     height: auto;
 }}
@@ -273,6 +276,9 @@ HooksScreen {{
     display: none;
     padding: 1 1 0 1;
 }}
+#hk-edit-top.no-top-pad {{
+    padding: 0 1 0 0;
+}}
 #hk-cmd-area {{
     height: 8;
     display: none;
@@ -291,6 +297,12 @@ HooksScreen {{
 }}
 #hk-cmd-area .text-area--cursor-line {{
     background: #1a1a1a;
+}}
+#hk-cmd-area.desc-edit {{
+    height: 12;
+}}
+#hk-cmd-area.prompt-edit {{
+    height: 14;
 }}
 #hk-cmd-meta {{
     height: auto;
@@ -557,12 +569,18 @@ HooksScreen {{
             "#hk-run-hints",
         ):
             self.query_one(wid, Static).display = False
+        self.query_one("#hk-edit-top", Static).remove_class("no-top-pad")
         self.query_one("#hk-name-input", Input).display = False
         self.query_one("#hk-create-desc-input", Input).display = False
-        self.query_one("#hk-cmd-area", TextArea).display = False
+        cmd_area = self.query_one("#hk-cmd-area", TextArea)
+        cmd_area.display = False
+        cmd_area.remove_class("desc-edit")
+        cmd_area.remove_class("prompt-edit")
         self.query_one("#hk-desc-input", Input).display = False
+        self.query_one("#hk-preview-scroll", VerticalScroll).remove_class("text-edit-compact")
 
         if self._mode in ("browse", "detail", "search"):
+            self.query_one("#hk-preview", Static).display = True
             self.query_one("#hk-preview", Static).update(self._build_detail())
 
         elif self._mode == "create":
@@ -612,42 +630,51 @@ HooksScreen {{
                 cmd_area.focus()
 
         elif self._mode == "edit_command":
-            self.query_one("#hk-preview", Static).update(Text(""))
-            self.query_one("#hk-edit-top", Static).display = True
-            self.query_one("#hk-edit-top", Static).update(self._build_edit_top())
+            self.query_one("#hk-preview", Static).display = False
+            edit_top = self.query_one("#hk-edit-top", Static)
+            edit_top.add_class("no-top-pad")
+            edit_top.display = True
+            edit_top.update(self._build_edit_pane_label("COMMAND"))
             cmd_area = self.query_one("#hk-cmd-area", TextArea)
+            cmd_area.add_class("prompt-edit")
             cmd_area.display = True
             if cmd_area.text != self._edit_cmd:
                 cmd_area.load_text(self._edit_cmd)
-            self.query_one("#hk-cmd-meta", Static).display = True
-            lines = self._edit_cmd.count("\n") + 1 if self._edit_cmd else 0
-            chars = len(self._edit_cmd)
-            self.query_one("#hk-cmd-meta", Static).update(
-                Text(f"  {chars} chars · {lines} line{'s' if lines != 1 else ''}", style=_DIM)
-            )
+            self.query_one("#hk-run-hints", Static).display = True
+            self.query_one("#hk-run-hints", Static).update(self._build_run_hints())
             cmd_area.focus()
 
         elif self._mode == "edit_timeout":
+            self.query_one("#hk-preview", Static).display = True
             self.query_one("#hk-preview", Static).update(self._build_edit_timeout_pane())
 
         elif self._mode == "edit_blocking":
+            self.query_one("#hk-preview", Static).display = True
             self.query_one("#hk-preview", Static).update(self._build_edit_blocking_pane())
 
         elif self._mode == "edit_event":
+            self.query_one("#hk-preview", Static).display = True
             self.query_one("#hk-preview", Static).update(self._build_edit_event_pane())
 
         elif self._mode == "edit_tool":
+            self.query_one("#hk-preview", Static).display = True
             self.query_one("#hk-preview", Static).update(self._build_edit_tool_pane())
 
         elif self._mode == "edit_description":
-            self.query_one("#hk-preview", Static).update(Text(""))
-            self.query_one("#hk-edit-top", Static).display = True
-            self.query_one("#hk-edit-top", Static).update(self._build_edit_top())
-            desc_inp = self.query_one("#hk-desc-input", Input)
-            desc_inp.display = True
-            if desc_inp.value != self._edit_desc:
-                desc_inp.value = self._edit_desc
-            desc_inp.focus()
+            self.query_one("#hk-preview", Static).display = False
+            edit_top = self.query_one("#hk-edit-top", Static)
+            edit_top.add_class("no-top-pad")
+            edit_top.display = True
+            edit_top.update(self._build_edit_pane_label("DESCRIPTION"))
+            desc_area = self.query_one("#hk-cmd-area", TextArea)
+            desc_area.add_class("desc-edit")
+            desc_area.display = True
+            if desc_area.text != self._edit_desc:
+                desc_area.load_text(self._edit_desc)
+            desc_area.focus()
+            self.query_one("#hk-run-hints", Static).display = True
+            self.query_one("#hk-run-hints", Static).update(self._build_run_hints())
+            self.query_one("#hk-preview-scroll", VerticalScroll).add_class("text-edit-compact")
 
         elif self._mode == "confirm_delete":
             self.query_one("#hk-preview", Static).update(Text(""))
@@ -1137,12 +1164,16 @@ HooksScreen {{
         return tbl
 
     def _build_run_hints(self) -> Text:
-        """Key hints strip shown at bottom of right pane during create mode."""
+        """Key hints strip shown at bottom of right pane (create/edit modes)."""
         dot = f" [{_FAINT}]·[/] "
+        if self._mode in ("edit_description", "edit_command"):
+            parts = [_hint("ctrl+↵", "save"), _hint("↵", "newline"), _hint("esc", "cancel")]
+            return Text.from_markup("  " + dot.join(parts))
+        # create mode
         ok, _ = self._create_name_ok()
         has_cmd = bool(self._edit_cmd.strip())
         can_create = ok and has_cmd
-        parts: list[str] = [_hint("tab / shift+tab", "next / prev field")]
+        parts = [_hint("tab / shift+tab", "next / prev field")]
         parts.append(_hint("↑↓", "switch option"))
         if can_create:
             parts.append(f"[bold {_ORANGE} on #2a2a2a] ctrl+↵ [/] [{_ORANGE}]create & edit[/]")
@@ -1360,6 +1391,9 @@ HooksScreen {{
             hdr.append(f" {_hook_source(hook)} ", style=f"bold {_tier_color(_hook_source(hook))} on #161614")
             tbl.add_row(hdr)
             tbl.add_row(Text(""))
+
+        tbl.add_row(Text(" TOOL FILTER", style=f"bold {_DIM}"))
+        tbl.add_row(Text(""))
 
         preamble = Text()
         preamble.append("  Toggle which tools trigger this hook. ", style=_DIM)
@@ -1600,7 +1634,7 @@ HooksScreen {{
             suffix = ""
 
         elif self._mode == "edit_description":
-            hints = [_hint("↵", "save"), _hint("esc", "cancel")]
+            hints = [_hint("ctrl+↵", "save"), _hint("↵", "newline"), _hint("esc", "cancel")]
             suffix = ""
 
         elif self._mode == "detail":
@@ -1639,6 +1673,9 @@ HooksScreen {{
     # ── Actions (BINDINGS) ────────────────────────────────────────────────────
 
     def action_nav_up(self) -> None:
+        if self._mode in ("edit_command", "edit_description") and isinstance(self.focused, TextArea):
+            self.query_one("#hk-cmd-area", TextArea).action_cursor_up()
+            return
         if self._mode == "create":
             if self._create_focus == "tier":
                 self._create_tier = "user"
@@ -1673,6 +1710,9 @@ HooksScreen {{
             self._refresh()
 
     def action_nav_down(self) -> None:
+        if self._mode in ("edit_command", "edit_description") and isinstance(self.focused, TextArea):
+            self.query_one("#hk-cmd-area", TextArea).action_cursor_down()
+            return
         if self._mode == "create":
             if self._create_focus == "tier":
                 self._create_tier = "project"
@@ -1775,7 +1815,8 @@ HooksScreen {{
             return
 
         if self._mode == "edit_description":
-            self._do_save_description()
+            if isinstance(self.focused, TextArea):
+                self.query_one("#hk-cmd-area", TextArea).insert("\n")
             return
 
         if self._mode == "browse" and self._visible:
@@ -1798,6 +1839,9 @@ HooksScreen {{
             if not cmd:
                 return
             self._do_save_command(cmd)
+        elif self._mode == "edit_description":
+            self._edit_desc = self.query_one("#hk-cmd-area", TextArea).text.strip()
+            self._do_save_description()
 
     def action_cycle_scope(self) -> None:
         if self._mode == "create":
@@ -2066,6 +2110,20 @@ HooksScreen {{
         self._mode = "edit_event"
         self._focus_pane = "detail"
         self._refresh()
+
+    def _build_edit_pane_label(self, label: str) -> Text:
+        """Combined name+tier identity card and section label for edit panes."""
+        hook = self._current_hook()
+        t = Text()
+        name = _hook_name(hook) if hook else "—"
+        tier = _hook_source(hook) if hook else "user"
+        t.append(f" {name}", style=f"bold {_SILVER}")
+        t.append("  ")
+        t.append(f" {tier} ", style=f"bold {_tier_color(tier)} on #161614")
+        t.append("\n\n")
+        t.append(f" {label}", style=f"bold {_DIM}")
+        t.append("\n")
+        return t
 
     def _start_edit_description(self) -> None:
         hook = self._current_hook()
