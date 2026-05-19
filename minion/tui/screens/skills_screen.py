@@ -892,11 +892,7 @@ SkillsScreen {{
             desc_header.append(" b ", style=f"bold {_SILVER} on #2a2a2a")
             desc_header.append(" edit", style=_DIM)
         tbl.add_row(desc_header)
-        desc_tbl = Table.grid(expand=True, padding=0)
-        desc_tbl.add_column(width=1, no_wrap=True)
-        desc_tbl.add_column(ratio=1)
-        desc_tbl.add_row(Text(""), Text(manifest.description, style=_TEXT))
-        tbl.add_row(desc_tbl)
+        tbl.add_row(Text(f"   {manifest.description}", style=_TEXT))
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
 
@@ -937,8 +933,8 @@ SkillsScreen {{
             fmt_header.append(" o ", style=f"bold {_SILVER} on #2a2a2a")
             fmt_header.append(" edit", style=_DIM)
         fmt_val = manifest.output_format or "stream"
-        fmt_header.append(f"  ·  {fmt_val}", style=f"bold {_GOLD}")
         tbl.add_row(fmt_header)
+        tbl.add_row(Text(f"   {fmt_val}", style=f"bold {_GOLD}"))
         if fmt_val == "markdown" and manifest.thinking_label:
             think_row = Text()
             think_row.append("   thinking label  ", style=_FAINT)
@@ -956,8 +952,8 @@ SkillsScreen {{
             iter_header.append(" edit", style=_DIM)
         iter_val = manifest.max_iterations
         suffix = " (per step)" if is_chained else ""
-        iter_header.append(f"  ·  {iter_val}{suffix}", style=_DIM)
         tbl.add_row(iter_header)
+        tbl.add_row(Text(f"   {iter_val}{suffix}", style=_DIM))
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
 

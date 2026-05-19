@@ -106,14 +106,14 @@ class HookRunner:
                     "name": getattr(defn, "name", defn.command[:40]),
                     "type": "shell",
                     "event": defn.event,
-                    "tool": defn.tool or "(all tools)",
+                    "tool": ", ".join(defn.tools) if defn.tools else "(all tools)",
                     "source": getattr(defn, "source", "user"),
                     "detail": defn.command,
                 })
             elif hasattr(h, "hook_describe"):
                 rows.append(h.hook_describe())  # type: ignore[union-attr]
             else:
-                rows.append({"name": type(h).__name__, "type": "builtin",
-                             "event": "—", "tool": "—", "source": "builtin",
+                rows.append({"name": type(h).__name__, "source": "builtin",
+                             "type": "python", "event": "—", "tool": "—",
                              "detail": type(h).__name__})
         return rows

@@ -104,7 +104,8 @@ async def run_repl_async(
     permission_store = PermissionStore(project_cwd=project_cwd)
 
     from ..hooks.registry import HookRegistry
-    hook_runner = HookRegistry.load(project_cwd, _file_cfg).build_runner()
+    hook_registry = HookRegistry.load(project_cwd, _file_cfg)
+    hook_runner = hook_registry.build_runner()
 
     conversation = Conversation(model=client.model_id)
     _env_md = os.getenv("MINION_MARKDOWN")
@@ -722,6 +723,26 @@ async def _run_repl_tui(
             tui_app.push_screen(
                 SkillsScreen(skill_registry=_active_skill_registry, cwd=project_cwd),
                 _on_skills_done,
+            )
+            return
+
+        if user_input.startswith("/") and user_input.strip().split()[0] == "/hooks":
+            from ..tui.screens import HooksScreen
+            from ..hooks.registry import HookRegistry as _HookRegistry
+
+            _active_hook_registry = _HookRegistry.load(project_cwd, _file_cfg)
+
+            async def _on_hooks_done(result: bool) -> None:
+                nonlocal hook_runner
+                if result is True:
+                    _new_hr = _HookRegistry.load(project_cwd, _file_cfg)
+                    hook_runner = _new_hr.build_runner()
+                    ctx.hook_runner = hook_runner
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(
+                HooksScreen(hook_registry=_active_hook_registry, cwd=project_cwd),
+                _on_hooks_done,
             )
             return
 

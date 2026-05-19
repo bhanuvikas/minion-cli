@@ -948,11 +948,7 @@ AgentsScreen {{
             desc_header.append(" b ", style=f"bold {_SILVER} on #2a2a2a")
             desc_header.append(" edit", style=_DIM)
         tbl.add_row(desc_header)
-        desc_tbl = Table.grid(expand=True, padding=0)
-        desc_tbl.add_column(width=1, no_wrap=True)
-        desc_tbl.add_column(ratio=1)
-        desc_tbl.add_row(Text(""), Text(manifest.description, style=_TEXT))
-        tbl.add_row(desc_tbl)
+        tbl.add_row(Text(f"   {manifest.description}", style=_TEXT))
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
 
@@ -990,8 +986,8 @@ AgentsScreen {{
             iter_header.append("  ")
             iter_header.append(" i ", style=f"bold {_SILVER} on #2a2a2a")
             iter_header.append(" edit", style=_DIM)
-        iter_header.append(f"  ·  {manifest.max_iterations}", style=_DIM)
         tbl.add_row(iter_header)
+        tbl.add_row(Text(f"   {manifest.max_iterations}", style=_DIM))
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
 
@@ -1006,12 +1002,11 @@ AgentsScreen {{
             model_header.append("  ")
             model_header.append(" m ", style=f"bold {_SILVER} on #2a2a2a")
             model_header.append(" edit", style=_DIM)
-        if manifest.model:
-            model_header.append(f"  ·  {manifest.model}", style=f"bold {_BLUE}")
-        else:
-            model_header.append("  ·  inherit", style=_DIM)
         tbl.add_row(model_header)
-        if not manifest.model:
+        if manifest.model:
+            tbl.add_row(Text(f"   {manifest.model}", style=f"bold {_BLUE}"))
+        else:
+            tbl.add_row(Text("   inherit", style=_DIM))
             tbl.add_row(Text("   uses session model", style=_FAINT))
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
@@ -1023,15 +1018,17 @@ AgentsScreen {{
             color_header.append("  ")
             color_header.append(" k ", style=f"bold {_SILVER} on #2a2a2a")
             color_header.append(" edit", style=_DIM)
+        tbl.add_row(color_header)
         if manifest.color:
             color_val = next((c for c, col, _ in _COLOR_OPTIONS if c == manifest.color), _FAINT)
-            color_header.append(f"  ·  ● {manifest.color}", style=color_val)
+            tbl.add_row(Text(f"   ● {manifest.color}", style=color_val))
         else:
             tier_default_name = {"builtin": "muted", "user": "gold", "project": "green"}.get(manifest.source, "inherit")
             tier_default_color = _tier_color(manifest.source)
-            color_header.append(f"  ·  ● {tier_default_name}", style=tier_default_color)
-            color_header.append(" (tier default)", style=_FAINT)
-        tbl.add_row(color_header)
+            color_line = Text()
+            color_line.append(f"   ● {tier_default_name}", style=tier_default_color)
+            color_line.append(" (tier default)", style=_FAINT)
+            tbl.add_row(color_line)
         tbl.add_row(Text(""))
         tbl.add_row(Text(""))
 
@@ -1095,6 +1092,7 @@ AgentsScreen {{
                 for tool in denied:
                     row = Text()
                     row.append(f"    {tool:<22}", style=_FAINT)
+                    row.append("  " + " " * 15)
                     desc = _TOOL_DESCRIPTIONS.get(tool, "")
                     if desc:
                         row.append(desc, style=_FAINT)

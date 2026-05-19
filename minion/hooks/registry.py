@@ -80,6 +80,19 @@ class HookRegistry:
     def __contains__(self, name: str) -> bool:
         return name in self._manifests
 
+    # ── TUI helpers ───────────────────────────────────────────────────────────
+
+    def builtin_manifests(self) -> list[dict]:
+        """Return hook_describe() dicts for all active builtin Python handlers.
+
+        Used by HooksScreen to display read-only builtin rows alongside YAML hooks.
+        """
+        from .builtin.minion_md import MinionMdStalenessHandler
+        result: list[dict] = []
+        if self._config.hooks_config.builtin_minion_md:
+            result.append(MinionMdStalenessHandler().hook_describe())
+        return result
+
     # ── Runner factory ─────────────────────────────────────────────────────────
 
     def build_runner(self) -> HookRunner:

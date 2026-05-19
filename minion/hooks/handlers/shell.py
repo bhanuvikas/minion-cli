@@ -25,9 +25,9 @@ class ShellHookHandler:
     def matches(self, event: HookEvent) -> bool:
         if event.event_name != self._defn.event:
             return False
-        if self._defn.tool is not None:
+        if self._defn.tools is not None:
             tool_name = getattr(event, "tool_name", None)
-            if tool_name != self._defn.tool:
+            if tool_name not in self._defn.tools:
                 return False
         return True
 
