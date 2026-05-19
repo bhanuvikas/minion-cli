@@ -14,12 +14,13 @@ import asyncio
 import json
 
 from ..events import HookEvent, PreToolUseEvent
+from ..manifest import HookManifest
 from ..result import HookResult
 
 
 class ShellHookHandler:
-    def __init__(self, definition: "HookDefinition") -> None:  # type: ignore[name-defined]
-        self._defn = definition
+    def __init__(self, manifest: HookManifest) -> None:
+        self._defn = manifest  # attribute name kept for HookRunner compat
 
     def matches(self, event: HookEvent) -> bool:
         if event.event_name != self._defn.event:

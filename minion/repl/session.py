@@ -104,7 +104,7 @@ async def run_repl_async(
     permission_store = PermissionStore(project_cwd=project_cwd)
 
     from ..hooks.registry import HookRegistry
-    hook_runner = HookRegistry.from_config(_file_cfg)
+    hook_runner = HookRegistry.load(project_cwd, _file_cfg).build_runner()
 
     conversation = Conversation(model=client.model_id)
     _env_md = os.getenv("MINION_MARKDOWN")
@@ -823,12 +823,20 @@ async def _run_repl_tui(
         finally:
             tui_app.conversation.finalize_turn()
 
+        from ..hooks.events import StopTurnEvent as _StopTurnEvent
+        _last_response_text = _get_last_response_text(conversation)
+        await hook_runner.fire(_StopTurnEvent(
+            session_id=_hook_session_id,
+            cwd=project_cwd,
+            response_text=_last_response_text or "",
+        ))
+
         for _tip in hook_runner.drain_tips():
             tui_app.conversation.append_system(f"[bold #FFD700]⚡ Hook[/]  [#C0C0C0]{_tip}[/]")
 
         if state and state.memory_enabled and memory_store is not None:
             try:
-                last_response = _get_last_response_text(conversation)
+                last_response = _last_response_text
                 if last_response:
                     extracted = await asyncio.to_thread(
                         memory_store.maybe_extract, user_input, last_response
@@ -1077,13 +1085,21 @@ async def _run_console_loop(
             renderer=_renderer,
         )
 
+        from ..hooks.events import StopTurnEvent as _StopTurnEvent
+        _last_response_text = _get_last_response_text(conversation)
+        await hook_runner.fire(_StopTurnEvent(
+            session_id=_hook_session_id,
+            cwd=project_cwd,
+            response_text=_last_response_text or "",
+        ))
+
         for _tip in hook_runner.drain_tips():
             console.print(f"\n  [{YELLOW}]Hook[/]  {_tip}")
 
         console.print()
 
         if state and state.memory_enabled and memory_store is not None:
-            last_response = _get_last_response_text(conversation)
+            last_response = _last_response_text
             if last_response:
                 with console.status("[muted]saving memories...[/]", spinner="dots"):
                     extracted = await asyncio.to_thread(

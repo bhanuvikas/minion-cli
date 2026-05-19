@@ -137,12 +137,21 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
                 console.print(f"[{YELLOW}]Hooks:[/] none registered")
                 return True
             tbl = Table(show_header=True, header_style="bold", expand=False, box=None)
+            tbl.add_column("Name", style=YELLOW)
             tbl.add_column("Type", style="dim")
             tbl.add_column("Event")
             tbl.add_column("Tool")
+            tbl.add_column("Source", style="dim")
             tbl.add_column("Detail")
             for r in rows:
-                tbl.add_row(r["type"], r["event"], r["tool"], r["detail"])
+                tbl.add_row(
+                    r.get("name", ""),
+                    r["type"],
+                    r["event"],
+                    r["tool"],
+                    r.get("source", ""),
+                    r["detail"],
+                )
             status = "on" if hook_runner.enabled else "off"
             console.print(f"[{YELLOW}]Hooks:[/] {status} · {hook_runner.handler_count} registered")
             console.print(tbl)

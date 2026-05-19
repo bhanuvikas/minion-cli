@@ -39,8 +39,11 @@ def _post(tool_name="write_file", tool_input=None, result="ok", success=True, cw
 
 
 def _make_defn(event="PostToolUse", command="echo '{}'", tool=None, timeout=5, blocking=None):
-    from minion.config import HookDefinition
-    return HookDefinition(event=event, command=command, tool=tool, timeout=timeout, blocking=blocking)
+    from minion.hooks.manifest import HookManifest
+    return HookManifest(
+        name="test-hook", description="", event=event, command=command,
+        tool=tool, timeout=timeout, blocking=blocking,
+    )
 
 
 # ─── TestHookEvents ───────────────────────────────────────────────────────────
@@ -246,27 +249,36 @@ class TestHookRunner:
 # ─── TestHookRegistry ─────────────────────────────────────────────────────────
 
 class TestHookRegistry:
-    def _cfg(self, builtin_minion_md=True, hooks=None):
-        from minion.config import HookDefinition, HooksBuiltinConfig, MinionConfig
+    def _cfg(self, builtin_minion_md=True):
+        from minion.config import HooksBuiltinConfig, MinionConfig
         cfg = MinionConfig()
         cfg.hooks_config = HooksBuiltinConfig(builtin_minion_md=builtin_minion_md)
-        cfg.hooks = hooks or []
         return cfg
 
-    def test_from_config_registers_builtin_by_default(self):
-        runner = HookRegistry.from_config(self._cfg(builtin_minion_md=True))
+    def _write_hook(self, directory, name, event="PostToolUse", command="./test.sh", tool=None):
+        """Write a minimal hook YAML to directory and return the path."""
+        directory.mkdir(parents=True, exist_ok=True)
+        content = f"name: {name}\ndescription: test\nevent: {event}\ncommand: {command}\n"
+        if tool:
+            content += f"tool: {tool}\n"
+        path = directory / f"{name}.yaml"
+        path.write_text(content)
+        return path
+
+    def test_load_registers_builtin_by_default(self, tmp_path):
+        runner = HookRegistry.load(tmp_path, self._cfg(builtin_minion_md=True)).build_runner()
         types = [type(h).__name__ for h in runner._handlers]
         assert "MinionMdStalenessHandler" in types
 
-    def test_from_config_skips_builtin_when_disabled(self):
-        runner = HookRegistry.from_config(self._cfg(builtin_minion_md=False))
+    def test_load_skips_builtin_when_disabled(self, tmp_path):
+        runner = HookRegistry.load(tmp_path, self._cfg(builtin_minion_md=False)).build_runner()
         types = [type(h).__name__ for h in runner._handlers]
         assert "MinionMdStalenessHandler" not in types
 
-    def test_from_config_registers_shell_handlers_from_definitions(self):
-        from minion.config import HookDefinition
-        defn = HookDefinition(event="PostToolUse", command="./test.sh", tool="write_file")
-        runner = HookRegistry.from_config(self._cfg(hooks=[defn]))
+    def test_load_registers_shell_handlers_from_yaml(self, tmp_path):
+        hooks_dir = tmp_path / ".minion" / "hooks"
+        self._write_hook(hooks_dir, "my-hook", event="PostToolUse", command="./test.sh", tool="write_file")
+        runner = HookRegistry.load(tmp_path, self._cfg()).build_runner()
         types = [type(h).__name__ for h in runner._handlers]
         assert "ShellHookHandler" in types
         assert runner.handler_count >= 1

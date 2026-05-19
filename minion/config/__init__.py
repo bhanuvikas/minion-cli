@@ -24,7 +24,6 @@ from .file import (
     ContextConfig,
     A2AConfig,
     TracingConfig,
-    HookDefinition,
     HooksBuiltinConfig,
 )
 from .wizard import run_setup_wizard, _MINION_STYLE
@@ -47,7 +46,6 @@ __all__ = [
     "ContextConfig",
     "A2AConfig",
     "TracingConfig",
-    "HookDefinition",
     "HooksBuiltinConfig",
     "run_setup_wizard",
     "_MINION_STYLE",

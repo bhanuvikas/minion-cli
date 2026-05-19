@@ -100,15 +100,6 @@ class TracingConfig:
 
 
 @dataclass
-class HookDefinition:
-    event: str              # "PreToolUse" | "PostToolUse" | "SessionStart" | ...
-    command: str            # shell command; run in cwd at fire time
-    tool: Optional[str] = None   # tool name matcher; None = all tools
-    timeout: int = 30
-    blocking: Optional[bool] = None  # None = event-default (True for Pre, False for Post)
-
-
-@dataclass
 class HooksBuiltinConfig:
     enabled: bool = True             # master on/off switch for all hooks
     builtin_minion_md: bool = True   # MINION.md staleness tip after write/edit
@@ -123,7 +114,6 @@ class MinionConfig:
     a2a: A2AConfig = field(default_factory=A2AConfig)
     tracing: TracingConfig = field(default_factory=TracingConfig)
     hooks_config: HooksBuiltinConfig = field(default_factory=HooksBuiltinConfig)
-    hooks: list = field(default_factory=list)  # list[HookDefinition]
 
 
 def _get(data: dict, *keys: str, default: Any = None) -> Any:
@@ -199,7 +189,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
     if extraction_trigger not in _VALID_EXTRACTION_TRIGGERS:
         extraction_trigger = "substantial"
 
-    # Hooks: builtin settings from merged config; user hook lists concatenated from both
+    # Hooks: builtin settings from merged config
     hooks_merged = raw.get("hooks", {})
     if not isinstance(hooks_merged, dict):
         hooks_merged = {}
@@ -208,23 +198,18 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
         builtin_minion_md=_bool(hooks_merged.get("builtin_minion_md"), True),
     )
 
-    def _parse_hook_list(data: dict) -> list:
-        h_raw = data.get("hooks", {})
-        if not isinstance(h_raw, dict):
-            return []
-        return [
-            HookDefinition(
-                event=h["event"],
-                command=h["command"],
-                tool=h.get("tool") or None,
-                timeout=_int(h.get("timeout"), 30),
-                blocking=h.get("blocking"),
-            )
-            for h in h_raw.get("user", [])
-            if isinstance(h, dict) and "event" in h and "command" in h
-        ]
-
-    hooks = _parse_hook_list(raw_global) + _parse_hook_list(raw_project)
+    # Backward-compat: warn if old [[hooks.user]] entries are detected
+    _has_legacy = (
+        isinstance(raw_global.get("hooks", {}), dict) and raw_global.get("hooks", {}).get("user")
+    ) or (
+        isinstance(raw_project.get("hooks", {}), dict) and raw_project.get("hooks", {}).get("user")
+    )
+    if _has_legacy:
+        from ..theme import startup_warnings
+        startup_warnings.append(
+            "  [bold #a8a8a8]Warning[/]  [#888888]hooks.user entries in config.toml are deprecated — "
+            "move hooks to ~/.minion/hooks/*.yaml or .minion/hooks/*.yaml[/]"
+        )
 
     return MinionConfig(
         llm=LLMConfig(
@@ -258,7 +243,6 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
             enabled=_bool(tracing_raw.get("enabled"), True),
         ),
         hooks_config=hooks_builtin_cfg,
-        hooks=hooks,
     )
 
 

@@ -103,14 +103,17 @@ class HookRunner:
             if hasattr(h, "_defn"):
                 defn = h._defn  # type: ignore[attr-defined]
                 rows.append({
+                    "name": getattr(defn, "name", defn.command[:40]),
                     "type": "shell",
                     "event": defn.event,
                     "tool": defn.tool or "(all tools)",
+                    "source": getattr(defn, "source", "user"),
                     "detail": defn.command,
                 })
             elif hasattr(h, "hook_describe"):
                 rows.append(h.hook_describe())  # type: ignore[union-attr]
             else:
-                rows.append({"type": "builtin", "event": "—", "tool": "—",
+                rows.append({"name": type(h).__name__, "type": "builtin",
+                             "event": "—", "tool": "—", "source": "builtin",
                              "detail": type(h).__name__})
         return rows
