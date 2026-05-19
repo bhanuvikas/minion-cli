@@ -1404,7 +1404,7 @@ SkillsScreen {{
             else:
                 t.append("— pick a template below —", style=_FAINT)
         t.append("\n\n")
-        t.append("─── name ───────────────────────────────────────────────────", style=_DIM)
+        t.append(" ─── name ──────────────────────────────────────────────────", style=_DIM)
         return t
 
     def _build_create_validation(self) -> Text:

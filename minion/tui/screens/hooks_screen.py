@@ -165,10 +165,11 @@ def _event_badge(event: str) -> Text:
 
 
 def _wiz_section(label: str) -> Text:
-    """Wizard-style section header: `─── label ──────────────`"""
+    """Wizard-style section header: ` —— label ──────────────`"""
     t = Text(no_wrap=True)
-    t.append(f" ─── {label} ", style=_DIM)
-    t.append("─" * 60, style=_DIM)
+    t.append(" —— ", style=_DIM)
+    t.append(label, style=_SILVER)
+    t.append(" " + "─" * 60, style=_DIM)
     return t
 
 
@@ -248,6 +249,9 @@ HooksScreen {{
 }}
 #hk-preview {{
     height: auto;
+}}
+#hk-preview.create-mode {{
+    padding: 0 0 0 1;
 }}
 #hk-wiz-top {{
     height: auto;
@@ -570,6 +574,7 @@ HooksScreen {{
         ):
             self.query_one(wid, Static).display = False
         self.query_one("#hk-edit-top", Static).remove_class("no-top-pad")
+        self.query_one("#hk-preview", Static).remove_class("create-mode")
         self.query_one("#hk-name-input", Input).display = False
         self.query_one("#hk-create-desc-input", Input).display = False
         cmd_area = self.query_one("#hk-cmd-area", TextArea)
@@ -601,7 +606,9 @@ HooksScreen {{
             self.query_one("#hk-create-desc-label", Static).update(self._build_create_desc_label())
             self.query_one("#hk-create-desc-input", Input).display = True
             # Scroll content: tier + event + note
-            self.query_one("#hk-preview", Static).update(self._build_create_scroll_content())
+            preview = self.query_one("#hk-preview", Static)
+            preview.add_class("create-mode")
+            preview.update(self._build_create_scroll_content())
             # Inside-scroll: command section
             self.query_one("#hk-edit-top", Static).display = True
             self.query_one("#hk-edit-top", Static).update(self._build_edit_top())
@@ -1079,8 +1086,7 @@ HooksScreen {{
         t.append(" FROM  ", style=_DIM)
         t.append("— blank hook —", style=f"bold {_ORANGE}")
         t.append("\n\n")
-        t.append(" ─── name ", style=_DIM)
-        t.append("─" * 60, style=_DIM)
+        t.append_text(_wiz_section("name"))
         return t
 
     def _build_create_scroll_content(self) -> Table:
@@ -1184,8 +1190,8 @@ HooksScreen {{
 
     def _build_create_desc_label(self) -> Text:
         t = Text()
-        t.append(" ─── description ", style=_DIM)
-        t.append("─" * 60, style=_DIM)
+        t.append(" —— ", style=_DIM)
+        t.append("description — optional", style=_SILVER)
         t.append("\n  optional — describes what this hook does", style=_FAINT)
         return t
 

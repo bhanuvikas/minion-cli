@@ -42,7 +42,7 @@ def _make_defn(event="PostToolUse", command="echo '{}'", tool=None, timeout=5, b
     from minion.hooks.manifest import HookManifest
     return HookManifest(
         name="test-hook", description="", event=event, command=command,
-        tool=tool, timeout=timeout, blocking=blocking,
+        tools=[tool] if tool is not None else None, timeout=timeout, blocking=blocking,
     )
 
 
