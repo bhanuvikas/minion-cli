@@ -919,20 +919,15 @@ class MinionApp(App):
     # ── Agent chat mode UI ────────────────────────────────────────────────────
 
     def set_agent_mode(self, role: "Optional[str]") -> None:
-        """Update prompt prefix and status bar hint for agent chat mode.
+        """Update status bar hint for agent chat mode.
 
-        Call with a role name to enter agent mode, None to restore minion mode.
+        The input prefix stays "you ›" — it's always the user typing.
+        Only the status bar reflects which agent is active.
         """
-        try:
-            prefix = self.query_one("#you-prefix", Static)
-            if role:
-                prefix.update(f"[bold #4CAF50]{role} ›[/] ")
-                self.status.set_inspector_hint(f"agent: {role}  ·  /back or /handoff to exit")
-            else:
-                prefix.update("[bold #FFD700]you ›[/] ")
-                self.status.set_inspector_hint("")
-        except Exception:
-            pass
+        if role:
+            self.status.set_inspector_hint(f"agent: {role}  ·  /back or /handoff to exit")
+        else:
+            self.status.set_inspector_hint("")
         self._refresh_status()
 
     # ── Transient widget helpers ──────────────────────────────────────────────
