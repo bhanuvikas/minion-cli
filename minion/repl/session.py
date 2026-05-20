@@ -26,7 +26,7 @@ from ..output import ConsoleRenderer, TuiRenderer
 from ..runner import run_prompt_async
 from ..theme import SILVER, YELLOW, console
 from ..tracing import get_tracer
-from .agent_handlers import _handle_remote_command
+from .agent_handlers import _handle_remote_command, _run_agent_handoff_summary
 from .commands import _get_last_response_text, _handle_slash_command
 from .input import _CaptureBuf, _INPUT_STYLE, _InputLexer, _SlashCompleter, _kb
 from .mcp import _extract_mcp_text, _handle_mcp_command, _inject_mcp_message
@@ -493,14 +493,162 @@ async def _run_repl_tui(
                 tui_app.set_thinking(False)
                 return
 
+        # ── Agent chat mode: route input directly to agent conversation ─────────
+        if state and state.active_agent_role is not None:
+            _chat_role = state.active_agent_role
+            _chat_conv = state.active_agent_conversation
+            _chat_mfst = state.active_agent_manifest
+            _stripped  = user_input.strip()
+
+            # Defensive — entry always sets all three; guard satisfies type checker
+            if _chat_conv is None or _chat_mfst is None:
+                state.active_agent_role = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest = None
+                tui_app.set_agent_mode(None)
+                tui_app.set_thinking(False)
+                return
+
+            if _stripped == "/back":
+                state.active_agent_role         = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest     = None
+                tui_app.set_agent_mode(None)
+                tui_app.conversation.append_system(
+                    f"[#888888]Returned to minion. [{_chat_role}] conversation not shared.[/]"
+                )
+                tui_app.conversation.finalize_turn()
+                tui_app.set_thinking(False)
+                return
+
+            if _stripped == "/handoff":
+                try:
+                    _summary = await _run_agent_handoff_summary(
+                        _chat_conv,
+                        _chat_mfst,
+                        client,
+                    )
+                except Exception as _exc:
+                    tui_app.conversation.append_system(
+                        f"[red]Handoff failed: {_exc}. Use /back to exit silently.[/]"
+                    )
+                    tui_app.conversation.finalize_turn()
+                    tui_app.set_thinking(False)
+                    return
+
+                state.active_agent_role         = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest     = None
+                tui_app.set_agent_mode(None)
+                tui_app.conversation.append_system(
+                    f"[#4CAF50]Handoff from [{_chat_role}][/]  [#666666]— minion is reviewing…[/]"
+                )
+                _ho_text = (
+                    f"The user just finished a direct conversation with the [{_chat_role}] agent. "
+                    f"Here is the agent's handoff summary:\n\n{_summary}"
+                )
+                try:
+                    await run_prompt_async(
+                        _ho_text, client, conversation,
+                        state.system_prompt,
+                        system_dynamic="",
+                        mcp_manager=mcp_manager,
+                        enable_agents=state.agents_enabled,
+                        agent_registry=agent_registry,
+                        agent_depth=0,
+                        a2a_manager=a2a_manager_ref,
+                        auto_compact=_file_cfg.context.auto_compact,
+                        approval_mode=state.approval_mode,
+                        permission_store=permission_store,
+                        stream_markdown=state.markdown_enabled,
+                        hook_runner=hook_runner,
+                        confirmation_manager=confirmation_manager,
+                        renderer=_renderer,
+                    )
+                except Exception as _exc:
+                    tui_app.conversation.append_system(f"[red]Handoff error: {_exc}[/]")
+                finally:
+                    tui_app.conversation.finalize_turn()
+                tui_app.set_thinking(False)
+                return
+
+            # All other input: route to the agent's persisted conversation
+            from ..agents.runner import _resolve_tools as _rt
+            _a_tools = _rt(_chat_mfst.tools)
+            try:
+                await run_prompt_async(
+                    user_input, client, _chat_conv,
+                    _chat_mfst.system_prompt,
+                    system_dynamic="",
+                    tools=_a_tools,
+                    agent_depth=0,
+                    enable_agents=False,
+                    mcp_manager=mcp_manager,
+                    auto_compact=_file_cfg.context.auto_compact,
+                    approval_mode=state.approval_mode,
+                    permission_store=permission_store,
+                    stream_markdown=state.markdown_enabled,
+                    hook_runner=hook_runner,
+                    confirmation_manager=confirmation_manager,
+                    renderer=_renderer,
+                )
+            except Exception as _exc:
+                tui_app.conversation.append_system(f"[red]Error: {_exc}[/]")
+            finally:
+                tui_app.conversation.finalize_turn()
+            tui_app.set_thinking(False)
+            return
+
+        # ── /back and /handoff outside agent mode ────────────────────────────
+        if user_input.strip() in ("/back", "/handoff"):
+            tui_app.conversation.append_system(
+                "[#888888]Not in agent chat mode. Use /agent <role> to enter.[/]"
+            )
+            tui_app.conversation.finalize_turn()
+            tui_app.set_thinking(False)
+            return
+
         if user_input.startswith("/agent "):
             parts = user_input.split(None, 2)
             if len(parts) < 3 or not parts[2].strip():
-                err = (
-                    f"Usage: /agent <role> <task>  (missing task for role '{parts[1]}')"
-                    if len(parts) == 2 else "Usage: /agent <role> <task>"
+                # No task — enter persistent agent chat mode
+                _role = parts[1] if len(parts) >= 2 else ""
+                if not _role:
+                    tui_app.conversation.append_system(
+                        "[red]Usage: /agent <role> [task][/]"
+                    )
+                    tui_app.set_thinking(False)
+                    return
+                if state and state.active_agent_role is not None:
+                    tui_app.conversation.append_system(
+                        f"[red]Already in agent mode [{state.active_agent_role}]. "
+                        f"Use /back to exit first.[/]"
+                    )
+                    tui_app.set_thinking(False)
+                    return
+                _manifest = agent_registry.get(_role) if agent_registry else None
+                if _manifest is None:
+                    tui_app.conversation.append_system(
+                        f"[red]Unknown agent role '{_role}'. "
+                        f"Use /agents to list available roles.[/]"
+                    )
+                    tui_app.set_thinking(False)
+                    return
+                if state is None:
+                    tui_app.conversation.append_system(
+                        "[red]No session state — cannot enter agent mode.[/]"
+                    )
+                    tui_app.set_thinking(False)
+                    return
+                state.active_agent_role         = _role
+                state.active_agent_conversation = Conversation()
+                state.active_agent_manifest     = _manifest
+                tui_app.set_agent_mode(_role)
+                tui_app.conversation.append_system(
+                    f"[#4CAF50]Entering [{_role}] agent mode.[/]  "
+                    f"[#666666]/back to return silently · /handoff to share with minion[/]"
                 )
-                tui_app.conversation.append_system(f"[red]{err}[/]")
+                tui_app.conversation.finalize_turn()
                 tui_app.set_thinking(False)
                 return
             _role = parts[1]
@@ -929,9 +1077,12 @@ async def _run_console_loop(
         style=_INPUT_STYLE,
         multiline=True,
     )
-    you_prompt = FormattedText([("bold #FFD700", "you"), ("", " › ")])
-
     while True:
+        you_prompt = (
+            FormattedText([("bold #4CAF50", state.active_agent_role), ("", " › ")])
+            if state and state.active_agent_role
+            else FormattedText([("bold #FFD700", "you"), ("", " › ")])
+        )
         try:
             user_input = await prompt_session.prompt_async(you_prompt)
         except (KeyboardInterrupt, EOFError):
@@ -973,13 +1124,131 @@ async def _run_console_loop(
                 console.print("[muted]Conversation primed with prompt template. Ask a follow-up to continue.[/]")
                 continue
 
+        # ── Agent chat mode: route input directly to agent conversation ─────────
+        if state and state.active_agent_role is not None:
+            _chat_role = state.active_agent_role
+            _chat_conv = state.active_agent_conversation
+            _chat_mfst = state.active_agent_manifest
+            _stripped  = user_input.strip()
+
+            # Defensive — entry always sets all three; guard satisfies type checker
+            if _chat_conv is None or _chat_mfst is None:
+                state.active_agent_role = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest = None
+                continue
+
+            if _stripped == "/back":
+                state.active_agent_role         = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest     = None
+                console.print(
+                    f"[#888888]Returned to minion. [{_chat_role}] conversation not shared.[/]"
+                )
+                console.print()
+                continue
+
+            if _stripped == "/handoff":
+                try:
+                    with console.status("[muted]Generating handoff summary…[/]", spinner="dots"):
+                        _summary = await _run_agent_handoff_summary(
+                            _chat_conv,
+                            _chat_mfst,
+                            client,
+                        )
+                except Exception as _exc:
+                    console.print(f"[red]Handoff failed: {_exc}. Use /back to exit silently.[/]")
+                    console.print()
+                    continue
+
+                state.active_agent_role         = None
+                state.active_agent_conversation = None
+                state.active_agent_manifest     = None
+
+                _ho_text = (
+                    f"The user just finished a direct conversation with the [{_chat_role}] agent. "
+                    f"Here is the agent's handoff summary:\n\n{_summary}"
+                )
+                console.print()
+                await run_prompt_async(
+                    _ho_text, client, conversation,
+                    state.system_prompt if state else "",
+                    system_dynamic="",
+                    mcp_manager=mcp_manager,
+                    enable_agents=state.agents_enabled if state else True,
+                    agent_registry=agent_registry,
+                    agent_depth=0,
+                    a2a_manager=a2a_manager,
+                    auto_compact=_file_cfg.context.auto_compact,
+                    approval_mode=state.approval_mode if state else "off",
+                    permission_store=permission_store,
+                    stream_markdown=state.markdown_enabled if state else True,
+                    hook_runner=hook_runner,
+                    renderer=_renderer,
+                )
+                console.print()
+                continue
+
+            # All other input routes to the agent's persisted conversation
+            from ..agents.runner import _resolve_tools as _rt
+            _a_tools = _rt(_chat_mfst.tools)
+            console.print()
+            await run_prompt_async(
+                user_input, client, _chat_conv,
+                _chat_mfst.system_prompt,
+                system_dynamic="",
+                tools=_a_tools,
+                agent_depth=0,
+                enable_agents=False,
+                mcp_manager=mcp_manager,
+                auto_compact=_file_cfg.context.auto_compact,
+                approval_mode=state.approval_mode if state else "off",
+                permission_store=permission_store,
+                stream_markdown=state.markdown_enabled if state else True,
+                hook_runner=hook_runner,
+                renderer=_renderer,
+            )
+            console.print()
+            continue
+
+        # ── /back and /handoff outside agent mode ────────────────────────────
+        if user_input.strip() in ("/back", "/handoff"):
+            console.print("[#888888]Not in agent chat mode. Use /agent <role> to enter.[/]")
+            console.print()
+            continue
+
         if user_input.startswith("/agent "):
             _parts = user_input.split(None, 2)
             if len(_parts) < 3 or not _parts[2].strip():
-                from ..theme import print_error as _pe
-                _pe(
-                    f"Usage: /agent <role> <task>  (missing task for role '{_parts[1]}')"
-                    if len(_parts) == 2 else "Usage: /agent <role> <task>"
+                # No task — enter persistent agent chat mode
+                _role = _parts[1] if len(_parts) >= 2 else ""
+                if not _role:
+                    from ..theme import print_error as _pe
+                    _pe("Usage: /agent <role> [task]")
+                    console.print()
+                    continue
+                if state and state.active_agent_role is not None:
+                    from ..theme import print_error as _pe
+                    _pe(f"Already in agent mode [{state.active_agent_role}]. Use /back to exit first.")
+                    console.print()
+                    continue
+                _manifest = agent_registry.get(_role) if agent_registry else None
+                if _manifest is None:
+                    from ..theme import print_error as _pe
+                    _pe(f"Unknown agent role '{_role}'. Use /agents to list available roles.")
+                    console.print()
+                    continue
+                if state is None:
+                    from ..theme import print_error as _pe
+                    _pe("No session state — cannot enter agent mode.")
+                    console.print()
+                    continue
+                state.active_agent_role         = _role
+                state.active_agent_conversation = Conversation()
+                state.active_agent_manifest     = _manifest
+                console.print(
+                    f"[#4CAF50]Entering [{_role}] agent mode.[/]  "
+                    f"[#666666]/back to return silently · /handoff to share with minion[/]"
                 )
                 console.print()
                 continue

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..context import ProjectContext
     from ..memory.store import MemoryStore
     from ..skills.registry import SkillRegistry
+    from ..agents.manifest import AgentRoleManifest
 
 
 # ─── Session state ────────────────────────────────────────────────────────────
@@ -33,6 +34,10 @@ class ReplState:
     approval_mode: str = "off"   # "off" | "edits" | "yolo"
     markdown_enabled: bool = True  # render LLM responses as live markdown
     system_prompt: str = ""      # mutable override; updated by /init to hot-reload MINION.md
+    # Agent chat mode — all None means normal minion mode
+    active_agent_role: Optional[str] = None
+    active_agent_conversation: Optional["Conversation"] = None
+    active_agent_manifest: Optional["AgentRoleManifest"] = None
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -58,7 +63,9 @@ REPL_COMMANDS: dict[str, str] = {
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
     "/mcp":     "MCP servers: /mcp | /mcp resource <uri> | /mcp prompt <name> | /mcp reload",
     "/agents":  "List available agent roles (toggle: /config agents [on|off])",
-    "/agent":   "Run a role directly: /agent <role> <task>",
+    "/agent":   "Run or chat with a role: /agent <role> [task]  (no task = persistent chat)",
+    "/back":    "Exit agent chat mode (silent — agent conversation not shared with minion)",
+    "/handoff": "Exit agent chat mode and share conversation summary with minion",
     "/skills":  "Browse, run, create and edit skill workflows",
     "/remote":  "Remote agents: /remote | /remote list | /remote run <agent> <task>",
     "/quit":    "Exit Minion",

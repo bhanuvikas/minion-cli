@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from ..theme import BLUE, YELLOW, console, print_error
 
 if TYPE_CHECKING:
     from ..a2a.manager import A2AManager
+    from ..agents.manifest import AgentRoleManifest
+    from ..llm.conversation import Conversation
 
 
 def _handle_remote_command(raw: str, a2a_manager: "A2AManager | None") -> None:
@@ -59,3 +62,33 @@ def _handle_remote_command(raw: str, a2a_manager: "A2AManager | None") -> None:
         return
 
     print_error(f"Unknown /remote subcommand '{sub}'. Usage: /remote [list | run <agent> <task>]")
+
+
+async def _run_agent_handoff_summary(
+    agent_conversation: "Conversation",
+    agent_manifest: "AgentRoleManifest",
+    client,
+) -> str:
+    """Ask the agent to summarize its conversation as a handoff for minion.
+
+    The agent (not a neutral LLM) produces the summary because it has full
+    context of what was discussed and what mattered.
+    """
+    from ..compact.summary import _conversation_to_text
+    from ..llm.base import Message
+
+    summary_request = (
+        "Please provide a concise handoff summary of our conversation for the main minion assistant. "
+        "Include: what the user asked you to do, key findings and outputs, any files created or "
+        "modified, and clear recommendations for next steps. "
+        "Write it as a briefing from you to minion."
+    )
+    messages = list(agent_conversation.messages) + [
+        Message(role="user", content=summary_request)
+    ]
+    response = await asyncio.to_thread(
+        client.complete,
+        messages=messages,
+        system=agent_manifest.system_prompt,
+    )
+    return response.content.strip()
