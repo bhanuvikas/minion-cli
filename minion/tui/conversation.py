@@ -74,6 +74,7 @@ class ConversationBuffer:
         self._streaming_text: str = ""
         self._is_streaming: bool = False
         self._is_thinking: bool = False   # true between submit and first token
+        self._display_name: str = "minion"  # label shown on assistant turns
 
         # ── Last committed assistant text (for clipboard copy) ────────────────
         self._last_assistant_text: str = ""
@@ -136,7 +137,7 @@ class ConversationBuffer:
             self._had_external_print = False
             self._gap_emitted = False
 
-    def start_assistant_turn(self) -> None:
+    def start_assistant_turn(self, display_name: str = "minion") -> None:
         """Begin a new streaming assistant turn."""
         with self._lock:
             had_print   = self._had_external_print
@@ -145,6 +146,7 @@ class ConversationBuffer:
             self._is_streaming   = True
             self._last_was_assistant = False
             self._gap_emitted    = False
+            self._display_name   = display_name
         if had_print and not gap_already:
             self._emit(self._blank())
         self._refresh()
@@ -158,7 +160,8 @@ class ConversationBuffer:
     def finalize_turn(self) -> None:
         """Commit the complete assistant response to the conversation."""
         with self._lock:
-            text = self._streaming_text
+            text         = self._streaming_text
+            display_name = self._display_name
             self._is_streaming   = False
             self._streaming_text = ""
             if text:
@@ -166,7 +169,7 @@ class ConversationBuffer:
         if self._pre_finalize_fn:
             self._pre_finalize_fn()
         if text:
-            self._emit(_r.assistant_turn(text))
+            self._emit(_r.assistant_turn(text, display_name))
         with self._lock:
             self._last_was_assistant = True
         self._refresh()
@@ -283,7 +286,7 @@ class ConversationBuffer:
 
         # Normal streaming phase — end="" so prefix shares first line with Markdown
         prefix = Text(end="")
-        prefix.append("▌ minion ›", style="bold #1E90FF")
+        prefix.append(f"▌ {self._display_name} ›", style="bold #1E90FF")
         prefix.append(" ")
         if not text:
             prefix.append("…", style="#C0C0C0")

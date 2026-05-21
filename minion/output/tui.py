@@ -22,6 +22,7 @@ class TuiRenderer(OutputRenderer):
         self._app = app
         self._printed_prefix: bool = False
         self._silent_render: bool = False
+        self._display_name: str = "minion"
 
     # ── Streaming assistant turn ──────────────────────────────────────────────
 
@@ -34,7 +35,8 @@ class TuiRenderer(OutputRenderer):
     ) -> None:
         # Stream always starts so the user sees live output; panel replaces it on end.
         self._silent_render = silent
-        self._app.conversation.start_assistant_turn()
+        self._display_name  = display_name
+        self._app.conversation.start_assistant_turn(display_name=display_name)
         self._printed_prefix = True
 
     def on_assistant_chunk(self, text: str) -> None:
@@ -151,7 +153,7 @@ class TuiRenderer(OutputRenderer):
         from rich.text import Text
         from ..theme import YELLOW
         prefix = Text()
-        prefix.append("▌ minion ›", style="bold #1E90FF")
+        prefix.append(f"▌ {self._display_name} ›", style="bold #1E90FF")
         self._app.conversation.append_block(prefix)
         panel = Panel(
             Markdown(text),

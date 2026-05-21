@@ -96,7 +96,7 @@ def user_turn(text: str) -> "Group":
     return Group(Rule(style=RULE_STYLE), msg)
 
 
-def assistant_turn(text: str) -> "Group":
+def assistant_turn(text: str, display_name: str = "minion") -> "Group":
     """Render a complete assistant turn (blue ▌ bar + prefix + rendered markdown)."""
     from rich.console import Group
     from rich.markdown import Markdown
@@ -105,7 +105,7 @@ def assistant_turn(text: str) -> "Group":
     prefix = Text(end="")
     prefix.append("▌", style=ACCENT_BLUE)
     prefix.append(" ")
-    prefix.append("minion", style=MINION_STYLE)
+    prefix.append(display_name, style=MINION_STYLE)
     prefix.append(" › ", style=SEP_STYLE)
     return Group(prefix, Markdown(text))
 

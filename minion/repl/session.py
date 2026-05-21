@@ -515,7 +515,7 @@ async def _run_repl_tui(
                 state.active_agent_manifest     = None
                 tui_app.set_agent_mode(None)
                 tui_app.conversation.append_system(
-                    f"[#888888]Returned to minion. \\[{_chat_role}\\] conversation not shared.[/]"
+                    f"[#888888]Returned to minion. \\[{_chat_role}] conversation not shared.[/]"
                 )
                 tui_app.conversation.finalize_turn()
                 tui_app.set_thinking(False)
@@ -541,7 +541,7 @@ async def _run_repl_tui(
                 state.active_agent_manifest     = None
                 tui_app.set_agent_mode(None)
                 tui_app.conversation.append_system(
-                    f"[#4CAF50]Handoff from \\[{_chat_role}\\][/]  [#666666]— minion is reviewing…[/]"
+                    f"[#4CAF50]Handoff from \\[{_chat_role}][/]  [#666666]— minion is reviewing…[/]"
                 )
                 _ho_text = (
                     f"The user just finished a direct conversation with the [{_chat_role}] agent. "
@@ -622,7 +622,7 @@ async def _run_repl_tui(
                     return
                 if state and state.active_agent_role is not None:
                     tui_app.conversation.append_system(
-                        f"[red]Already in agent mode \\[{state.active_agent_role}\\]. "
+                        f"[red]Already in agent mode \\[{state.active_agent_role}]. "
                         f"Use /back to exit first.[/]"
                     )
                     tui_app.set_thinking(False)
@@ -646,7 +646,7 @@ async def _run_repl_tui(
                 state.active_agent_manifest     = _manifest
                 tui_app.set_agent_mode(_role)
                 tui_app.conversation.append_system(
-                    f"[#4CAF50]Entering \\[{_role}\\] agent mode.[/]  "
+                    f"[#4CAF50]Entering \\[{_role}] agent mode.[/]  "
                     f"[#666666]/back to return silently · /handoff to share with minion[/]"
                 )
                 tui_app.conversation.finalize_turn()
@@ -1144,7 +1144,7 @@ async def _run_console_loop(
                 state.active_agent_conversation = None
                 state.active_agent_manifest     = None
                 console.print(
-                    f"[#888888]Returned to minion. \\[{_chat_role}\\] conversation not shared.[/]"
+                    f"[#888888]Returned to minion. \\[{_chat_role}] conversation not shared.[/]"
                 )
                 console.print()
                 continue
@@ -1231,7 +1231,7 @@ async def _run_console_loop(
                     continue
                 if state and state.active_agent_role is not None:
                     from ..theme import print_error as _pe
-                    _pe(f"Already in agent mode \\[{state.active_agent_role}\\]. Use /back to exit first.")
+                    _pe(f"Already in agent mode \\[{state.active_agent_role}]. Use /back to exit first.")
                     console.print()
                     continue
                 _manifest = agent_registry.get(_role) if agent_registry else None
@@ -1249,7 +1249,7 @@ async def _run_console_loop(
                 state.active_agent_conversation = Conversation()
                 state.active_agent_manifest     = _manifest
                 console.print(
-                    f"[#4CAF50]Entering \\[{_role}\\] agent mode.[/]  "
+                    f"[#4CAF50]Entering \\[{_role}] agent mode.[/]  "
                     f"[#666666]/back to return silently · /handoff to share with minion[/]"
                 )
                 console.print()
