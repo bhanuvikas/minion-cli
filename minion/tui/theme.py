@@ -89,10 +89,6 @@ InputSection.permission-active {{
     border-bottom: solid {BLUE};
 }}
 
-InputSection.permission-active.has-diff {{
-    height: 85vh;
-}}
-
 InputSection.choice-active {{
     border-top: solid {GOLD};
     border-bottom: solid {GOLD};
@@ -107,12 +103,9 @@ PermissionContent {{
     height: auto;
 }}
 
-InputSection.permission-active.has-diff > PermissionContent {{
-    height: 100%;
-}}
-
 PermissionDiffArea {{
-    height: 1fr;
+    height: auto;
+    max-height: 55vh;
     padding: 0 1;
     scrollbar-size-vertical: 1;
     scrollbar-background: #111111;

@@ -162,6 +162,14 @@ class OutputRenderer(ABC):
     def on_markdown_panel(self, text: str, title: Optional[str] = None) -> None:
         """Render a completed markdown response as a panel/block."""
 
+    def resume_thinking(self) -> None:
+        """Re-enable the thinking animation after a user-input pause (e.g. choice panel).
+
+        Called from a background thread before a long-running operation like
+        execute_plan(). Console mode is a no-op; TUI mode re-mounts the widget.
+        Default is no-op so subclasses only override when needed.
+        """
+
     # ── Session / metadata ────────────────────────────────────────────────────
 
     @abstractmethod

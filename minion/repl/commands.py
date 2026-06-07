@@ -554,6 +554,8 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
             return True
         if ctx.renderer is None:
             console.print()
+        else:
+            ctx.renderer.resume_thinking()
         execute_plan(
             plan_path, client, conversation, ctx.base_system_prompt,
             state or ReplState(), permission_store=permission_store,
@@ -609,6 +611,8 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
         if choice == "Execute plan":
             if _renderer is None:
                 console.print()
+            else:
+                _renderer.resume_thinking()
             execute_plan(
                 result.path, client, conversation, ctx.base_system_prompt,
                 state or ReplState(), permission_store=permission_store,

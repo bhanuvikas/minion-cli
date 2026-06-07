@@ -996,6 +996,13 @@ class MinionApp(App):
         if self.conversation._is_streaming:
             return  # streaming phase owns its own widget
         if self._thinking_widget is None:
+            # Widget was dismissed by a content write (e.g. planner narration block
+            # or tool-call line between ReAct iterations). Re-mount it so the
+            # animation reappears within 0.25s of each content write.
+            if self._conv_area is not None:
+                self._thinking_widget = self._conv_area.append_block(
+                    self.conversation.get_streaming_renderable()
+                )
             return
         self._thinking_widget.update(self.conversation.get_streaming_renderable())
 
@@ -1236,6 +1243,8 @@ class MinionApp(App):
     # ── Permission show/hide ──────────────────────────────────────────────────
 
     def show_permission(self) -> None:
+        # Pause thinking animation — we're waiting for user input, not computing.
+        self._set_thinking(False)
         if self._permission_content is not None:
             diff_markup = self.permission.get_diff_markup()
             if self._perm_diff_text is not None:
@@ -1258,12 +1267,6 @@ class MinionApp(App):
             self._input_row.display = False
         if self._input_section is not None:
             self._input_section.add_class("permission-active")
-            # Expand to 85vh only when there's a diff; tiny prompts stay height:auto
-            diff_markup = self.permission.get_diff_markup()
-            if diff_markup:
-                self._input_section.add_class("has-diff")
-            else:
-                self._input_section.remove_class("has-diff")
         # PermissionContent expands InputSection, shrinking ConversationArea (1fr).
         # Scroll to bottom after the layout reflows so recent messages stay visible.
         if self._conv_area is not None:
@@ -1281,9 +1284,10 @@ class MinionApp(App):
             self._input_row.display = True
         if self._input_section is not None:
             self._input_section.remove_class("permission-active")
-            self._input_section.remove_class("has-diff")
         if self._input_area is not None:
             self.set_focus(self._input_area)
+        # Resume thinking — execution continues regardless of approve/deny.
+        self._set_thinking(True)
 
     # ── Choice show/hide ──────────────────────────────────────────────────────
 
@@ -1292,6 +1296,8 @@ class MinionApp(App):
             self._choice_content.update(self.choice_panel.get_rich_markup())
 
     def show_choice(self) -> None:
+        # Pause thinking animation — we're waiting for user input, not computing.
+        self._set_thinking(False)
         markup = self.choice_panel.get_rich_markup()
         if self._choice_content is not None:
             self._choice_content.update(markup)

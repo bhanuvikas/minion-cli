@@ -163,6 +163,9 @@ class TuiRenderer(OutputRenderer):
         )
         self._app.print_renderable(panel)
 
+    def resume_thinking(self) -> None:
+        self._app.call_from_thread(self._app._set_thinking, True)
+
     # ── Session / metadata ────────────────────────────────────────────────────
 
     def on_iteration_limit(self, limit: int) -> None:
