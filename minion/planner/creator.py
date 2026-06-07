@@ -5,6 +5,7 @@ _refine_plan()  — revise an existing plan given user feedback
 execute_plan()  — inject plan into system prompt and run the ReAct agent
 """
 
+import contextlib
 import sys
 import time as _time
 from dataclasses import dataclass
@@ -163,9 +164,16 @@ def _stream_planner_iteration(
     Raises on stream error (let caller handle).
     """
     effective_spinner = spinner_label or f"[{YELLOW}]Planning...[/]"
+    # In TUI mode suppress console.status() — it gets captured by _CaptureBuf
+    # and dumps spinner frames as garbage text. TUI shows its own thinking animation.
+    _spinner = (
+        contextlib.nullcontext()
+        if renderer is not None
+        else console.status(effective_spinner, spinner="dots")
+    )
     try:
         stream = client.stream(conv.messages, system=PLANNER_SYSTEM_PROMPT, tools=tools)
-        with console.status(effective_spinner, spinner="dots"):
+        with _spinner:
             first_event = next(stream, None)
     except Exception:
         raise
@@ -186,7 +194,12 @@ def _stream_planner_iteration(
         elif isinstance(event, StreamComplete):
             stop_reason = event.stop_reason
 
-    with console.status(effective_spinner, spinner="dots"):
+    _spinner2 = (
+        contextlib.nullcontext()
+        if renderer is not None
+        else console.status(effective_spinner, spinner="dots")
+    )
+    with _spinner2:
         _process(first_event)
         try:
             for event in stream:
