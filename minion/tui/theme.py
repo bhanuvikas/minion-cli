@@ -89,6 +89,11 @@ InputSection.permission-active {{
     border-bottom: solid {BLUE};
 }}
 
+InputSection.choice-active {{
+    border-top: solid {GOLD};
+    border-bottom: solid {GOLD};
+}}
+
 InputArea > .text-area--cursor-line {{
     background: transparent;
 }}
@@ -97,6 +102,14 @@ PermissionContent {{
     display: none;
     height: auto;
     max-height: 35;
+    overflow-y: auto;
+    padding: 0 1;
+}}
+
+ChoiceContent {{
+    display: none;
+    height: auto;
+    max-height: 20;
     overflow-y: auto;
     padding: 0 1;
 }}

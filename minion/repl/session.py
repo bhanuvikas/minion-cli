@@ -346,6 +346,8 @@ async def _run_repl_tui(
     a2a_manager_ref = getattr(ctx, '_a2a_manager', None)
 
     _renderer = TuiRenderer(tui_app)
+    ctx.renderer    = _renderer
+    ctx.mcp_manager = mcp_manager
 
     # ── First-run onboarding + setup checklist ───────────────────────────────
 
@@ -1066,6 +1068,8 @@ async def _run_console_loop(
     hook_runner  = ctx.hook_runner
 
     _renderer = ConsoleRenderer()
+    ctx.renderer    = _renderer
+    ctx.mcp_manager = mcp_manager
     prompt_session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=_SlashCompleter(

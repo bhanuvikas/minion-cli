@@ -94,6 +94,8 @@ class CommandContext:
     permission_store: Any = None
     hook_runner: Any = None
     confirmation_manager: Any = None
+    mcp_manager: Any = None
+    renderer: Any = None
 
     @property
     def base_system_prompt(self) -> str:

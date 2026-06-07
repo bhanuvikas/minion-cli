@@ -60,11 +60,13 @@ def _maybe_create_project_config(cwd: Path) -> None:
     console.print(f"[{YELLOW}]Created[/] [muted]{path}[/]")
 
 
-def _display_plan(content: str, path: Path) -> None:
-    """Render a plan document in a Rich panel with Markdown formatting."""
+def _display_plan(content: str, path: Path, renderer=None) -> None:
+    """Render a plan document. In TUI mode routes through renderer; else Rich Panel."""
+    if renderer is not None:
+        renderer.on_markdown_panel(content, title="Mission Plan")
+        return
     from rich.markdown import Markdown
     from rich.panel import Panel
-
     console.print(
         Panel(
             Markdown(content),
@@ -550,8 +552,14 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
         else:
             print_error("No active plan. Use /plan <goal> to create one first.")
             return True
-        console.print()
-        execute_plan(plan_path, client, conversation, ctx.base_system_prompt, state or ReplState(), permission_store=permission_store)
+        if ctx.renderer is None:
+            console.print()
+        execute_plan(
+            plan_path, client, conversation, ctx.base_system_prompt,
+            state or ReplState(), permission_store=permission_store,
+            renderer=ctx.renderer, hook_runner=ctx.hook_runner,
+            mcp_manager=ctx.mcp_manager, confirmation_manager=ctx.confirmation_manager,
+        )
         return True
 
     # /plan <goal> — create a new plan
@@ -566,48 +574,74 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
         state.active_plan = result.path
         state.active_plan_goal = goal
 
-    _display_plan(result.content, result.path)
+    _renderer = ctx.renderer
+    _cm = ctx.confirmation_manager
+    _is_tui = _cm is not None and getattr(_cm, "_tui_app", None) is not None
 
-    import questionary
+    _display_plan(result.content, result.path, renderer=_renderer)
 
     _PLAN_CHOICES = ["Execute plan", "Refine plan", "Save without executing"]
     refinement_round = 0
     while True:
-        try:
-            choice = questionary.select(
-                " What would you like to do?",
-                choices=_PLAN_CHOICES,
-                pointer="  ❯ ",
-                style=MINION_STYLE,
-            ).ask()
-        except (KeyboardInterrupt, EOFError):
-            choice = None
+        if _is_tui and _cm is not None:
+            idx = _cm.choose_sync(" What would you like to do?", _PLAN_CHOICES)
+            choice = _PLAN_CHOICES[idx] if idx is not None else None
+        else:
+            import questionary
+            try:
+                choice = questionary.select(
+                    " What would you like to do?",
+                    choices=_PLAN_CHOICES,
+                    pointer="  ❯ ",
+                    style=MINION_STYLE,
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                choice = None
 
         if choice is None or choice == "Save without executing":
-            console.print(f"[muted]Plan saved at {result.path}. Use /plan --execute to run later.[/]")
+            msg = f"[muted]Plan saved at {result.path}. Use /plan --execute to run later.[/]"
+            if _renderer is not None:
+                _renderer.on_info(msg)
+            else:
+                console.print(msg)
             break
 
         if choice == "Execute plan":
-            console.print()
-            execute_plan(result.path, client, conversation, ctx.base_system_prompt, state or ReplState(), permission_store=permission_store)
+            if _renderer is None:
+                console.print()
+            execute_plan(
+                result.path, client, conversation, ctx.base_system_prompt,
+                state or ReplState(), permission_store=permission_store,
+                renderer=_renderer, hook_runner=ctx.hook_runner,
+                mcp_manager=ctx.mcp_manager, confirmation_manager=_cm,
+            )
             break
 
-        try:
-            feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
-        except (KeyboardInterrupt, EOFError):
-            console.print(f"\n[muted]Plan saved. Use /plan --execute to run later.[/]")
-            break
-        feedback = feedback.strip()
+        # Refine path
+        if _is_tui and _cm is not None:
+            feedback = _cm.text_input_sync("feedback")
+        else:
+            try:
+                feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
+                feedback = feedback.strip()
+            except (KeyboardInterrupt, EOFError):
+                msg = f"\n[muted]Plan saved. Use /plan --execute to run later.[/]"
+                if _renderer is not None:
+                    _renderer.on_info(msg)
+                else:
+                    console.print(msg)
+                break
         if not feedback:
             continue
-        console.print()
+        if _renderer is None:
+            console.print()
         refinement_round += 1
         revised = _refine_plan(result.content, feedback, goal, client)
         if revised:
             from ..planner.storage import save_plan as _save_plan
             _save_plan(revised, goal)
             result = PlanResult(path=result.path, content=revised, goal=goal)
-            _display_plan(revised, result.path)
+            _display_plan(revised, result.path, renderer=_renderer)
             get_tracer().emit(
                 "plan_refined",
                 plan_path=str(result.path),

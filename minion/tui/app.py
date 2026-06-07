@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 
@@ -35,6 +37,7 @@ from .agent_registry import get_registry
 from .conversation import ConversationBuffer
 from .inspector import InspectorScreen
 from .messages import InspectorUpdated, SlotsUpdated
+from .choice_panel import ChoicePanel
 from .permission import PermissionPanel
 from .setup_checklist import SetupChecklistPanel
 from .slots import SlotsManager
@@ -164,6 +167,18 @@ class PermissionContent(Static):
     # focused). With PermissionContent focused, InputArea is not in the focus
     # chain and its bindings are inactive — keys bubble cleanly to App.on_key.
     can_focus = True
+
+
+class ChoiceContent(Static):
+    """Inline choice panel — shown inside InputSection when a plan choice is needed."""
+    can_focus = True
+
+
+@dataclass
+class _TextCapture:
+    """Bridges text_input_sync() (background thread) with on_tui_submit() (TUI event loop)."""
+    event:  threading.Event = field(default_factory=threading.Event)
+    result: str = ""
 
 
 class InputArea(TextArea):
@@ -322,10 +337,11 @@ class InputRow(Horizontal):
 
 
 class InputSection(Widget):
-    """Container that switches between InputRow (normal) and PermissionContent."""
+    """Container that switches between InputRow (normal), PermissionContent, and ChoiceContent."""
 
     def compose(self) -> ComposeResult:
         yield PermissionContent("", id="permission-content")
+        yield ChoiceContent("",    id="choice-content")
         yield InputRow(id="input-row")
 
 
@@ -559,7 +575,9 @@ class MinionApp(App):
         # Component state machines (not Textual widgets)
         self.conversation = ConversationBuffer()
         self.permission   = PermissionPanel(app_ref=self)
+        self.choice_panel = ChoicePanel(app_ref=self)
         self.checklist    = SetupChecklistPanel()
+        self._text_capture: Optional[_TextCapture] = None
         self.status       = StatusBar(model_name=model_name, width=self._terminal_width)
 
         _reg = get_registry()
@@ -580,6 +598,7 @@ class MinionApp(App):
         self._conv_area:          Optional[ConversationArea]    = None
         self._input_section:      Optional[InputSection]        = None
         self._permission_content: Optional[PermissionContent]   = None
+        self._choice_content:     Optional[ChoiceContent]       = None
         self._input_row:          Optional[InputRow]            = None
         self._completion_list:    Optional[SlashPreviewWidget]   = None
         self._status_line:        Optional[StatusLine]          = None
@@ -629,6 +648,7 @@ class MinionApp(App):
         self._setup_cl_footer    = self.query_one("#cl-footer",   Static)
         self._input_section      = self.query_one("#input-section",          InputSection)
         self._permission_content = self.query_one("#permission-content",     PermissionContent)
+        self._choice_content     = self.query_one("#choice-content",         ChoiceContent)
         self._input_row          = self.query_one("#input-row",              InputRow)
         self._completion_list    = self.query_one("#completion-list",        SlashPreviewWidget)
         self._status_line        = self.query_one("#status-line",            StatusLine)
@@ -737,6 +757,32 @@ class MinionApp(App):
     # ── Key handler for permission + inspector navigation ─────────────────────
 
     def on_key(self, event: Key) -> None:
+        if self.choice_panel.is_visible:
+            k = event.key
+            handled = True
+            if k == "up":
+                self.choice_panel.move_cursor(-1)
+                self._refresh_choice()
+                handled = False
+            elif k == "down":
+                self.choice_panel.move_cursor(1)
+                self._refresh_choice()
+                handled = False
+            elif k == "enter":
+                self.choice_panel.confirm_current()
+            elif k == "escape":
+                self.choice_panel.cancel()
+            else:
+                # 1-9 direct select
+                try:
+                    idx = int(k) - 1
+                    self.choice_panel.confirm_by_index(idx)
+                except (ValueError, TypeError):
+                    handled = False
+            if handled:
+                event.prevent_default()
+            return
+
         if self.permission.is_visible:
             handled = True
             k = event.key
@@ -784,6 +830,21 @@ class MinionApp(App):
         """User submitted text from InputArea."""
         text = message.text
         if not text:
+            return
+        # Text-capture mode: refinement feedback during /plan flow
+        if self._text_capture is not None:
+            capture = self._text_capture
+            self._text_capture = None
+            capture.result = text.strip()
+            if self._input_area is not None:
+                self._input_area.clear()
+            # Restore "you ›" prefix
+            try:
+                prefix = self.query_one("#you-prefix", Static)
+                prefix.update("[bold #FFD700]you ›[/] ")
+            except Exception:
+                pass
+            capture.event.set()
             return
         if self._input_area is not None:
             self._input_area.clear()
@@ -1154,6 +1215,50 @@ class MinionApp(App):
             self._input_row.display = True
         if self._input_section is not None:
             self._input_section.remove_class("permission-active")
+        if self._input_area is not None:
+            self.set_focus(self._input_area)
+
+    # ── Choice show/hide ──────────────────────────────────────────────────────
+
+    def _refresh_choice(self) -> None:
+        if self._choice_content is not None:
+            self._choice_content.update(self.choice_panel.get_rich_markup())
+
+    def show_choice(self) -> None:
+        markup = self.choice_panel.get_rich_markup()
+        if self._choice_content is not None:
+            self._choice_content.update(markup)
+            self._choice_content.display = True
+            self.set_focus(self._choice_content)
+        if self._input_row is not None:
+            self._input_row.display = False
+        if self._input_section is not None:
+            self._input_section.add_class("choice-active")
+        if self._conv_area is not None:
+            self.call_after_refresh(
+                self._conv_area.scroll_end, animate=False, x_axis=False
+            )
+
+    def hide_choice(self) -> None:
+        if self._choice_content is not None:
+            self._choice_content.display = False
+        if self._input_row is not None:
+            self._input_row.display = True
+        if self._input_section is not None:
+            self._input_section.remove_class("choice-active")
+        if self._input_area is not None:
+            self.set_focus(self._input_area)
+
+    # ── Text-capture mode (for refinement feedback during /plan) ─────────────
+
+    async def start_text_capture(self, prompt: str, capture: "_TextCapture") -> None:
+        """Switch InputRow to text-capture mode; next submit goes to capture."""
+        self._text_capture = capture
+        try:
+            prefix = self.query_one("#you-prefix", Static)
+            prefix.update(f"[bold #4CAF50]{prompt} ›[/] ")
+        except Exception:
+            pass
         if self._input_area is not None:
             self.set_focus(self._input_area)
 
