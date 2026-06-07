@@ -6,7 +6,7 @@ Each record is stored as a markdown file with YAML-like frontmatter:
     id: abc123
     type: semantic
     scope: project
-    project_path: /Users/bhanu/Documents/Projects/minion-cli
+    project_path: /home/user/projects/my-project
     tags: database, postgresql
     created_at: 2026-04-02T10:30:00
     superseded_by:
