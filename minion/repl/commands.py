@@ -566,7 +566,7 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
     goal = arg
     console.print()
     recent = [m for m in conversation.messages if isinstance(m.content, str)][-8:]
-    result = create_plan(goal, client, project_context, recent_messages=recent or None)
+    result = create_plan(goal, client, project_context, recent_messages=recent or None, renderer=ctx.renderer)
     if result is None:
         return True
 

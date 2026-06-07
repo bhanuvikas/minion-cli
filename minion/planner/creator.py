@@ -151,6 +151,7 @@ def _stream_planner_iteration(
     conv: Conversation,
     tools: Optional[list],
     spinner_label: str = "",
+    renderer=None,
 ) -> tuple[str, list[ToolUseBlock], str]:
     """Run one planner streaming call.
 
@@ -196,9 +197,15 @@ def _stream_planner_iteration(
     # Flush narration for tool-use turns so user sees LLM's reasoning.
     # Final end_turn text is suppressed — the caller renders the markdown Panel.
     if tool_blocks and text_chunks:
-        console.print(f"[bold {YELLOW}]planning[/] › ", end="")
-        sys.stdout.write("".join(text_chunks))
-        print()
+        narration = "".join(text_chunks)
+        _tui_app = getattr(renderer, "_app", None) if renderer is not None else None
+        if _tui_app is not None:
+            from ..tui.render import assistant_turn as _at
+            _tui_app.conversation.append_block(_at(narration, "planning"))
+        else:
+            console.print(f"[bold {YELLOW}]planning[/] › ", end="")
+            sys.stdout.write(narration)
+            print()
 
     return "".join(text_chunks), tool_blocks, stop_reason
 
@@ -210,6 +217,7 @@ def create_plan(
     client: LLMClient,
     project_context=None,
     recent_messages=None,
+    renderer=None,
 ) -> Optional[PlanResult]:
     """Explore the codebase with read-only tools and produce a markdown plan.
 
@@ -259,7 +267,7 @@ def create_plan(
     for _ in range(MAX_PLAN_ITERS):
         try:
             full_text, tool_blocks, stop_reason = _stream_planner_iteration(
-                client, conv, tools=PLANNER_TOOL_DEFINITIONS
+                client, conv, tools=PLANNER_TOOL_DEFINITIONS, renderer=renderer
             )
         except Exception as e:
             print_error(str(e))
