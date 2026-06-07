@@ -159,14 +159,45 @@ class SetupChecklistZone(Widget):
         yield Static("", id="cl-footer")
 
 
-class PermissionContent(Static):
-    """Inline permission panel — shown inside InputSection when confirmation is needed."""
+class PermissionDiffArea(VerticalScroll):
+    """Scroll container for the diff preview inside PermissionContent.
+
+    VerticalScroll tracks virtual_size = inner Static height, so allow_vertical_scroll
+    is True when diff content exceeds the viewport — enabling scroll_page_up/down()
+    and native trackpad/mouse-wheel scrolling. Static alone cannot scroll its own
+    Rich content (virtual_size == display height → allow_vertical_scroll always False).
+    """
+
+    # No BINDINGS: App.on_key owns all key routing for the permission panel.
+    # PermissionContent (not this widget) holds focus, so these bindings never
+    # fire anyway — but clearing them prevents unexpected behaviour if focus shifts.
+    BINDINGS = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="perm-diff-text")
+
+
+class PermissionChoicesArea(Static):
+    """Fixed header + question + choices section inside PermissionContent."""
+
+
+class PermissionContent(Widget):
+    """Inline permission panel — shown inside InputSection when confirmation is needed.
+
+    Split into a scrollable diff area (PermissionDiffArea) above and a fixed choices
+    area (PermissionChoicesArea) below, so the action buttons are always visible even
+    when the diff is large.
+    """
 
     # Must be focusable so that Enter/Esc are NOT intercepted by InputArea's
     # priority=True binding (which fires before App.on_key when InputArea is
     # focused). With PermissionContent focused, InputArea is not in the focus
     # chain and its bindings are inactive — keys bubble cleanly to App.on_key.
     can_focus = True
+
+    def compose(self) -> ComposeResult:
+        yield PermissionDiffArea(id="perm-diff")
+        yield PermissionChoicesArea("", id="perm-choices")
 
 
 class ChoiceContent(Static):
@@ -340,8 +371,8 @@ class InputSection(Widget):
     """Container that switches between InputRow (normal), PermissionContent, and ChoiceContent."""
 
     def compose(self) -> ComposeResult:
-        yield PermissionContent("", id="permission-content")
-        yield ChoiceContent("",    id="choice-content")
+        yield PermissionContent(id="permission-content")
+        yield ChoiceContent("", id="choice-content")
         yield InputRow(id="input-row")
 
 
@@ -598,6 +629,9 @@ class MinionApp(App):
         self._conv_area:          Optional[ConversationArea]    = None
         self._input_section:      Optional[InputSection]        = None
         self._permission_content: Optional[PermissionContent]   = None
+        self._perm_diff:          Optional[PermissionDiffArea]  = None
+        self._perm_diff_text:     Optional[Static]              = None
+        self._perm_choices:       Optional[PermissionChoicesArea] = None
         self._choice_content:     Optional[ChoiceContent]       = None
         self._input_row:          Optional[InputRow]            = None
         self._completion_list:    Optional[SlashPreviewWidget]   = None
@@ -647,8 +681,11 @@ class MinionApp(App):
         self._setup_cl_rows      = [self.query_one(f"#cl-row-{i}", Static) for i in range(3)]
         self._setup_cl_footer    = self.query_one("#cl-footer",   Static)
         self._input_section      = self.query_one("#input-section",          InputSection)
-        self._permission_content = self.query_one("#permission-content",     PermissionContent)
-        self._choice_content     = self.query_one("#choice-content",         ChoiceContent)
+        self._permission_content = self.query_one("#permission-content", PermissionContent)
+        self._perm_diff          = self.query_one("#perm-diff",         PermissionDiffArea)
+        self._perm_diff_text     = self.query_one("#perm-diff-text",    Static)
+        self._perm_choices       = self.query_one("#perm-choices",      PermissionChoicesArea)
+        self._choice_content     = self.query_one("#choice-content",    ChoiceContent)
         self._input_row          = self.query_one("#input-row",              InputRow)
         self._completion_list    = self.query_one("#completion-list",        SlashPreviewWidget)
         self._status_line        = self.query_one("#status-line",            StatusLine)
@@ -803,6 +840,14 @@ class MinionApp(App):
             elif k == "down":
                 self.permission.move_cursor(1)
                 self._refresh_permission()
+                handled = False
+            elif k == "pageup":
+                if self._perm_diff is not None and self._perm_diff.display:
+                    self._perm_diff.scroll_page_up(animate=False)
+                handled = False
+            elif k == "pagedown":
+                if self._perm_diff is not None and self._perm_diff.display:
+                    self._perm_diff.scroll_page_down(animate=False)
                 handled = False
             else:
                 handled = False
@@ -1103,8 +1148,13 @@ class MinionApp(App):
         self._status_line.update(self.status.get_rich_markup())
 
     def _refresh_permission(self) -> None:
-        if self._permission_content is not None:
-            self._permission_content.update(self.permission.get_rich_markup())
+        diff_markup = self.permission.get_diff_markup()
+        if self._perm_diff_text is not None:
+            self._perm_diff_text.update(diff_markup)
+        if self._perm_diff is not None:
+            self._perm_diff.display = bool(diff_markup)
+        if self._perm_choices is not None:
+            self._perm_choices.update(self.permission.get_choices_markup())
 
     # ── Checklist show/hide/refresh ───────────────────────────────────────────
 
@@ -1186,9 +1236,19 @@ class MinionApp(App):
     # ── Permission show/hide ──────────────────────────────────────────────────
 
     def show_permission(self) -> None:
-        markup = self.permission.get_rich_markup()
         if self._permission_content is not None:
-            self._permission_content.update(markup)
+            diff_markup = self.permission.get_diff_markup()
+            if self._perm_diff_text is not None:
+                self._perm_diff_text.update(diff_markup)
+            if self._perm_diff is not None:
+                self._perm_diff.display = bool(diff_markup)
+                if diff_markup:
+                    # Reset scroll after layout reflows (container reuses scroll state)
+                    self.call_after_refresh(
+                        self._perm_diff.scroll_home, animate=False, x_axis=False
+                    )
+            if self._perm_choices is not None:
+                self._perm_choices.update(self.permission.get_choices_markup())
             self._permission_content.display = True
             # Move focus here so InputArea's priority Enter binding is inactive.
             # Keys bubble through PermissionContent → App.on_key which owns
@@ -1198,6 +1258,12 @@ class MinionApp(App):
             self._input_row.display = False
         if self._input_section is not None:
             self._input_section.add_class("permission-active")
+            # Expand to 85vh only when there's a diff; tiny prompts stay height:auto
+            diff_markup = self.permission.get_diff_markup()
+            if diff_markup:
+                self._input_section.add_class("has-diff")
+            else:
+                self._input_section.remove_class("has-diff")
         # PermissionContent expands InputSection, shrinking ConversationArea (1fr).
         # Scroll to bottom after the layout reflows so recent messages stay visible.
         if self._conv_area is not None:
@@ -1215,6 +1281,7 @@ class MinionApp(App):
             self._input_row.display = True
         if self._input_section is not None:
             self._input_section.remove_class("permission-active")
+            self._input_section.remove_class("has-diff")
         if self._input_area is not None:
             self.set_focus(self._input_area)
 

@@ -117,8 +117,20 @@ class PermissionPanel:
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
-    def get_rich_markup(self) -> str:
-        """Return Rich markup string for the PermissionContent Static widget."""
+    def get_diff_markup(self) -> str:
+        """Return Rich markup for the scrollable diff section (empty string if no diff)."""
+        if self._pending is None or not self._pending.diff_lines:
+            return ""
+        lines: list[str] = []
+        lines.append(f"[#333333]  {'─' * 60}[/]")
+        # diff_lines is already Rich markup from format_diff_rich()
+        for row in self._pending.diff_lines.split("\n"):
+            lines.append(f"  {row}")
+        lines.append(f"[#333333]  {'─' * 60}[/]")
+        return "\n".join(lines)
+
+    def get_choices_markup(self) -> str:
+        """Return Rich markup for the fixed header + question + choices section."""
         if self._pending is None:
             return ""
 
@@ -135,15 +147,6 @@ class PermissionPanel:
         if detail:
             lines.append(f"[#C0C0C0]  {_esc(detail)}[/]")
 
-        # ── Diff / file preview ───────────────────────────────────────────────
-        # diff_lines is already a Rich markup string from format_diff_rich();
-        # embed it directly so background-color styles are preserved.
-        if req.diff_lines:
-            lines.append(f"[#333333]  {'─' * 60}[/]")
-            for row in req.diff_lines.split("\n"):
-                lines.append(f"  {row}")
-            lines.append(f"[#333333]  {'─' * 60}[/]")
-
         # ── Question ──────────────────────────────────────────────────────────
         lines.append("")
         lines.append(f"  {question}")
@@ -159,8 +162,17 @@ class PermissionPanel:
                 lines.append(f"[#C0C0C0]  {cursor_str} {i + 1}.{label}[/]")
 
         lines.append("")
-        lines.append("[#666666]  ↑↓ navigate  1-4 select  Enter confirm  Esc deny[/]")
+        scroll_hint = "  PgUp/Dn scroll diff" if req.diff_lines else ""
+        lines.append(f"[#666666]  ↑↓ navigate  1-4 select  Enter confirm  Esc deny{scroll_hint}[/]")
         return "\n".join(lines)
+
+    def get_rich_markup(self) -> str:
+        """Return combined Rich markup (diff + choices). Used by tests and legacy callers."""
+        diff = self.get_diff_markup()
+        choices = self.get_choices_markup()
+        if diff and choices:
+            return diff + "\n" + choices
+        return choices or diff
 
 
 def _permission_detail(name: str, inputs: dict) -> str:

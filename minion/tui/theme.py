@@ -89,6 +89,10 @@ InputSection.permission-active {{
     border-bottom: solid {BLUE};
 }}
 
+InputSection.permission-active.has-diff {{
+    height: 85vh;
+}}
+
 InputSection.choice-active {{
     border-top: solid {GOLD};
     border-bottom: solid {GOLD};
@@ -101,8 +105,29 @@ InputArea > .text-area--cursor-line {{
 PermissionContent {{
     display: none;
     height: auto;
-    max-height: 35;
-    overflow-y: auto;
+}}
+
+InputSection.permission-active.has-diff > PermissionContent {{
+    height: 100%;
+}}
+
+PermissionDiffArea {{
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
+    scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
+    scrollbar-color-active: {DIM};
+}}
+
+#perm-diff-text {{
+    height: auto;
+    width: 1fr;
+}}
+
+PermissionChoicesArea {{
+    height: auto;
     padding: 0 1;
 }}
 
