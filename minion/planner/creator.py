@@ -5,6 +5,7 @@ _refine_plan()  — revise an existing plan given user feedback
 execute_plan()  — inject plan into system prompt and run the ReAct agent
 """
 
+import contextlib
 import sys
 import time as _time
 from dataclasses import dataclass
@@ -151,6 +152,7 @@ def _stream_planner_iteration(
     conv: Conversation,
     tools: Optional[list],
     spinner_label: str = "",
+    renderer=None,
 ) -> tuple[str, list[ToolUseBlock], str]:
     """Run one planner streaming call.
 
@@ -162,9 +164,16 @@ def _stream_planner_iteration(
     Raises on stream error (let caller handle).
     """
     effective_spinner = spinner_label or f"[{YELLOW}]Planning...[/]"
+    # In TUI mode suppress console.status() — it gets captured by _CaptureBuf
+    # and dumps spinner frames as garbage text. TUI shows its own thinking animation.
+    _spinner = (
+        contextlib.nullcontext()
+        if renderer is not None
+        else console.status(effective_spinner, spinner="dots")
+    )
     try:
         stream = client.stream(conv.messages, system=PLANNER_SYSTEM_PROMPT, tools=tools)
-        with console.status(effective_spinner, spinner="dots"):
+        with _spinner:
             first_event = next(stream, None)
     except Exception:
         raise
@@ -185,7 +194,12 @@ def _stream_planner_iteration(
         elif isinstance(event, StreamComplete):
             stop_reason = event.stop_reason
 
-    with console.status(effective_spinner, spinner="dots"):
+    _spinner2 = (
+        contextlib.nullcontext()
+        if renderer is not None
+        else console.status(effective_spinner, spinner="dots")
+    )
+    with _spinner2:
         _process(first_event)
         try:
             for event in stream:
@@ -196,9 +210,15 @@ def _stream_planner_iteration(
     # Flush narration for tool-use turns so user sees LLM's reasoning.
     # Final end_turn text is suppressed — the caller renders the markdown Panel.
     if tool_blocks and text_chunks:
-        console.print(f"[bold {YELLOW}]planning[/] › ", end="")
-        sys.stdout.write("".join(text_chunks))
-        print()
+        narration = "".join(text_chunks)
+        _tui_app = getattr(renderer, "_app", None) if renderer is not None else None
+        if _tui_app is not None:
+            from ..tui.render import assistant_turn as _at
+            _tui_app.conversation.append_block(_at(narration, "planning"))
+        else:
+            console.print(f"[bold {YELLOW}]planning[/] › ", end="")
+            sys.stdout.write(narration)
+            print()
 
     return "".join(text_chunks), tool_blocks, stop_reason
 
@@ -210,6 +230,7 @@ def create_plan(
     client: LLMClient,
     project_context=None,
     recent_messages=None,
+    renderer=None,
 ) -> Optional[PlanResult]:
     """Explore the codebase with read-only tools and produce a markdown plan.
 
@@ -259,7 +280,7 @@ def create_plan(
     for _ in range(MAX_PLAN_ITERS):
         try:
             full_text, tool_blocks, stop_reason = _stream_planner_iteration(
-                client, conv, tools=PLANNER_TOOL_DEFINITIONS
+                client, conv, tools=PLANNER_TOOL_DEFINITIONS, renderer=renderer
             )
         except Exception as e:
             print_error(str(e))
@@ -333,7 +354,11 @@ def execute_plan(
     conversation: Conversation,
     system_prompt: str,
     state: "ReplState",
-    permission_store=None,  # PermissionStore | None
+    permission_store=None,       # PermissionStore | None
+    renderer=None,               # OutputRenderer | None
+    hook_runner=None,            # HookRunner | None
+    mcp_manager=None,            # MCPManager | None
+    confirmation_manager=None,   # ConfirmationManager | None
 ) -> None:
     """Execute a plan by injecting it into the system prompt and running run_prompt.
 
@@ -367,6 +392,10 @@ def execute_plan(
         max_iterations=40,
         approval_mode=state.approval_mode,
         permission_store=permission_store,
+        renderer=renderer,
+        hook_runner=hook_runner,
+        mcp_manager=mcp_manager,
+        confirmation_manager=confirmation_manager,
     )
 
     get_tracer().emit("plan_complete", plan_path=str(plan_path))

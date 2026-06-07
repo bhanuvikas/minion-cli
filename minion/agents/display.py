@@ -246,9 +246,16 @@ class ParallelDisplay:
                     text.append(f"Error · {error[:72]}", style="red")
 
             else:
-                # ── Generic tool slot — 3-line format ────────────────────────
+                # ── Generic tool slot — header + optional diff + status ────────
                 # Line 1: ⚙  tool_name  key='value'…
                 self._append_slot_header(text, tool_name, inputs)
+                diff_markup = state.get("diff_markup", "")
+
+                # Diff shown between header and status, indented to match status lines
+                if diff_markup and status != "pending":
+                    indented = "  " + diff_markup.rstrip("\n").replace("\n", "\n  ")
+                    text.append("\n")
+                    text.append_text(Text.from_markup(indented))
 
                 if status == "pending":
                     text.append("\n  ·  waiting…", style="dim")

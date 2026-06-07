@@ -44,7 +44,7 @@ class ConfirmationManager:
         self._tui_app  = tui_app
         self._tui_loop = loop
 
-    def confirm_sync(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
+    def confirm_sync(self, name: str, inputs: dict, diff_lines: str = "") -> bool:
         """Sync confirmation — serialized via threading.Lock.
 
         TUI path: schedules PermissionPanel.request() in the TUI event loop
@@ -76,10 +76,62 @@ class ConfirmationManager:
                 if display is not None:
                     display.resume()
 
-    async def confirm_async(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
+    async def confirm_async(self, name: str, inputs: dict, diff_lines: str = "") -> bool:
         """Async confirmation — runs confirm_sync in a thread.
 
         Safe to call from any event loop. The single threading.Lock ensures
         prompts are fully serialized across all callers (async and threaded).
         """
         return await asyncio.to_thread(self.confirm_sync, name, inputs, diff_lines)
+
+    def choose_sync(self, prompt: str, choices: list[str]) -> "Optional[int]":
+        """Present a numbered choice list. Returns chosen index or None (cancel).
+
+        TUI path: shows ChoicePanel inline (replaces InputRow until user picks).
+        Console path: uses questionary.select().
+        """
+        from typing import Optional as _Opt
+        with self._lock:
+            if self._tui_app is not None and self._tui_loop is not None:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._tui_app.choice_panel.request(prompt, choices),
+                    self._tui_loop,
+                )
+                return future.result()
+            # Console path
+            import questionary
+            from ..config.interactive import MINION_STYLE
+            result = questionary.select(
+                prompt,
+                choices=choices,
+                pointer="  ❯ ",
+                style=MINION_STYLE,
+            ).ask()
+            if result in choices:
+                return choices.index(result)
+            return None
+
+    def text_input_sync(self, prompt: str) -> "Optional[str]":
+        """Capture a single line of text input. Returns the text or None (cancel).
+
+        TUI path: switches InputRow to capture mode; next Enter goes to capture.
+        Console path: uses console.input().
+        """
+        with self._lock:
+            if self._tui_app is not None and self._tui_loop is not None:
+                from ..tui.app import _TextCapture
+                capture = _TextCapture()
+                asyncio.run_coroutine_threadsafe(
+                    self._tui_app.start_text_capture(prompt, capture),
+                    self._tui_loop,
+                ).result()
+                capture.event.wait()
+                return capture.result or None
+            # Console path
+            from ..theme import console
+            from ..theme import YELLOW
+            try:
+                result = console.input(f"[bold {YELLOW}]{prompt}[/] › ")
+                return result.strip() or None
+            except (KeyboardInterrupt, EOFError):
+                return None

@@ -10,6 +10,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .messages import InspectorUpdated
+
 
 @dataclass
 class SubagentState:
@@ -32,10 +34,15 @@ class SubagentRegistry:
         self._lock = threading.Lock()
         self._states: dict[str, SubagentState] = {}
         self._order: list[str] = []
-        self._invalidate_fn: Optional[Callable] = None
+        self._post_message_fn: Optional[Callable] = None
 
+    def set_post_message(self, fn: Callable) -> None:
+        """Wire the Textual app's post_message() for thread-safe UI updates."""
+        self._post_message_fn = fn
+
+    # Keep old name as alias so any existing callers (tests, etc.) still work.
     def set_invalidate(self, fn: Callable) -> None:
-        self._invalidate_fn = fn
+        self.set_post_message(fn)
 
     def register(self, id: str, label: str, task: str, role: str) -> None:
         with self._lock:
@@ -56,11 +63,12 @@ class SubagentRegistry:
                 state.status = "complete"
                 state.latency_ms = data.get("latency_ms", 0)
                 state.preview = data.get("preview", "")
+                state.output_tokens = data.get("total_tokens", state.output_tokens)
             elif event == "error":
                 state.status = "error"
                 state.error = data.get("error", "")
-        if self._invalidate_fn is not None:
-            self._invalidate_fn()
+        if self._post_message_fn is not None:
+            self._post_message_fn(InspectorUpdated())
 
     def clear(self) -> None:
         with self._lock:

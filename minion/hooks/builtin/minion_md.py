@@ -44,7 +44,9 @@ class MinionMdStalenessHandler:
 
     def hook_describe(self) -> dict:
         return {
-            "type": "builtin",
+            "name": "minion-md-staleness",
+            "source": "builtin",
+            "type": "python",
             "event": "PostToolUse",
             "tool": "write_file, edit_file",
             "detail": "Tips when source files change while MINION.md exists",

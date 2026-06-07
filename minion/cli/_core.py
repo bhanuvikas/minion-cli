@@ -118,8 +118,12 @@ def main(
     try:
         client = get_client(effective_provider, effective_model)
     except ValueError as e:
-        print_error(str(e))
-        raise typer.Exit(code=1)
+        if _first_run:
+            from ..llm.factory import _PlaceholderClient
+            client = _PlaceholderClient()
+        else:
+            print_error(str(e))
+            raise typer.Exit(code=1)
 
     if effective_trace:
         from ..tracing import init_tracer
@@ -129,6 +133,7 @@ def main(
         client, dry_run=dry_run, reflect_depth=effective_reflect,
         verbose=effective_verbose, memory_enabled=effective_memory,
         debug=effective_debug,
+        first_run=_first_run,
     ))
 
 
@@ -152,12 +157,25 @@ app.command("doctor")(doctor_cmd)
 
 # ─── First-run detection ──────────────────────────────────────────────────────
 
+_first_run: bool = False  # Set by _entry() when TUI first-run onboarding should run
+
+
 def _needs_setup() -> bool:
     """Return True if no API key is configured anywhere."""
     import os
     return not any(
         os.environ.get(k)
         for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")
+    )
+
+
+def _is_tui_mode() -> bool:
+    """Return True if the session will use the Textual TUI (not console/pipe)."""
+    import os
+    import sys
+    return (
+        sys.stdout.isatty()
+        and os.environ.get("MINION_NO_TUI", "").lower() not in ("1", "true")
     )
 
 
@@ -259,6 +277,11 @@ def _entry() -> None:
 
     # No positional args → REPL / --help / --version via typer
     if _needs_setup() and not any(a.startswith("-") for a in raw):
-        from ..config import run_setup_wizard
-        asyncio.run(run_setup_wizard())
+        if _is_tui_mode():
+            # Let the TUI handle first-run setup via the /model wizard + completion modal.
+            global _first_run
+            _first_run = True
+        else:
+            from ..config import run_setup_wizard
+            asyncio.run(run_setup_wizard())
     app()

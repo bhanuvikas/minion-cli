@@ -1,8 +1,8 @@
-"""Permission panel for the TUI bottom zone.
+"""Permission panel for the TUI.
 
 When a dangerous tool needs confirmation, ConfirmationManager calls
-PermissionPanel.request() from the TUI event loop (via run_coroutine_threadsafe).
-The panel replaces the input bar in the bottom zone until the user responds.
+PermissionPanel.request() from the TUI event loop (via call_from_thread).
+The panel replaces the input area until the user responds.
 
 Scope options match _interactive_confirm() in tools/executor.py:
   1. Yes, once
@@ -14,8 +14,6 @@ Scope options match _interactive_confirm() in tools/executor.py:
 import asyncio
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
-
-from prompt_toolkit.formatted_text import FormattedText
 
 if TYPE_CHECKING:
     from .app import MinionApp
@@ -29,43 +27,67 @@ _SCOPE_LABELS = [
 ]
 _SCOPE_VALUES = ["once", "session", "project", "no"]
 
+_TOOL_ICONS = {
+    "write_file":  "✎",
+    "edit_file":   "✎",
+    "run_shell":   "$",
+    "web_fetch":   "◎",
+}
+
+_TOOL_QUESTIONS = {
+    "write_file":  "Allow this file write?",
+    "edit_file":   "Allow this edit?",
+    "run_shell":   "Allow this command?",
+    "web_fetch":   "Allow this fetch?",
+}
+
+# Tools where we replay the diff into the conversation after approval
+_DIFF_TOOLS = {"write_file", "edit_file"}
+
 
 @dataclass
 class PermissionRequest:
     name:       str
     inputs:     dict
-    diff_lines: list = field(default_factory=list)  # (style, text) pairs for diff preview
+    diff_lines: str = ""
     event:      asyncio.Event = field(default_factory=asyncio.Event)
     result:     bool = False
-    scope:      str  = "no"    # set when user confirms
+    scope:      str  = "no"
 
 
 class PermissionPanel:
-    """Renders the scope-selector permission prompt in the TUI bottom zone."""
+    """Renders the permission prompt inline in the InputSection."""
 
     def __init__(self, app_ref: "MinionApp") -> None:
         self._app     = app_ref
         self._pending: Optional[PermissionRequest] = None
         self._cursor:  int = 0
 
-    # ── Request API (called from TUI event loop via run_coroutine_threadsafe) ─
+        # Retained after request() completes so hide_permission() can read them
+        self._last_result: bool = False
+        self._last_diff:   str  = ""
+        self._last_name:   str  = ""
+        self._last_detail: str  = ""
 
-    async def request(self, name: str, inputs: dict, diff_lines: list = []) -> bool:
-        """Show the permission panel and wait for user response.
+    # ── Request API ───────────────────────────────────────────────────────────
 
-        Runs in the TUI event loop. The calling agent thread blocks on
-        future.result() until this coroutine resolves.
-        """
+    async def request(self, name: str, inputs: dict, diff_lines: str = "") -> bool:
+        """Show the permission panel and wait for user response."""
         req = PermissionRequest(name=name, inputs=inputs, diff_lines=diff_lines)
         self._pending = req
         self._cursor  = 0
-        self._app.invalidate()
+        self._app.show_permission()
         await req.event.wait()
+        # Persist for hide_permission() before clearing _pending
+        self._last_result = req.result
+        self._last_diff   = req.diff_lines
+        self._last_name   = req.name
+        self._last_detail = _permission_detail(req.name, req.inputs)
         self._pending = None
-        self._app.invalidate()
+        self._app.hide_permission()
         return req.result
 
-    # ── Key handler helpers (called from app.py key bindings) ─────────────────
+    # ── Key handler helpers ───────────────────────────────────────────────────
 
     @property
     def is_visible(self) -> bool:
@@ -75,7 +97,6 @@ class PermissionPanel:
         self._cursor = max(0, min(len(_SCOPE_LABELS) - 1, self._cursor + delta))
 
     def confirm_by_index(self, index: int) -> None:
-        """Confirm with a specific scope index (0-3)."""
         if self._pending is None:
             return
         req = self._pending
@@ -89,49 +110,72 @@ class PermissionPanel:
         req.event.set()
 
     def confirm_current(self) -> None:
-        """Confirm with the currently-highlighted cursor position."""
         self.confirm_by_index(self._cursor)
 
     def deny(self) -> None:
-        """Deny (same as selecting 'No')."""
         self.confirm_by_index(3)
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
-    def get_formatted_text(self) -> FormattedText:
+    def get_diff_markup(self) -> str:
+        """Return Rich markup for the scrollable diff section (empty string if no diff)."""
+        if self._pending is None or not self._pending.diff_lines:
+            return ""
+        lines: list[str] = []
+        lines.append(f"[#333333]  {'─' * 60}[/]")
+        # diff_lines is already Rich markup from format_diff_rich()
+        for row in self._pending.diff_lines.split("\n"):
+            lines.append(f"  {row}")
+        lines.append(f"[#333333]  {'─' * 60}[/]")
+        return "\n".join(lines)
+
+    def get_choices_markup(self) -> str:
+        """Return Rich markup for the fixed header + question + choices section."""
         if self._pending is None:
-            return FormattedText([])
+            return ""
 
-        req   = self._pending
-        frags: list[tuple[str, str]] = []
+        from rich.markup import escape as _esc
 
-        # Tool name + path/command header
-        frags.append(("class:perm-tool", f"  {req.name}"))
-        detail = _permission_detail(req.name, req.inputs)
+        req      = self._pending
+        icon     = _TOOL_ICONS.get(req.name, "⬡")
+        question = _TOOL_QUESTIONS.get(req.name, "Allow this action?")
+        detail   = _permission_detail(req.name, req.inputs)
+        lines: list[str] = []
+
+        # ── Tool header ───────────────────────────────────────────────────────
+        lines.append(f"[bold #1E90FF]  {icon} {req.name}[/]")
         if detail:
-            frags.append(("class:perm-detail", f"  {detail}"))
-        frags.append(("", "\n"))
+            lines.append(f"[#C0C0C0]  {_esc(detail)}[/]")
 
-        # Diff preview (if available)
-        if req.diff_lines:
-            for style, text in req.diff_lines:
-                frags.append((style, text))
+        # ── Question ──────────────────────────────────────────────────────────
+        lines.append("")
+        lines.append(f"  {question}")
+        lines.append("")
 
-        # Scope options — one per line
+        # ── Scope choices ─────────────────────────────────────────────────────
         for i, label in enumerate(_SCOPE_LABELS):
-            selected = i == self._cursor
-            cursor_str = "  ❯" if selected else "   "
-            style = "class:perm-selected" if selected else "class:perm-option"
-            frags.append(("class:perm-cursor", cursor_str))
-            frags.append((style, f" {i + 1}.{label}"))
-            frags.append(("", "\n"))
-        frags.append(("class:perm-detail", "  ↑↓ move  1-4 select  Enter confirm  Esc deny"))
+            selected   = i == self._cursor
+            cursor_str = "❯" if selected else " "
+            if selected:
+                lines.append(f"[bold #FFD700]  {cursor_str} {i + 1}.{label}[/]")
+            else:
+                lines.append(f"[#C0C0C0]  {cursor_str} {i + 1}.{label}[/]")
 
-        return FormattedText(frags)
+        lines.append("")
+        scroll_hint = "  PgUp/Dn scroll diff" if req.diff_lines else ""
+        lines.append(f"[#666666]  ↑↓ navigate  1-4 select  Enter confirm  Esc deny{scroll_hint}[/]")
+        return "\n".join(lines)
+
+    def get_rich_markup(self) -> str:
+        """Return combined Rich markup (diff + choices). Used by tests and legacy callers."""
+        diff = self.get_diff_markup()
+        choices = self.get_choices_markup()
+        if diff and choices:
+            return diff + "\n" + choices
+        return choices or diff
 
 
 def _permission_detail(name: str, inputs: dict) -> str:
-    """Return a brief detail string for the permission prompt header."""
     if name in ("write_file", "edit_file"):
         path = inputs.get("path", "")
         return path[:80] if path else ""

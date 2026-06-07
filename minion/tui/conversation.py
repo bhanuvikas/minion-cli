@@ -1,22 +1,19 @@
-"""Conversation state manager for the TUI.
+"""Conversation state manager for the Textual TUI.
 
 Responsibilities:
-  • Track the in-progress streaming assistant turn (shown in the streaming zone).
-  • Route completed turns to the terminal scrollback via the print_ansi_fn
-    callback wired by MinionApp.set_callbacks().
+  • Track the in-progress streaming assistant turn (shown in StreamingZone).
+  • Route completed turns to ConversationArea via write_block_fn callback.
   • Enforce consistent vertical spacing between turn types.
 
 Spacing contract
 ────────────────
   user turn   blank line BEFORE + blank line AFTER
-               ("you" is always visually separated from its neighbours)
-  assistant   blank line BEFORE when tool calls / external prints preceded it;
-               no extra blank when the assistant responds directly to the user
+  assistant   blank line BEFORE when tool calls / external prints preceded it
   tool calls  compact (no blank lines between consecutive tool lines)
   system/ansi no extra spacing — content controls its own margins
 
 Rendering is fully delegated to tui/render.py.
-This module contains NO Rich/ANSI rendering logic.
+This module contains NO ANSI rendering logic.
 """
 
 from __future__ import annotations
@@ -25,38 +22,10 @@ import threading
 import time as _time
 from typing import Callable, Optional
 
-# ── Thinking animation frames — uncomment one to try it ──────────────────────
-# Color is driven by class:minion-prefix (blue #1E90FF) so pick a frame style,
-# not a colour. All render inline as:  <frame>  <phrase>
+# ── Thinking animation frames ─────────────────────────────────────────────────
 
-# Two eyes — both animate in sync (open → look up → focus → open)
-# _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ◠", "◉ ◉", "◠ ◠", "○ ○"]
-
-# Two eyes with nose — wider face feel
-# _THINK_FRAMES = ["◡·◡", "○·○", "◠·◠", "◉·◉", "◠·◠", "○·○"]
-
-# Two eyes — blink sequence (closed → open → left-squint → open → right-squint)
 _THINK_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○"]
 
-# Single eye: glancing down → open → looking up → sharp focus → contract
-# _THINK_FRAMES = ["◡", "○", "◠", "◉", "◠", "○"]
-
-# Crystallising thought: seed → diamond → 4-star → open star → contract
-# _THINK_FRAMES = ["·", "◇", "◆", "✦", "✧", "✦", "◆", "◇"]
-
-# Morse-like pulse: two short dits then a long dah  (· · —)
-# _THINK_FRAMES = ["·", "•", "·", "–", "—", "–"]
-
-# Sine wave: flat → wave → double wave → triple wave → contract
-# _THINK_FRAMES = ["˜", "∿", "≈", "≋", "≈", "∿"]
-
-# Braille orbit: classic dot-spinning around a circle
-# _THINK_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-# Block pulse: light shading → dark → full → contract (signal level meter feel)
-# _THINK_FRAMES = ["░", "▒", "▓", "█", "▓", "▒"]
-
-# Phrases rotate every ~2 s — multilingual "thinking" + Minionese
 _THINK_PHRASES = [
     "thinking",           # English
     "pensando",           # Spanish
@@ -86,302 +55,247 @@ _THINK_PHRASES = [
     "mă gândesc",         # Romanian
 ]
 
-from prompt_toolkit.formatted_text import FormattedText
-
 from . import render as _r
 
 
 class ConversationBuffer:
-    """Routes completed turns to the terminal scrollback; holds streaming turn in-memory.
+    """Routes completed turns to ConversationArea; holds streaming turn in-memory.
 
     Wire up set_callbacks() before first use.  MinionApp calls mark_printed()
-    whenever it writes to the scrollback via print_renderable() so that
+    whenever it writes to the conversation via print_renderable() so that
     finalize_turn() can insert a blank line between tool output and the
     assistant response.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._width: int = 120
 
-        # ── Streaming state (rendered live in the streaming zone) ─────────────
+        # ── Streaming state (rendered live in StreamingZone) ──────────────────
         self._streaming_text: str = ""
         self._is_streaming: bool = False
         self._is_thinking: bool = False   # true between submit and first token
+        self._display_name: str = "minion"  # label shown on assistant turns
+
+        # ── Last committed assistant text (for clipboard copy) ────────────────
+        self._last_assistant_text: str = ""
 
         # ── Spacing trackers ──────────────────────────────────────────────────
-        # _had_external_print: set by mark_printed() when MinionApp.print_renderable()
-        # writes content between start_assistant_turn() and finalize_turn().
-        # finalize_turn() uses this to decide if a blank line is needed before
-        # the assistant response.
         self._had_external_print: bool = False
-
-        # _last_was_assistant: set after finalize_turn() so that the next
-        # append_system() call (e.g. hook tips) gets a leading blank line,
-        # visually separating hook messages from the assistant response.
         self._last_was_assistant: bool = False
-
-        # _gap_emitted: set by emit_spacer() when a blank line is pushed to the
-        # scrollback after tool output, so start_assistant_turn() doesn't emit
-        # a second blank line.
         self._gap_emitted: bool = False
 
+        # ── Pre-finalize hook (set by MinionApp) ──────────────────────────────
+        self._pre_finalize_fn: Optional[Callable[[], None]] = None
+
         # ── Callbacks wired by MinionApp ──────────────────────────────────────
-        self._print_ansi_fn:  Optional[Callable[[str], None]] = None
-        self._invalidate_fn:  Optional[Callable[[], None]]    = None
-        self._flush_fn:       Optional[Callable[[], None]]    = None
+        self._write_block_fn: Optional[Callable] = None
+        self._refresh_fn:     Optional[Callable[[], None]] = None
 
     def set_callbacks(
         self,
-        print_ansi_fn: Callable[[str], None],
-        invalidate_fn: Callable[[], None],
+        write_block_fn: Callable,
+        refresh_fn: Callable[[], None],
+        # flush_fn kept for API compatibility — no-op in Textual (renders per frame)
         flush_fn: Optional[Callable[[], None]] = None,
+        pre_finalize_fn: Optional[Callable[[], None]] = None,
     ) -> None:
-        self._print_ansi_fn = print_ansi_fn
-        self._invalidate_fn = invalidate_fn
-        self._flush_fn      = flush_fn
+        self._write_block_fn   = write_block_fn
+        self._refresh_fn       = refresh_fn
+        self._pre_finalize_fn  = pre_finalize_fn
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _emit(self, ansi: str) -> None:
-        """Push ANSI to the scrollback. Guarantees exactly one trailing newline."""
-        if not ansi:
-            return
-        if not ansi.endswith("\n"):
-            ansi += "\n"
-        if self._print_ansi_fn:
-            self._print_ansi_fn(ansi)
+    def _emit(self, block) -> None:
+        """Route a Rich renderable block to the write callback."""
+        if self._write_block_fn:
+            self._write_block_fn(block)
 
-    def _invalidate(self) -> None:
-        if self._invalidate_fn:
-            self._invalidate_fn()
+    def _blank(self):
+        """Return a single blank-row renderable."""
+        from rich.text import Text
+        return Text(" ")
+
+    def _refresh(self) -> None:
+        if self._refresh_fn:
+            self._refresh_fn()
 
     # ── External-print notification ───────────────────────────────────────────
 
     def mark_printed(self) -> None:
-        """Called by MinionApp whenever print_renderable() writes to the scrollback.
-
-        Tells finalize_turn() that content appeared between start_assistant_turn()
-        and now, so a blank line should precede the assistant response.
-        """
+        """Called by MinionApp whenever print_renderable() writes to the conversation."""
         self._had_external_print = True
 
     # ── Append API ────────────────────────────────────────────────────────────
 
     def append_user(self, text: str) -> None:
-        """Emit a user turn with blank line before and after.
-
-        Resets _had_external_print — each new user message is a fresh slate.
-        Tool calls that run AFTER this will re-set the flag before finalize_turn().
-        """
-        try:
-            from prompt_toolkit.application.current import get_app
-            width = get_app().output.get_size().columns
-        except Exception:
-            width = self._width
-        ansi = _r.user_turn(text, width)
-        # \n prefix  = blank line separating from previous output
-        # \n\n suffix = blank line separating from what follows (tools / response)
-        self._emit("\n" + ansi + "\n\n")
+        """Emit a user turn with blank line before and after."""
+        self._emit(self._blank())
+        self._emit(_r.user_turn(text))
+        self._emit(self._blank())
         with self._lock:
             self._last_was_assistant = False
-            self._had_external_print = False   # reset for the new turn
+            self._had_external_print = False
             self._gap_emitted = False
 
-    def start_assistant_turn(self) -> None:
-        """Begin a new streaming assistant turn.
-
-        When tool calls / system messages preceded this turn, emits a blank
-        line to the scrollback and flushes it immediately (via flush_fn) so it
-        lands in the terminal at the same moment the streaming zone switches
-        from the thinking animation to "minion › …".  Bypassing the 16ms write
-        buffer here prevents the two-step render (thinking disappears → 16ms
-        gap with no blank line → blank line appears) that the user saw as
-        misalignment.
-        """
+    def start_assistant_turn(self, display_name: str = "minion") -> None:
+        """Begin a new streaming assistant turn."""
         with self._lock:
-            had_print = self._had_external_print
+            had_print   = self._had_external_print
             gap_already = self._gap_emitted
             self._streaming_text = ""
-            self._is_streaming = True
+            self._is_streaming   = True
             self._last_was_assistant = False
-            self._gap_emitted = False
+            self._gap_emitted    = False
+            self._display_name   = display_name
         if had_print and not gap_already:
-            self._emit("\n")
-            if self._flush_fn:
-                self._flush_fn()  # flush immediately, not after 16ms
-        self._invalidate()
+            self._emit(self._blank())
+        self._refresh()
 
     def stream_chunk(self, chunk: str) -> None:
         """Append a text chunk to the in-progress streaming turn."""
         with self._lock:
             self._streaming_text += chunk
-        self._invalidate()
+        self._refresh()
 
     def finalize_turn(self) -> None:
-        """Commit the complete assistant response to the scrollback.
-
-        Flushes immediately (bypassing the 16ms write buffer) so the text
-        lands in the terminal scrollback before the runner calls pre_register()
-        for parallel agents.  Without the flush, run_in_terminal() fires 16ms
-        later, briefly suspending the TUI — that suspension is visible as a
-        gap with no thinking animation before the slot zone appears.
-        """
+        """Commit the complete assistant response to the conversation."""
         with self._lock:
-            text = self._streaming_text
-            self._is_streaming = False
+            text         = self._streaming_text
+            display_name = self._display_name
+            self._is_streaming   = False
             self._streaming_text = ""
+            if text:
+                self._last_assistant_text = text
+        if self._pre_finalize_fn:
+            self._pre_finalize_fn()
         if text:
-            self._emit(_r.assistant_turn(text, self._width))
-            if self._flush_fn:
-                self._flush_fn()
+            self._emit(_r.assistant_turn(text, display_name))
         with self._lock:
             self._last_was_assistant = True
-        self._invalidate()
+        self._refresh()
+
+    def abandon_streaming_turn(self) -> None:
+        """Clear the streaming zone without committing text to the scrollback.
+
+        Used when a markdown panel will replace the streamed content.
+        """
+        with self._lock:
+            self._is_streaming = False
+            self._streaming_text = ""
+        if self._pre_finalize_fn:
+            self._pre_finalize_fn()
 
     def append_system(self, rich_markup: str) -> None:
-        """Emit a system/status message (rendered from Rich markup).
-
-        Also sets _had_external_print so finalize_turn() knows to insert a blank
-        line before the assistant response.  This covers tool-call display via
-        execute_async() → _tui_conv() → append_system(), which never goes through
-        print_renderable() / mark_printed().
-
-        Adds a blank line before the first system message after an assistant
-        turn so hook tips are visually separated from the response.
-        """
+        """Emit a system/status message (rendered from Rich markup)."""
         with self._lock:
             was_assist = self._last_was_assistant
             self._last_was_assistant = False
-            self._had_external_print = True   # tool calls / hooks / system msgs all count
-        prefix = "\n" if was_assist else ""
-        self._emit(prefix + _r.system_message(rich_markup, self._width))
+            self._had_external_print = True
+        if was_assist:
+            self._emit(self._blank())
+        self._emit(_r.system_message(rich_markup))
 
     def append_ansi(self, ansi: str) -> None:
         """Emit a pre-rendered ANSI string (slash command output, etc.)."""
+        from rich.text import Text
         with self._lock:
             self._last_was_assistant = False
-        self._emit(ansi)
+        block = Text.from_ansi(ansi.rstrip("\n")) if ansi.strip() else self._blank()
+        self._emit(block)
 
-    # ── Tool call API (kept for API compatibility; wired up by executor.py) ──
+    def append_block(self, block) -> None:
+        """Emit any Rich renderable directly. Used by TuiRenderer for custom blocks."""
+        self._emit(block)
+
+    # ── Tool call API ─────────────────────────────────────────────────────────
 
     def append_tool_call(self, name: str, key_arg: str = "") -> int:
-        """Emit a pending tool-call line and return a tracking index."""
-        # Use a simple monotonic counter — no lock needed for the index bump
-        # because this is always called from the async iteration loop.
         with self._lock:
             idx = getattr(self, "_next_tool_idx", 0)
             setattr(self, "_next_tool_idx", idx + 1)
             self._had_external_print = True
-        self._emit(_r.tool_call_line(name, key_arg, self._width))
+        self._emit(_r.tool_call_line(name, key_arg))
         return idx
 
     def resolve_tool_call(self, idx: int, success: bool, summary: str = "") -> None:
-        """Emit the tool result line for a previously appended tool call."""
-        self._emit(_r.tool_result_line(success, summary, self._width))
+        self._emit(_r.tool_result_line(success, summary))
 
     def has_pending_tools(self) -> bool:
-        return False  # pending tracking removed; spinner driven by streaming state
+        return False
 
     def set_thinking(self, thinking: bool) -> None:
-        """Show/hide the streaming zone during the pre-token thinking phase."""
+        """Show/hide the thinking animation in StreamingZone."""
         with self._lock:
             self._is_thinking = thinking
-        self._invalidate()
+        self._refresh()
 
     def emit_spacer(self) -> None:
-        """Emit a blank line to the scrollback and flush immediately.
-
-        Called by TuiRenderer.on_info("") after all tools in a batch finish,
-        so the blank gap between tool output and the assistant response is
-        visible in the scrollback while the thinking animation is showing.
-        Sets _gap_emitted so start_assistant_turn() skips its own blank line.
-        """
-        self._emit("\n")
-        if self._flush_fn:
-            self._flush_fn()
+        """Emit a blank line and mark gap so start_assistant_turn() skips its own."""
+        self._emit(self._blank())
         with self._lock:
             self._gap_emitted = True
 
+    @property
+    def last_assistant_text(self) -> str:
+        """Last committed assistant response text (for clipboard copy)."""
+        with self._lock:
+            return self._last_assistant_text
+
     def clear(self) -> None:
         with self._lock:
-            self._streaming_text = ""
-            self._is_streaming = False
-            self._is_thinking = False
+            self._streaming_text     = ""
+            self._is_streaming       = False
+            self._is_thinking        = False
             self._had_external_print = False
             self._last_was_assistant = False
-            self._gap_emitted = False
+            self._gap_emitted        = False
 
     def scroll_to_bottom(self) -> None:
-        pass  # terminal handles its own scroll
+        pass  # ConversationArea handles auto-scroll
 
     def set_width(self, width: int) -> None:
-        with self._lock:
-            self._width = max(40, width)
+        pass  # vestigial — width is now determined by Textual CSS layout
 
-    # ── Streaming zone render (called by app.py layout) ──────────────────────
+    # ── StreamingZone render ──────────────────────────────────────────────────
 
     @property
     def is_streaming(self) -> bool:
         with self._lock:
             return self._is_streaming or self._is_thinking
 
-    def get_streaming_formatted_text(self) -> FormattedText:
-        """Return prompt_toolkit fragments for the live streaming zone.
-
-        Uses class: tokens (resolved by TUI_STYLE) for the prefix so colours
-        are correct without embedding hex codes here.  Rich markdown is used
-        for the content and converted to ANSI fragments.
-        """
-        from prompt_toolkit.formatted_text import ANSI
-
+    def get_streaming_renderable(self):
+        """Return a Rich renderable for the live StreamingZone Static widget."""
+        from rich.text import Text
         with self._lock:
             text         = self._streaming_text
-            width        = self._width
             is_thinking  = self._is_thinking
             is_streaming = self._is_streaming
 
-        # Idle: return one blank line so the streaming zone always occupies
-        # exactly 1 row.  This keeps the bottom strip at a fixed position —
-        # no layout shift when thinking starts or finishes.
         if not is_thinking and not is_streaming:
-            return FormattedText([("", " ")])
+            return Text(" ")   # single space keeps the zone at height=1
 
-        # Pre-token thinking phase: two-eyes animation + rotating phrase
         if is_thinking and not is_streaming:
-            t = _time.monotonic()
+            t      = _time.monotonic()
             frame  = _THINK_FRAMES[int(t * 4) % len(_THINK_FRAMES)]
             phrase = _THINK_PHRASES[int(t * 0.5) % len(_THINK_PHRASES)]
-            return FormattedText([
-                ("class:minion-prefix", frame),
-                ("class:thinking-text", f"  {phrase}"),
-            ])
+            result = Text()
+            result.append(frame, style="bold #1E90FF")
+            result.append("  ")
+            result.append(phrase, style="italic #1E90FF")
+            return result
 
-        # Normal streaming phase
-        frags: list[tuple[str, str]] = [
-            ("class:minion-prefix", "▌"),
-            ("", " "),
-            ("class:minion-prefix", "minion"),
-            ("", " › "),
-        ]
-
+        # Normal streaming phase — end="" so prefix shares first line with Markdown
+        prefix = Text(end="")
+        prefix.append(f"▌ {self._display_name} ›", style="bold #1E90FF")
+        prefix.append(" ")
         if not text:
-            frags.append(("class:slot-running", "…"))
-            return FormattedText(frags)
+            prefix.append("…", style="#C0C0C0")
+            return prefix
 
-        # Clip to last 12 lines to keep the streaming zone compact.
-        # Rich's Markdown renderer adds trailing newlines; strip them so the
-        # streaming zone height matches the visible line count.  A stray \n
-        # makes the window 1 row taller than prompt_toolkit's layout pass
-        # expects, shifting the input-buffer cursor up into that gap.
-        visible = "\n".join(text.split("\n")[-12:])
-        try:
-            frags.extend(ANSI(_r.render_markdown(visible, width).rstrip("\n")).__pt_formatted_text__())  # type: ignore[arg-type]
-        except Exception:
-            frags.append(("", visible))
-
-        return FormattedText(frags)
+        from rich.console import Group
+        from rich.markdown import Markdown
+        return Group(prefix, Markdown("\n".join(text.split("\n")[-12:])))
 
     @property
     def is_empty(self) -> bool:
-        return True  # history lives in terminal scrollback
+        return True  # history lives in the ConversationArea widget

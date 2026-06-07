@@ -31,6 +31,7 @@ class AgentRoleManifest:
     tools         : None = all native tools; [] = no tools; [...] = named subset.
     max_iterations: ReAct loop iteration limit for this role.
     source        : Loading tier — "builtin" | "user" | "project".
+    source_path   : Absolute path to the YAML file on disk. Always set after load.
     """
 
     name: str
@@ -39,6 +40,9 @@ class AgentRoleManifest:
     tools: Optional[list[str]] = None
     max_iterations: int = 20
     source: str = "builtin"
+    source_path: Optional[Path] = None
+    model: Optional[str] = None    # model override slug; None = inherit session model
+    color: Optional[str] = None    # one of gold/green/blue/orange/silver/muted; None = tier default
 
 
 def load_manifest(path: Path, source: str = "builtin") -> AgentRoleManifest:
@@ -59,6 +63,8 @@ def load_manifest(path: Path, source: str = "builtin") -> AgentRoleManifest:
     description = raw.get("description", "")
     tools: Optional[list[str]] = raw.get("tools")  # None if key absent
     max_iterations = int(raw.get("max_iterations", 20))
+    model: Optional[str] = raw.get("model") or None
+    color: Optional[str] = raw.get("color") or None
 
     return AgentRoleManifest(
         name=name,
@@ -67,4 +73,7 @@ def load_manifest(path: Path, source: str = "builtin") -> AgentRoleManifest:
         tools=tools,
         max_iterations=max_iterations,
         source=source,
+        source_path=path,
+        model=model,
+        color=color,
     )

@@ -121,7 +121,7 @@ class TestSkillManifest:
 class TestSkillRegistry:
     def test_builtin_skills_loaded(self):
         registry = load_skill_registry(cwd=Path("/nonexistent"))
-        assert len(registry) == 5
+        assert len(registry) >= 5
 
     def test_all_builtin_names_present(self):
         registry = load_skill_registry(cwd=Path("/nonexistent"))

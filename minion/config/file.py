@@ -1,10 +1,10 @@
-"""config/file.py — persistent user preferences from ~/.minion/config.toml.
+"""config/file.py — persistent user preferences from config.toml.
 
 Loading priority (lowest → highest):
-    hardcoded defaults → ~/.minion/config.toml → .env file → CLI flags
+    hardcoded defaults → ~/.minion/config.toml → <cwd>/.minion/config.toml → session (ReplState)
 
-Only ~/.minion/config.toml is handled here. .env is loaded by cli.py via
-python-dotenv before this module is imported. CLI flags override in cli.py.
+Only the two config.toml files are handled here.  .env is loaded by cli.py
+via python-dotenv before this module is imported.  CLI flags override in cli.py.
 
 Schema (all sections optional — missing keys fall back to defaults):
 
@@ -18,7 +18,8 @@ Schema (all sections optional — missing keys fall back to defaults):
     debug               = false
     agents_enabled      = true
     max_subagent_depth  = 2
-    approval_mode       = "off"   # "off" | "edits" | "yolo"
+    approval_mode       = "off"          # "off" | "edits" | "yolo"
+    markdown_enabled    = true
 
     [memory]
     enabled                  = true
@@ -36,10 +37,15 @@ Schema (all sections optional — missing keys fall back to defaults):
 
     [tracing]
     enabled = true
+
+    [hooks]
+    enabled           = true
+    builtin_minion_md = true
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,7 +70,8 @@ class AgentConfig:
     debug: bool = False
     agents_enabled: bool = True
     max_subagent_depth: int = 2
-    approval_mode: str = "off"   # "off" | "edits" | "yolo"
+    approval_mode: str = "off"       # "off" | "edits" | "yolo"
+    markdown_enabled: bool = True    # render LLM responses as markdown
 
 
 @dataclass
@@ -93,15 +100,6 @@ class TracingConfig:
 
 
 @dataclass
-class HookDefinition:
-    event: str              # "PreToolUse" | "PostToolUse" | "SessionStart" | ...
-    command: str            # shell command; run in cwd at fire time
-    tool: Optional[str] = None   # tool name matcher; None = all tools
-    timeout: int = 30
-    blocking: Optional[bool] = None  # None = event-default (True for Pre, False for Post)
-
-
-@dataclass
 class HooksBuiltinConfig:
     enabled: bool = True             # master on/off switch for all hooks
     builtin_minion_md: bool = True   # MINION.md staleness tip after write/edit
@@ -116,7 +114,6 @@ class MinionConfig:
     a2a: A2AConfig = field(default_factory=A2AConfig)
     tracing: TracingConfig = field(default_factory=TracingConfig)
     hooks_config: HooksBuiltinConfig = field(default_factory=HooksBuiltinConfig)
-    hooks: list = field(default_factory=list)  # list[HookDefinition]
 
 
 def _get(data: dict, *keys: str, default: Any = None) -> Any:
@@ -192,7 +189,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
     if extraction_trigger not in _VALID_EXTRACTION_TRIGGERS:
         extraction_trigger = "substantial"
 
-    # Hooks: builtin settings from merged config; user hook lists concatenated from both
+    # Hooks: builtin settings from merged config
     hooks_merged = raw.get("hooks", {})
     if not isinstance(hooks_merged, dict):
         hooks_merged = {}
@@ -201,23 +198,18 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
         builtin_minion_md=_bool(hooks_merged.get("builtin_minion_md"), True),
     )
 
-    def _parse_hook_list(data: dict) -> list:
-        h_raw = data.get("hooks", {})
-        if not isinstance(h_raw, dict):
-            return []
-        return [
-            HookDefinition(
-                event=h["event"],
-                command=h["command"],
-                tool=h.get("tool") or None,
-                timeout=_int(h.get("timeout"), 30),
-                blocking=h.get("blocking"),
-            )
-            for h in h_raw.get("user", [])
-            if isinstance(h, dict) and "event" in h and "command" in h
-        ]
-
-    hooks = _parse_hook_list(raw_global) + _parse_hook_list(raw_project)
+    # Backward-compat: warn if old [[hooks.user]] entries are detected
+    _has_legacy = (
+        isinstance(raw_global.get("hooks", {}), dict) and raw_global.get("hooks", {}).get("user")
+    ) or (
+        isinstance(raw_project.get("hooks", {}), dict) and raw_project.get("hooks", {}).get("user")
+    )
+    if _has_legacy:
+        from ..theme import startup_warnings
+        startup_warnings.append(
+            "  [bold #a8a8a8]Warning[/]  [#888888]hooks.user entries in config.toml are deprecated — "
+            "move hooks to ~/.minion/hooks/*.yaml or .minion/hooks/*.yaml[/]"
+        )
 
     return MinionConfig(
         llm=LLMConfig(
@@ -231,6 +223,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
             agents_enabled=_bool(agent_raw.get("agents_enabled"), True),
             max_subagent_depth=_int(agent_raw.get("max_subagent_depth"), 2),
             approval_mode=_str(agent_raw.get("approval_mode"), "off") if agent_raw.get("approval_mode") in ("off", "edits", "yolo") else "off",
+            markdown_enabled=_bool(agent_raw.get("markdown_enabled"), True),
         ),
         memory=MemoryFileConfig(
             enabled=_bool(memory_raw.get("enabled"), True),
@@ -250,7 +243,6 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> MinionConf
             enabled=_bool(tracing_raw.get("enabled"), True),
         ),
         hooks_config=hooks_builtin_cfg,
-        hooks=hooks,
     )
 
 
@@ -271,6 +263,7 @@ def format_config(cfg: MinionConfig) -> str:
         f"  agents_enabled     = {cfg.agent.agents_enabled}",
         f"  max_subagent_depth = {cfg.agent.max_subagent_depth}",
         f"  approval_mode      = {cfg.agent.approval_mode}",
+        f"  markdown_enabled   = {cfg.agent.markdown_enabled}",
         "",
         "[memory]",
         f"  enabled                 = {cfg.memory.enabled}",
@@ -290,3 +283,140 @@ def format_config(cfg: MinionConfig) -> str:
         f"  enabled = {cfg.tracing.enabled}",
     ]
     return "\n".join(lines)
+
+
+def load_config_levels(cwd: Path | None = None) -> tuple[dict, dict]:
+    """Return raw (un-merged) TOML dicts for (global, project) config files.
+
+    Used for source-tag display — neither dict is merged with the other.
+    Either can be an empty dict if the corresponding file doesn't exist.
+    """
+    global_raw = _load_toml(_GLOBAL_CONFIG_PATH)
+    project_raw: dict = {}
+    if cwd is not None:
+        project_raw = _load_toml(Path(cwd) / ".minion" / "config.toml")
+    return global_raw, project_raw
+
+
+def create_project_config(cwd: Path, base_raw: dict | None = None) -> Path:
+    """Create .minion/config.toml with all settings written at their effective values.
+
+    base_raw — raw TOML dict from the global config (used as the baseline so
+    user's root-level preferences carry over).  Falls back to hardcoded
+    defaults for any missing key.  auth_token is always written as empty for
+    security — the user sets it explicitly.
+
+    Returns the path of the created file.
+    """
+    b = base_raw or {}
+
+    def _v(section: str, key: str, default: Any) -> Any:
+        return b.get(section, {}).get(key, default)
+
+    def _tv(val: Any) -> str:
+        if isinstance(val, bool):
+            return "true" if val else "false"
+        if isinstance(val, str):
+            return f'"{val}"'
+        return str(val)
+
+    llm = b.get("llm", {})
+    provider_line = f'provider = "{llm["provider"]}"' if "provider" in llm else '# provider = "anthropic"  # anthropic | openai | openrouter'
+    model_line    = f'model = "{llm["model"]}"'        if "model"    in llm else '# model = "claude-sonnet-4-6"'
+
+    content = (
+        "# minion project configuration\n"
+        "# Priority: session (ephemeral) > this file > ~/.minion/config.toml > defaults\n"
+        "# Edit this file to persist settings. Restart minion for changes to take effect.\n"
+        "\n"
+        "[llm]\n"
+        f"{provider_line}\n"
+        f"{model_line}\n"
+        "\n"
+        "[agent]\n"
+        f"reflect_depth = {_v('agent', 'reflect_depth', 0)}\n"
+        f"verbose = {_tv(_v('agent', 'verbose', False))}\n"
+        f"debug = {_tv(_v('agent', 'debug', False))}\n"
+        f"agents_enabled = {_tv(_v('agent', 'agents_enabled', True))}\n"
+        f"max_subagent_depth = {_v('agent', 'max_subagent_depth', 2)}\n"
+        f"approval_mode = {_tv(_v('agent', 'approval_mode', 'off'))}\n"
+        f"markdown_enabled = {_tv(_v('agent', 'markdown_enabled', True))}\n"
+        "\n"
+        "[memory]\n"
+        f"enabled = {_tv(_v('memory', 'enabled', True))}\n"
+        f"top_k = {_v('memory', 'top_k', 5)}\n"
+        f"similarity_threshold = {_v('memory', 'similarity_threshold', 0.70)}\n"
+        f"consolidation_threshold = {_v('memory', 'consolidation_threshold', 0.70)}\n"
+        f"extraction_trigger = {_tv(_v('memory', 'extraction_trigger', 'substantial'))}\n"
+        f"extraction_min_words = {_v('memory', 'extraction_min_words', 50)}\n"
+        "\n"
+        "[context]\n"
+        f"auto_compact = {_tv(_v('context', 'auto_compact', True))}\n"
+        "\n"
+        "[a2a]\n"
+        'auth_token = ""\n'
+        "\n"
+        "[tracing]\n"
+        f"enabled = {_tv(_v('tracing', 'enabled', True))}\n"
+        "\n"
+        "[hooks]\n"
+        f"enabled = {_tv(_v('hooks', 'enabled', True))}\n"
+        f"builtin_minion_md = {_tv(_v('hooks', 'builtin_minion_md', True))}\n"
+    )
+
+    project_dir = Path(cwd) / ".minion"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    config_path = project_dir / "config.toml"
+    config_path.write_text(content, encoding="utf-8")
+    return config_path
+
+
+def set_project_config_value(cwd: Path, section: str, key: str, value: Any) -> None:
+    """Update or insert a single key in .minion/config.toml without altering other keys.
+
+    Creates the project config from root-seeded defaults if it doesn't exist.
+    Overwrites the matched line (even if commented out). Appends a new [section]
+    block at the end if the section is missing entirely.
+    """
+    project_path = Path(cwd) / ".minion" / "config.toml"
+    if not project_path.exists():
+        global_raw, _ = load_config_levels()
+        create_project_config(cwd, global_raw)
+
+    if isinstance(value, bool):
+        toml_val = "true" if value else "false"
+    elif isinstance(value, str):
+        toml_val = f'"{value}"'
+    else:
+        toml_val = str(value)
+
+    lines = project_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    in_section = False
+    updated = False
+    result: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect entering the target section
+        if stripped == f"[{section}]":
+            in_section = True
+        elif stripped.startswith("[") and not stripped.startswith("[#") and in_section and not updated:
+            # Leaving section without finding the key — insert before next header
+            result.append(f"{key} = {toml_val}\n")
+            updated = True
+            in_section = False
+
+        # Replace the key line within the target section (handles commented-out lines too)
+        if in_section and not updated and re.match(rf"^#?\s*{re.escape(key)}\s*=", stripped):
+            result.append(f"{key} = {toml_val}\n")
+            updated = True
+            continue
+
+        result.append(line)
+
+    if not updated:
+        # Section not found — append a new section block
+        result.append(f"\n[{section}]\n{key} = {toml_val}\n")
+
+    project_path.write_text("".join(result), encoding="utf-8")

@@ -93,9 +93,10 @@ class TestAgentManifest:
 # ─── TestAgentRegistry ────────────────────────────────────────────────────────
 
 class TestAgentRegistry:
-    def test_load_registry_builtin_only(self):
+    def test_load_registry_builtin_only(self, tmp_path):
         """The package ships 4 builtin roles."""
-        registry = load_agent_registry(Path("/nonexistent/cwd"))
+        with patch("minion.agents.registry.Path.home", return_value=tmp_path):
+            registry = load_agent_registry(tmp_path / "nonexistent_cwd")
         assert "researcher" in registry
         assert "coder" in registry
         assert "reviewer" in registry

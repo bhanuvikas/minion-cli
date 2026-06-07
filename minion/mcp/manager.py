@@ -86,18 +86,12 @@ class _ServerState:
 # ─── Notification / request callbacks ────────────────────────────────────────
 
 async def _console_print_safe(text: str) -> None:
-    """Print an MCP notification, coordinating with the active prompt_toolkit prompt.
-
-    When the 'you ›' prompt is waiting for input, uses run_in_terminal() to
-    print the message above the prompt line cleanly.  When no prompt is active
-    (agent processing, startup) falls back to a direct console.print().
-    """
+    """Print an MCP notification, coordinating with the active TUI or console prompt."""
     try:
-        from prompt_toolkit.application.current import get_app_or_none
-        from prompt_toolkit.application import run_in_terminal
-        app = get_app_or_none()
-        if app is not None and app.is_running:
-            run_in_terminal(lambda: console.print(text))
+        from ..tui import get_tui_app as _get_tui_app
+        _tui = _get_tui_app()
+        if _tui is not None:
+            _tui.conversation.append_system(text)
             return
     except Exception:
         pass
@@ -455,7 +449,7 @@ class MCPManager:
             if state.error is not None:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 self._connection_warnings.append(
-                    f"[muted]Warning: MCP server '{name}' failed to connect: {state.error}[/]"
+                    f"  [bold #a8a8a8]Warning[/]  [#888888]MCP server '{name}' failed to connect: {state.error}[/]"
                 )
                 get_tracer().emit(
                     "mcp_server_connect",

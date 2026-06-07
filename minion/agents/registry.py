@@ -50,6 +50,6 @@ def load_agent_registry(cwd: Path) -> AgentRegistry:
                 manifest = load_manifest(yaml_path, source=source)
                 registry[manifest.name] = manifest
             except (ValueError, yaml.YAMLError, OSError) as exc:
-                startup_warnings.append(f"[muted]  ⚠ Skipping agent role '{yaml_path.name}': {exc}[/]")
+                startup_warnings.append(f"  [bold #a8a8a8]Warning[/]  [#888888]skipping agent role '{yaml_path.name}': {exc}[/]")
 
     return registry

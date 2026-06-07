@@ -2,10 +2,11 @@
 
 Public API
 ----------
-load_agent_registry(cwd)   Build the merged registry from all three tiers.
-AgentRegistry              Type alias: dict[str, AgentRoleManifest]
-AgentRoleManifest          Dataclass describing one role.
-SUBAGENT_GUIDANCE          System prompt block appended when agents are enabled.
+load_agent_registry(cwd)        Build the merged registry from all three tiers.
+AgentRegistry                   Type alias: dict[str, AgentRoleManifest]
+AgentRoleManifest               Dataclass describing one role.
+build_subagent_guidance(reg)    Build the system-prompt guidance block from the live registry.
+SUBAGENT_GUIDANCE               Static fallback (kept for backward compat; prefers registry).
 """
 
 from pathlib import Path
@@ -18,19 +19,19 @@ __all__ = [
     "AgentRegistry",
     "load_agent_registry",
     "SUBAGENT_GUIDANCE",
+    "build_subagent_guidance",
 ]
 
-SUBAGENT_GUIDANCE = """\
+_SUBAGENT_HEADER = """\
 ## Subagent Capabilities
 
 You have access to `spawn_agent` to delegate focused subtasks to specialized agents.
 Each subagent runs in an isolated context with its own tool subset.
 
-Available roles:
-- researcher — gathers information, reads code, produces a report (read-only)
-- coder      — implements a specific feature or fix (read + write)
-- reviewer   — reviews code for correctness, security, and style (read-only)
-- tester     — runs tests, diagnoses failures, and fixes them (read + shell)
+Available roles:\
+"""
+
+_SUBAGENT_FOOTER = """
 
 Use `spawn_agent` when:
 - The task has genuinely independent parts that can run in parallel
@@ -56,3 +57,33 @@ first agent to finish before spawning the next.
 
 Note: subagents cannot spawn further subagents.\
 """
+
+# Static fallback — used when no registry is passed (e.g. one-shot mode without --agents).
+SUBAGENT_GUIDANCE = (
+    _SUBAGENT_HEADER
+    + """
+- researcher — gathers information, reads code, produces a report (read-only)
+- coder      — implements a specific feature or fix (read + write)
+- reviewer   — reviews code for correctness, security, and style (read-only)
+- tester     — runs tests, diagnoses failures, and fixes them (read + shell)"""
+    + _SUBAGENT_FOOTER
+)
+
+
+def build_subagent_guidance(agent_registry: "AgentRegistry | None" = None) -> str:
+    """Build the SUBAGENT_GUIDANCE block from the live registry.
+
+    Generates the 'Available roles' list dynamically so custom agents created
+    via /agents are visible to the LLM without restarting the session.
+    Falls back to SUBAGENT_GUIDANCE if the registry is empty or None.
+    """
+    if not agent_registry:
+        return SUBAGENT_GUIDANCE
+    roles: list[str] = []
+    for source in ("builtin", "user", "project"):
+        for name, manifest in sorted(
+            ((n, m) for n, m in agent_registry.items() if m.source == source),
+        ):
+            desc = manifest.description.split("\n")[0].rstrip(".") if manifest.description else "no description"
+            roles.append(f"- {name:<14} — {desc}")
+    return _SUBAGENT_HEADER + "\n" + "\n".join(roles) + _SUBAGENT_FOOTER

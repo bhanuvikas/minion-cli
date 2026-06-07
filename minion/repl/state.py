@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..context import ProjectContext
     from ..memory.store import MemoryStore
     from ..skills.registry import SkillRegistry
+    from ..agents.manifest import AgentRoleManifest
 
 
 # ─── Session state ────────────────────────────────────────────────────────────
@@ -33,6 +34,10 @@ class ReplState:
     approval_mode: str = "off"   # "off" | "edits" | "yolo"
     markdown_enabled: bool = True  # render LLM responses as live markdown
     system_prompt: str = ""      # mutable override; updated by /init to hot-reload MINION.md
+    # Agent chat mode — all None means normal minion mode
+    active_agent_role: Optional[str] = None
+    active_agent_conversation: Optional["Conversation"] = None
+    active_agent_manifest: Optional["AgentRoleManifest"] = None
 
 
 # ─── Slash command registry ───────────────────────────────────────────────────
@@ -43,17 +48,13 @@ REPL_COMMANDS: dict[str, str] = {
     "/help":    "Show available commands",
     "/init":    "Create a MINION.md template in the current directory",
     "/model":   "Interactively change provider, model, and API keys",
+    "/setup":   "Run setup wizard: model, tab completion, and preferences",
     "/context": "Show context window usage and token breakdown",
-    "/reflect": "Self-refine: /reflect --on | /reflect 2 | /reflect --off | /reflect",
-    "/verbose": "Verbose output: /verbose --on | /verbose --off | /verbose",
-    "/edits":   "Auto-approve file edits: /edits | /edits on | /edits off",
-    "/yolo":    "Auto-approve all tools: /yolo | /yolo on | /yolo off",
-    "/debug":   "Debug mode: /debug --on | /debug --off | /debug",
-    "/memory":  "Memory status/toggle: /memory | /memory --on | /memory --off",
+    "/config":  "Settings: /config [show|reflect|verbose|debug|markdown|approval|agents] [args]",
     "/hooks":   "Hooks: /hooks | /hooks list | /hooks on | /hooks off",
     "/remember": "Remember something: /remember [--global] [--category identity|preference|project|event] <text>",
     "/forget":  "Forget a memory: /forget <id or text>",
-    "/recall":  "Show memories: /recall [query]",
+    "/memories": "Browse, search, edit and delete memories: /memories [query]",
     "/compact": "Compact conversation: /compact | /compact summary | /compact truncate [N]",
     "/clear":   "Clear conversation history and start fresh",
     "/save":    "Save session: /save <name>",
@@ -61,11 +62,12 @@ REPL_COMMANDS: dict[str, str] = {
     "/resume":  "Pick a saved session from a dropdown and load it",
     "/plan":    "Plan a task: /plan <goal> | /plan --execute [file] | /plan --list | /plan --clear",
     "/mcp":     "MCP servers: /mcp | /mcp resource <uri> | /mcp prompt <name> | /mcp reload",
-    "/markdown": "Markdown rendering: /markdown | /markdown on | /markdown off",
-    "/agents":  "Subagents: /agents | /agents on | /agents off",
-    "/agent":   "Run a role directly: /agent <role> <task>",
+    "/agents":  "List available agent roles (toggle: /config agents [on|off])",
+    "/agent":   "Run or chat with a role: /agent <role> [task]  (no task = persistent chat)",
+    "/back":    "Exit agent chat mode (silent — agent conversation not shared with minion)",
+    "/handoff": "Exit agent chat mode and share conversation summary with minion",
+    "/skills":  "Browse, run, create and edit skill workflows",
     "/remote":  "Remote agents: /remote | /remote list | /remote run <agent> <task>",
-    "/config":  "Show effective configuration (config.toml + CLI flags)",
     "/quit":    "Exit Minion",
     "/exit":    "Exit Minion (alias for /quit)",
 }
@@ -87,9 +89,13 @@ class CommandContext:
     memory_store: "Optional[MemoryStore]" = None
     skill_registry: "Optional[SkillRegistry]" = None
     agent_registry: Any = None
+    a2a_manager: Any = None
     cwd: Optional[Path] = None
     permission_store: Any = None
     hook_runner: Any = None
+    confirmation_manager: Any = None
+    mcp_manager: Any = None
+    renderer: Any = None
 
     @property
     def base_system_prompt(self) -> str:

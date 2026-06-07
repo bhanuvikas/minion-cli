@@ -61,6 +61,7 @@ class MemoryRecord:
     created_at: str = ""             # ISO 8601 timestamp
     superseded_by: Optional[str] = None  # ID of the record that replaced this one
     category: str = "project"        # "identity" | "preference" | "project" | "event"
+    pinned: bool = False             # pinned memories sort to top in /memories modal
 
     # ─── Serialization ────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ class MemoryRecord:
             f"tags: {', '.join(self.tags)}",
             f"created_at: {self.created_at}",
             f"superseded_by: {self.superseded_by or ''}",
+            f"pinned: {str(self.pinned).lower()}",
             _FRONTMATTER_DELIMITER,
             "",
             self.content,
@@ -119,6 +121,7 @@ class MemoryRecord:
             created_at=kv.get("created_at", ""),
             superseded_by=kv.get("superseded_by") or None,
             category=kv.get("category", "project"),
+            pinned=kv.get("pinned", "false").lower() == "true",
         )
 
     # ─── Dict serialization (for JSON-based indices) ──────────────────────────
@@ -134,6 +137,7 @@ class MemoryRecord:
             "tags": self.tags,
             "created_at": self.created_at,
             "superseded_by": self.superseded_by,
+            "pinned": self.pinned,
         }
 
     @classmethod
@@ -148,4 +152,5 @@ class MemoryRecord:
             created_at=data.get("created_at", ""),
             superseded_by=data.get("superseded_by"),
             category=data.get("category", "project"),
+            pinned=data.get("pinned", False),
         )

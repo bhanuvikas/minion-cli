@@ -13,6 +13,9 @@ from .interactive import (
 )
 from .file import (
     load_config,
+    load_config_levels,
+    create_project_config,
+    set_project_config_value,
     format_config,
     MinionConfig,
     LLMConfig,
@@ -21,7 +24,6 @@ from .file import (
     ContextConfig,
     A2AConfig,
     TracingConfig,
-    HookDefinition,
     HooksBuiltinConfig,
 )
 from .wizard import run_setup_wizard, _MINION_STYLE
@@ -33,6 +35,9 @@ __all__ = [
     "update_env_values",
     "run_model_config",
     "load_config",
+    "load_config_levels",
+    "create_project_config",
+    "set_project_config_value",
     "format_config",
     "MinionConfig",
     "LLMConfig",
@@ -41,7 +46,6 @@ __all__ = [
     "ContextConfig",
     "A2AConfig",
     "TracingConfig",
-    "HookDefinition",
     "HooksBuiltinConfig",
     "run_setup_wizard",
     "_MINION_STYLE",

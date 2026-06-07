@@ -94,7 +94,7 @@ async def _execute_parallel_agents_async(
             def _confirm_cb(name, inputs):
                 from ..tools.executor import _diff_lines_for_panel as _dlp
                 from ..tui import is_tui_active as _ita
-                _dlns = _dlp(name, inputs) if _ita() else []
+                _dlns = _dlp(name, inputs) if _ita() else ""
                 return _cm.confirm_sync(name, inputs, diff_lines=_dlns)
         else:
             _confirm_cb = executor._confirm_callback  # type: ignore[assignment]
@@ -300,6 +300,13 @@ async def _execute_tools_async(
     """Route tool calls: single fast path, parallel agents, or parallel generic tools."""
     if len(tool_blocks) == 1:
         tb = tool_blocks[0]
+        # Delegation tools (spawn_agent / send_remote_task) always go through the
+        # slot+registry path — even when there is only one.  This gives single
+        # subagent calls the same slot-zone UX, Ctrl+O inspector support, and
+        # display-callback isolation as parallel calls, without any code duplication.
+        if tb.name in DELEGATION_TOOLS:
+            await _execute_parallel_agents_async([tb], executor, conversation, renderer=renderer)
+            return
         result = await executor.execute_async(tb)
         conversation.add_tool_result(tb.id, result)
         return

@@ -13,7 +13,7 @@ from ..config import MINION_STYLE, run_model_config
 from ..memory.injection import _format_age
 from ..memory.record import MemoryRecord
 from ..runner.session import list_sessions, load, save
-from ..theme import BLUE, SILVER, YELLOW, console, print_context, print_error, print_mode_toggle
+from ..theme import BLUE, SILVER, YELLOW, console, print_context, print_error
 from ..tracing import get_tracer
 from .state import CommandContext, REPL_COMMANDS, ReplState
 
@@ -50,11 +50,23 @@ def _load_session(name: str, conversation) -> None:
         print_error(str(e))
 
 
-def _display_plan(content: str, path: Path) -> None:
-    """Render a plan document in a Rich panel with Markdown formatting."""
+def _maybe_create_project_config(cwd: Path) -> None:
+    """Create .minion/config.toml from root config values if it doesn't exist yet."""
+    if (cwd / ".minion" / "config.toml").exists():
+        return
+    from ..config import create_project_config, load_config_levels
+    global_raw, _ = load_config_levels()
+    path = create_project_config(cwd, global_raw)
+    console.print(f"[{YELLOW}]Created[/] [muted]{path}[/]")
+
+
+def _display_plan(content: str, path: Path, renderer=None) -> None:
+    """Render a plan document. In TUI mode routes through renderer; else Rich Panel."""
+    if renderer is not None:
+        renderer.on_markdown_panel(content, title="Mission Plan")
+        return
     from rich.markdown import Markdown
     from rich.panel import Panel
-
     console.print(
         Panel(
             Markdown(content),
@@ -91,6 +103,11 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
     permission_store = ctx.permission_store
     hook_runner     = ctx.hook_runner
 
+    if cmd == "/remote":
+        from .agent_handlers import _handle_remote_command
+        _handle_remote_command(raw, ctx.a2a_manager)
+        return True
+
     if cmd in ("/quit", "/exit"):
         console.print(f"[{YELLOW}]Poopaye! (Goodbye!) 👋[/]")
         from rich.rule import Rule
@@ -105,105 +122,11 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         return True
 
     if cmd == "/init":
-        return _handle_init(arg, client, state, project_context)
+        result = _handle_init(arg, client, state, project_context)
+        if result and cwd:
+            _maybe_create_project_config(cwd)
+        return result
 
-    if cmd == "/reflect":
-        if state is not None:
-            if not arg:
-                status = "off" if state.reflect_depth == 0 else f"on (depth={state.reflect_depth})"
-                console.print(f"[{YELLOW}]Reflection:[/] {status}")
-            elif arg == "--off":
-                state.reflect_depth = 0
-                console.print(f"[{YELLOW}]Reflection off.[/]")
-            elif arg == "--on":
-                state.reflect_depth = 1
-                console.print(f"[{YELLOW}]Reflection on[/] [muted](depth=1)[/]")
-            else:
-                try:
-                    state.reflect_depth = max(0, int(arg))
-                    console.print(f"[{YELLOW}]Reflection on[/] [muted](depth={state.reflect_depth})[/]")
-                except ValueError:
-                    print_error("Usage: /reflect [--on | --off | <depth 1-3>]")
-        return True
-
-    if cmd == "/verbose":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Verbose:[/] {'on' if state.verbose else 'off'}")
-            elif arg == "--on":
-                state.verbose = True
-                console.print(f"[{YELLOW}]Verbose on.[/]")
-            elif arg == "--off":
-                state.verbose = False
-                console.print(f"[{YELLOW}]Verbose off.[/]")
-            else:
-                print_error("Usage: /verbose [--on | --off]")
-        return True
-
-    if cmd == "/edits":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Edits mode:[/] {'on' if state.approval_mode == 'edits' else 'off'}")
-            elif arg == "on":
-                state.approval_mode = "edits"
-                print_mode_toggle("edits", True)
-            elif arg == "off":
-                state.approval_mode = "off"
-                print_mode_toggle("edits", False)
-            else:
-                print_error("Usage: /edits [on | off]")
-        return True
-
-    if cmd == "/yolo":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Yolo mode:[/] {'on' if state.approval_mode == 'yolo' else 'off'}")
-            elif arg == "on":
-                state.approval_mode = "yolo"
-                print_mode_toggle("yolo", True)
-            elif arg == "off":
-                state.approval_mode = "off"
-                print_mode_toggle("yolo", False)
-            else:
-                print_error("Usage: /yolo [on | off]")
-        return True
-
-    if cmd == "/debug":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Debug:[/] {'on' if state.debug else 'off'}")
-            elif arg == "--on":
-                state.debug = True
-                console.print(f"[{YELLOW}]Debug on.[/] [muted]System prompt and other debug info will be printed each turn.[/]")
-            elif arg == "--off":
-                state.debug = False
-                console.print(f"[{YELLOW}]Debug off.[/]")
-            else:
-                print_error("Usage: /debug [--on | --off]")
-        return True
-
-    if cmd == "/memory":
-        if state is not None:
-            if not arg:
-                status = "on" if state.memory_enabled else "off"
-                if memory_store is not None:
-                    s = memory_store.stats()
-                    console.print(
-                        f"[{YELLOW}]Memory:[/] {status} · "
-                        f"{s['global_count']} global, {s['project_count']} project"
-                        + (" · embeddings on" if s["has_embeddings"] else " · keyword search only")
-                    )
-                else:
-                    console.print(f"[{YELLOW}]Memory:[/] {status}")
-            elif arg == "--on":
-                state.memory_enabled = True
-                console.print(f"[{YELLOW}]Memory on.[/]")
-            elif arg == "--off":
-                state.memory_enabled = False
-                console.print(f"[{YELLOW}]Memory off.[/]")
-            else:
-                print_error("Usage: /memory [--on | --off]")
-        return True
 
     if cmd == "/hooks":
         if hook_runner is None:
@@ -216,12 +139,21 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
                 console.print(f"[{YELLOW}]Hooks:[/] none registered")
                 return True
             tbl = Table(show_header=True, header_style="bold", expand=False, box=None)
+            tbl.add_column("Name", style=YELLOW)
+            tbl.add_column("Source", style="dim")
             tbl.add_column("Type", style="dim")
             tbl.add_column("Event")
             tbl.add_column("Tool")
             tbl.add_column("Detail")
             for r in rows:
-                tbl.add_row(r["type"], r["event"], r["tool"], r["detail"])
+                tbl.add_row(
+                    r.get("name", ""),
+                    r.get("source", ""),
+                    r.get("type", ""),
+                    r.get("event", ""),
+                    r.get("tool", ""),
+                    r.get("detail", ""),
+                )
             status = "on" if hook_runner.enabled else "off"
             console.print(f"[{YELLOW}]Hooks:[/] {status} · {hook_runner.handler_count} registered")
             console.print(tbl)
@@ -237,43 +169,20 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
 
     if cmd == "/agents":
         if state is not None:
-            if not arg:
-                status = "on" if state.agents_enabled else "off"
-                console.print(f"[{YELLOW}]Subagents:[/] {status}")
-                if agent_registry:
-                    from rich.table import Table
-                    table = Table(show_header=True, header_style="bold", expand=False, box=None)
-                    table.add_column("role", style=YELLOW)
-                    table.add_column("description")
-                    table.add_column("tools", style="muted")
-                    for name, role in sorted(agent_registry.items()):
-                        tools_str = ", ".join(role.tools) if role.tools else "all"
-                        table.add_row(name, role.description, tools_str)
-                    console.print(table)
-                else:
-                    console.print("[muted]No agent roles loaded.[/]")
-            elif arg in ("on", "--on"):
-                state.agents_enabled = True
-                console.print(f"[{YELLOW}]Subagents on.[/]")
-            elif arg in ("off", "--off"):
-                state.agents_enabled = False
-                console.print(f"[{YELLOW}]Subagents off.[/] [muted](spawn_agent removed from tool list)[/]")
+            status = "on" if state.agents_enabled else "off"
+            console.print(f"[{YELLOW}]Subagents:[/] {status}")
+            if agent_registry:
+                from rich.table import Table
+                table = Table(show_header=True, header_style="bold", expand=False, box=None)
+                table.add_column("role", style=YELLOW)
+                table.add_column("description")
+                table.add_column("tools", style="muted")
+                for name, role in sorted(agent_registry.items()):
+                    tools_str = ", ".join(role.tools) if role.tools else "all"
+                    table.add_row(name, role.description, tools_str)
+                console.print(table)
             else:
-                print_error("Usage: /agents [on | off]")
-        return True
-
-    if cmd == "/markdown":
-        if state is not None:
-            if not arg:
-                console.print(f"[{YELLOW}]Markdown rendering:[/] {'on' if state.markdown_enabled else 'off'}")
-            elif arg in ("on", "--on"):
-                state.markdown_enabled = True
-                console.print(f"[{YELLOW}]Markdown rendering on.[/]")
-            elif arg in ("off", "--off"):
-                state.markdown_enabled = False
-                console.print(f"[{YELLOW}]Markdown rendering off.[/] [muted](plain text streaming)[/]")
-            else:
-                print_error("Usage: /markdown [on | off]")
+                console.print("[muted]No agent roles loaded.[/]")
         return True
 
     if cmd == "/remember":
@@ -335,12 +244,19 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
             console.print(f"[muted]Memory not available in this session.[/]")
         return True
 
-    if cmd == "/recall":
+    if cmd == "/memories":
         if memory_store is not None:
+            s = memory_store.stats()
+            status = "on" if (state is not None and state.memory_enabled) else "off"
+            embeddings = "embeddings on" if s["has_embeddings"] else "keyword search only"
+            console.print(
+                f"[{YELLOW}]Memory:[/] {status} · "
+                f"[bold]{s['global_count']}[/] global, [bold]{s['project_count']}[/] project · "
+                f"[muted]{embeddings}[/]"
+            )
             memories = memory_store.list_all(query=arg or None)
-            if not memories:
-                console.print(f"[muted]No memories stored yet.[/]")
-            else:
+            if memories:
+                console.print()
                 for m in memories:
                     age = _format_age(m.created_at)
                     console.print(
@@ -352,15 +268,31 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         return True
 
     if cmd == "/config":
-        from ..config import format_config, load_config as _load_cfg
-        cfg = _load_cfg(cwd=cwd)
-        console.print(f"\n[bold {YELLOW}]Effective configuration[/] [muted](config.toml + CLI flags):[/]\n")
-        console.print(format_config(cfg))
-        console.print()
-        return True
+        from .config_cmd import handle_config_command
+        return handle_config_command(raw, ctx)
 
     if cmd == "/model":
         run_model_config(client)
+        return True
+
+    if cmd == "/setup":
+        run_model_config(client)
+        try:
+            import shellingham
+            shell_name, _ = shellingham.detect_shell()
+            import questionary
+            do_install = questionary.confirm(
+                f" Install tab completion for {shell_name}?",
+                default=True,
+                style=MINION_STYLE,
+            ).ask()
+            if do_install:
+                from typer._completion_shared import install as _ti
+                _, comp_path = _ti(shell=shell_name, prog_name="minion")
+                console.print(f"[#4CAF50]✓ tab completion installed[/]  [muted]→ {comp_path}[/]")
+                console.print(f"[muted]Restart your terminal to activate.[/]")
+        except Exception:
+            pass
         return True
 
     if cmd == "/context":
@@ -454,7 +386,9 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         skill = skill_registry.get(cmd[1:])
         if skill is not None:
             from ..skills.runner import execute_skill
-            execute_skill(skill, arg, client, conversation, ctx.base_system_prompt, skill_registry, state)
+            execute_skill(skill, arg, client, conversation, ctx.base_system_prompt, skill_registry, state,
+                          confirmation_manager=ctx.confirmation_manager, hook_runner=ctx.hook_runner,
+                          permission_store=ctx.permission_store, approval_mode=state.approval_mode if state else "off")
             return True
 
     if cmd.startswith("/"):
@@ -494,6 +428,10 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
 
     content = None
     was_streamed = False
+    # _CaptureBuf (TUI slash-command capture) marks itself so we skip Live/status
+    # rendering — Live.update() writes every intermediate frame to the buffer
+    # which can't erase previous frames, producing duplicate panels.
+    _capture_mode = getattr(console._file, "is_capture_buf", False)
     if project_context:
         fresh_context = _PC(
             cwd=project_context.cwd,
@@ -513,19 +451,23 @@ def _handle_init(arg: str, client, state, project_context) -> bool:
                 border_style="dim",
             )
             gen = _generate_minion_md_llm(fresh_context, client)
-            with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
-                first_chunk = next(gen, None)
-            chunks: list[str] = []
-            if first_chunk is not None:
-                chunks.append(first_chunk)
-                with Live(_panel(first_chunk), console=console, refresh_per_second=12,
-                          vertical_overflow="visible") as live:
-                    for chunk in gen:
-                        chunks.append(chunk)
-                        live.update(_panel("".join(chunks)))
+            if _capture_mode:
+                # Collect all chunks silently; render once at the end
+                chunks = list(gen)
+            else:
+                with console.status(f"[muted]Generating MINION.md...[/]", spinner="dots"):
+                    first_chunk = next(gen, None)
+                chunks = []
+                if first_chunk is not None:
+                    chunks.append(first_chunk)
+                    with Live(_panel(first_chunk), console=console, refresh_per_second=12,
+                              vertical_overflow="visible") as live:
+                        for chunk in gen:
+                            chunks.append(chunk)
+                            live.update(_panel("".join(chunks)))
             _generated = "".join(chunks).strip()
             content = _generated + "\n" if _generated else None
-            was_streamed = True
+            was_streamed = not _capture_mode
         except Exception as e:
             console.print(f"[muted]LLM generation failed: {e}[/]")
 
@@ -610,15 +552,23 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
         else:
             print_error("No active plan. Use /plan <goal> to create one first.")
             return True
-        console.print()
-        execute_plan(plan_path, client, conversation, ctx.base_system_prompt, state or ReplState(), permission_store=permission_store)
+        if ctx.renderer is None:
+            console.print()
+        else:
+            ctx.renderer.resume_thinking()
+        execute_plan(
+            plan_path, client, conversation, ctx.base_system_prompt,
+            state or ReplState(), permission_store=permission_store,
+            renderer=ctx.renderer, hook_runner=ctx.hook_runner,
+            mcp_manager=ctx.mcp_manager, confirmation_manager=ctx.confirmation_manager,
+        )
         return True
 
     # /plan <goal> — create a new plan
     goal = arg
     console.print()
     recent = [m for m in conversation.messages if isinstance(m.content, str)][-8:]
-    result = create_plan(goal, client, project_context, recent_messages=recent or None)
+    result = create_plan(goal, client, project_context, recent_messages=recent or None, renderer=ctx.renderer)
     if result is None:
         return True
 
@@ -626,48 +576,76 @@ def _handle_plan(arg: str, ctx: CommandContext) -> bool:
         state.active_plan = result.path
         state.active_plan_goal = goal
 
-    _display_plan(result.content, result.path)
+    _renderer = ctx.renderer
+    _cm = ctx.confirmation_manager
+    _is_tui = _cm is not None and getattr(_cm, "_tui_app", None) is not None
 
-    import questionary
+    _display_plan(result.content, result.path, renderer=_renderer)
 
     _PLAN_CHOICES = ["Execute plan", "Refine plan", "Save without executing"]
     refinement_round = 0
     while True:
-        try:
-            choice = questionary.select(
-                " What would you like to do?",
-                choices=_PLAN_CHOICES,
-                pointer="  ❯ ",
-                style=MINION_STYLE,
-            ).ask()
-        except (KeyboardInterrupt, EOFError):
-            choice = None
+        if _is_tui and _cm is not None:
+            idx = _cm.choose_sync(" What would you like to do?", _PLAN_CHOICES)
+            choice = _PLAN_CHOICES[idx] if idx is not None else None
+        else:
+            import questionary
+            try:
+                choice = questionary.select(
+                    " What would you like to do?",
+                    choices=_PLAN_CHOICES,
+                    pointer="  ❯ ",
+                    style=MINION_STYLE,
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                choice = None
 
         if choice is None or choice == "Save without executing":
-            console.print(f"[muted]Plan saved at {result.path}. Use /plan --execute to run later.[/]")
+            msg = f"[muted]Plan saved at {result.path}. Use /plan --execute to run later.[/]"
+            if _renderer is not None:
+                _renderer.on_info(msg)
+            else:
+                console.print(msg)
             break
 
         if choice == "Execute plan":
-            console.print()
-            execute_plan(result.path, client, conversation, ctx.base_system_prompt, state or ReplState(), permission_store=permission_store)
+            if _renderer is None:
+                console.print()
+            else:
+                _renderer.resume_thinking()
+            execute_plan(
+                result.path, client, conversation, ctx.base_system_prompt,
+                state or ReplState(), permission_store=permission_store,
+                renderer=_renderer, hook_runner=ctx.hook_runner,
+                mcp_manager=ctx.mcp_manager, confirmation_manager=_cm,
+            )
             break
 
-        try:
-            feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
-        except (KeyboardInterrupt, EOFError):
-            console.print(f"\n[muted]Plan saved. Use /plan --execute to run later.[/]")
-            break
-        feedback = feedback.strip()
+        # Refine path
+        if _is_tui and _cm is not None:
+            feedback = _cm.text_input_sync("feedback")
+        else:
+            try:
+                feedback = console.input(f"[bold {YELLOW}]feedback[/] › ")
+                feedback = feedback.strip()
+            except (KeyboardInterrupt, EOFError):
+                msg = f"\n[muted]Plan saved. Use /plan --execute to run later.[/]"
+                if _renderer is not None:
+                    _renderer.on_info(msg)
+                else:
+                    console.print(msg)
+                break
         if not feedback:
             continue
-        console.print()
+        if _renderer is None:
+            console.print()
         refinement_round += 1
         revised = _refine_plan(result.content, feedback, goal, client)
         if revised:
             from ..planner.storage import save_plan as _save_plan
             _save_plan(revised, goal)
             result = PlanResult(path=result.path, content=revised, goal=goal)
-            _display_plan(revised, result.path)
+            _display_plan(revised, result.path, renderer=_renderer)
             get_tracer().emit(
                 "plan_refined",
                 plan_path=str(result.path),

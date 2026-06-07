@@ -2,44 +2,40 @@
 
 Uses the same callback interface as ParallelDisplay (console) so runner.py
 can treat both transparently. Instead of updating a Rich Live display,
-it calls app.invalidate() to trigger a prompt_toolkit redraw.
-
-No pause()/resume() needed — ConfirmationManager in TUI mode routes directly
-to the permission panel rather than pausing the display.
+it posts a SlotsUpdated message to the Textual app (thread-safe).
 
 needs_scrollback_flush=True: after a parallel run, the caller must commit
-completed slot states to the conversation scrollback and then call clear().
-ParallelDisplay (console) does this automatically via Rich Live __exit__.
+completed slot states to the conversation buffer and then call clear().
 """
 
 import threading
-from typing import Callable, Optional
+from typing import Callable
 
-from prompt_toolkit.formatted_text import FormattedText
+from rich.text import Text
 
 from ..output.display_utils import apply_slot_event, tool_slot_header_frags
+from ..theme import GREEN
+from .messages import SlotsUpdated
 
 
 class SlotsManager:
     """Thread-safe slot state manager for the TUI slots zone.
 
     Satisfies ParallelDisplayProtocol. needs_scrollback_flush=True because
-    prompt_toolkit does not print slot states on exit — the caller must
-    explicitly flush completed states into the conversation scrollback.
+    completed slot states must be flushed to the conversation buffer manually.
     """
 
     needs_scrollback_flush: bool = True
 
-    def __init__(self, invalidate_fn: Callable) -> None:
+    def __init__(self, post_message_fn: Callable) -> None:
         self._lock = threading.Lock()
         self._states: dict[str, dict] = {}
         self._order: list[str] = []
-        self._invalidate = invalidate_fn
+        self._post_message = post_message_fn
 
     # ── Pre-registration ──────────────────────────────────────────────────────
 
     def pre_register(self, slots) -> None:
-        """Register slots before the run starts."""
         with self._lock:
             for slot in slots:
                 if slot.key not in self._states:
@@ -52,43 +48,37 @@ class SlotsManager:
                     self._order.append(slot.key)
 
     async def pre_register_async(self, slots) -> None:
-        """Async variant of pre_register — no transition delay needed for TUI.
-
-        prompt_toolkit redraws are driven by invalidate() calls, so slot rows
-        appear immediately on the next frame without any artificial pause.
-        """
         self.pre_register(slots)
 
     def clear(self) -> None:
         with self._lock:
             self._states.clear()
             self._order.clear()
+        self._post_message(SlotsUpdated())
 
     # ── Callback factory ──────────────────────────────────────────────────────
 
     def make_callback(self, key: str) -> Callable:
-        """Return an event callback bound to a specific slot key."""
         def callback(event: str, **data) -> None:
             with self._lock:
                 if key not in self._states:
                     return
                 apply_slot_event(self._states[key], event, **data)
-            self._invalidate()
+            self._post_message(SlotsUpdated())
         return callback
 
-    # ── Context manager (noop — prompt_toolkit redraws on next invalidate) ──────
+    # ── Context manager (noop) ────────────────────────────────────────────────
 
     def __enter__(self) -> "SlotsManager":
         return self
 
     def __exit__(self, *args: object) -> None:
-        pass  # slots remain visible; prompt_toolkit redraws on next invalidate
+        pass
 
     def render_now(self) -> None:
-        self._invalidate()
+        self._post_message(SlotsUpdated())
 
     def slot_results(self) -> list[dict]:
-        """Return a snapshot of all slot states in registration order."""
         with self._lock:
             return [dict(self._states[k]) for k in self._order if k in self._states]
 
@@ -96,46 +86,46 @@ class SlotsManager:
 
     @property
     def is_visible(self) -> bool:
-        """True if any slots are registered."""
         with self._lock:
             return bool(self._states)
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
-    def get_formatted_text(self) -> FormattedText:
-        """Render all slots as prompt_toolkit FormattedText."""
+    def get_rich_text(self) -> Text:
+        """Render all slots as a Rich Text object."""
         with self._lock:
             order  = list(self._order)
             states = {k: dict(v) for k, v in self._states.items()}
 
-        fragments: list[tuple[str, str]] = []
+        result = Text()
         first = True
 
         for key in order:
             if not first:
-                fragments.append(("", "\n"))
+                result.append("\n")
             first = False
 
-            state     = states.get(key, {})
-            tool_name = state.get("tool_name", "")
-            inputs    = state.get("inputs", {})
-            label     = state.get("label")
-            status    = state.get("status", "pending")
+            state       = states.get(key, {})
+            tool_name   = state.get("tool_name", "")
+            inputs      = state.get("inputs", {})
+            label       = state.get("label")
+            status      = state.get("status", "pending")
+            diff_markup = state.get("diff_markup", "")
 
             if label:
                 # ── Subagent slot — 2-line format ─────────────────────────────
-                fragments.append(("class:slot-icon", "⏺  "))
-                fragments.append(("class:slot-label", f"[{label}]"))
+                result.append("⏺  ", style=f"bold {GREEN}")
+                result.append(f"[{label}]", style="bold")
                 task = inputs.get("task", "")
                 if task:
                     task_clean = task.replace("\n", " ").strip()
                     if len(task_clean) > 58:
                         task_clean = task_clean[:58] + "…"
-                    fragments.append(("class:slot-task", f"  {task_clean}"))
-                fragments.append(("", "\n   └─  "))
+                    result.append(f"  {task_clean}", style="dim")
+                result.append("\n   └─  ")
 
                 if status == "pending":
-                    fragments.append(("class:slot-running", "waiting…"))
+                    result.append("waiting…", style="dim")
                 elif status == "running":
                     sub_activities = state.get("sub_activities", [])
                     if sub_activities:
@@ -143,41 +133,48 @@ class SlotsManager:
                         for sa in sub_activities:
                             parts.append(("✓ " if sa["done"] else "") + sa["text"])
                         activity = "  ".join(parts)
-                        fragments.append(("class:slot-running", f"running · {activity[:80]}"))
+                        result.append(f"running · {activity[:80]}", style="dim")
                     else:
                         last = state.get("last_activity", "")
                         act  = last.replace("\n", " ").replace("\r", "")[:72]
-                        fragments.append(("class:slot-running", f"running · {act}" if act else "running…"))
+                        result.append(f"running · {act}" if act else "running…", style="dim")
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    fragments.append(("class:slot-done", f"done ({latency:.1f}s)"))
+                    result.append(f"done ({latency:.1f}s)", style=f"bold {GREEN}")
                     preview = state.get("preview", "")
                     if preview:
-                        fragments.append(("class:slot-detail", f"\n       {preview[:100]}"))
+                        result.append(f"\n       {preview[:100]}", style="dim")
                 elif status == "error":
                     error = state.get("error", "")
-                    fragments.append(("class:slot-error", f"Error · {error[:72]}"))
+                    result.append(f"Error · {error[:72]}", style="red")
 
             else:
-                # ── Generic tool slot — 3-line format ────────────────────────
-                fragments.extend(tool_slot_header_frags(tool_name, inputs))
+                # ── Generic tool slot — header + optional diff + status ────────
+                for style, text in tool_slot_header_frags(tool_name, inputs):
+                    result.append(text, style=style)
+
+                # Diff shown between header and status, indented to match status lines
+                if diff_markup and status != "pending":
+                    indented = "   " + diff_markup.rstrip("\n").replace("\n", "\n   ")
+                    result.append("\n")
+                    result.append_text(Text.from_markup(indented))
 
                 if status == "pending":
-                    fragments.append(("class:slot-running", "\n   ○  waiting…"))
-                    fragments.append(("", "\n"))
+                    result.append("\n   ○  waiting…", style="dim")
+                    result.append("\n")
                 elif status == "running":
-                    fragments.append(("class:slot-running", "\n   ○  running…"))
+                    result.append("\n   ○  running…", style="dim")
                     last = state.get("last_activity", "")
                     last_line = last.replace("\n", " ").replace("\r", "")[:90]
-                    fragments.append(("class:slot-detail", f"\n   {last_line}"))
+                    result.append(f"\n   {last_line}", style="dim")
                 elif status == "complete":
                     latency = state.get("latency_ms", 0) / 1000
-                    fragments.append(("class:slot-done", f"\n   ✓  done ({latency:.1f}s)"))
+                    result.append(f"\n   ✓  done ({latency:.1f}s)", style=f"bold {GREEN}")
                     preview = state.get("preview", "")
-                    fragments.append(("class:slot-detail", f"\n   └─  {preview[:100]}"))
+                    result.append(f"\n   └─  {preview[:100]}", style="dim")
                 elif status == "error":
                     error = state.get("error", "")
-                    fragments.append(("class:slot-error", f"\n   ✗  error: {error[:60]}"))
-                    fragments.append(("", "\n"))
+                    result.append(f"\n   ✗  error: {error[:60]}", style="red")
+                    result.append("\n")
 
-        return FormattedText(fragments)
+        return result

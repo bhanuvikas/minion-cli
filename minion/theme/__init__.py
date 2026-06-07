@@ -29,6 +29,8 @@ from .console import (
 # ── Banner ────────────────────────────────────────────────────────────────────
 from .banner import (
     BANNER_COMMANDS,
+    get_greeting_renderables,
+    get_startup_warning_renderables,
     print_greeting,
     print_startup_warnings,
 )
@@ -61,7 +63,8 @@ __all__ = [
     "console", "startup_warnings", "_active_status",
     "set_active_status", "pause_spinner", "resume_spinner",
     # banner
-    "BANNER_COMMANDS", "print_greeting", "print_startup_warnings",
+    "BANNER_COMMANDS", "get_greeting_renderables", "get_startup_warning_renderables",
+    "print_greeting", "print_startup_warnings",
     # printers
     "print_error", "print_model_info", "print_todo_list",
     "print_usage", "print_context", "stream_response_to_stdout",

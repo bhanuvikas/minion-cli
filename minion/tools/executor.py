@@ -132,11 +132,11 @@ def _diff_detail_edit(path: str, old_string: str, new_string: str) -> str:
     return markup if markup else "[muted](no changes)[/]"
 
 
-def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
-    """Compute diff for the TUI permission panel using the same format_diff_rich as non-TUI.
+def _diff_lines_for_panel(name: str, inputs: dict) -> str:
+    """Compute diff for the TUI permission panel.
 
-    Returns prompt_toolkit (style, text) pairs ready for FormattedText.
-    Limited to 30 lines to keep the panel usable.
+    Returns a Rich markup string (not ANSI). The permission panel embeds
+    it directly via Static.update() so colours are preserved.
     """
     from pathlib import Path as _Path
     from ..output.diff import format_diff_rich
@@ -158,23 +158,9 @@ def _diff_lines_for_panel(name: str, inputs: dict) -> list[tuple[str, str]]:
             existing = ""
         new_content = existing.replace(old_str, new_str, 1)
     else:
-        return []
+        return ""
 
-    markup = format_diff_rich(existing, new_content)
-    if not markup:
-        return []
-
-    lines = markup.split("\n")
-    if len(lines) > 30:
-        lines = lines[:30]
-        lines.append("[dim]  … (truncated)[/dim]")
-    markup = "\n".join(lines)
-
-    from ..tui.render import render_rich as _render_rich
-    ansi = _render_rich(markup, width=76)
-
-    from prompt_toolkit.formatted_text import ANSI as _ANSI, to_formatted_text as _to_ft
-    return list(_to_ft(_ANSI(ansi + "\n")))  # type: ignore[return-value]
+    return format_diff_rich(existing, new_content)
 
 
 def _confirm_prompt(name: str, inputs: dict) -> tuple[str, str]:
@@ -628,7 +614,7 @@ class ToolExecutor:
                         self._renderer.on_diff_preview(detail, tool_name=name)
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
-                _diff_lns: list = []
+                _diff_lns: str = ""
                 if self._confirm_callback is None:
                     from ..tui import is_tui_active as _is_tui_active
                     if _is_tui_active():
@@ -773,14 +759,24 @@ class ToolExecutor:
 
         if name in DANGEROUS_TOOLS:
             if _mode_badge is not None:
-                # Auto-approved: show diff immediately (before execution).
-                if self._confirm_callback is None and _immediate_r is not None:
+                # Auto-approved: show diff in slot + buffer it for in-order scrollback.
+                # Never write to _immediate_r in parallel mode — that would emit the diff
+                # before the tool-call header, breaking ordering.
+                if self._confirm_callback is None:
                     _, detail = _confirm_prompt(name, inputs)
                     if detail:
-                        _immediate_r.on_diff_preview(detail, tool_name=name)
+                        if _slot_renderer is not None:
+                            # Parallel: update slot state inline; defer to buffer
+                            if _agent_cb is not None:
+                                _agent_cb("diff", markup=detail)
+                            if _deferred_r is not None:
+                                _deferred_r.on_diff_preview(detail, tool_name=name)
+                        elif _immediate_r is not None:
+                            # Single tool: show immediately (ordering is guaranteed)
+                            _immediate_r.on_diff_preview(detail, tool_name=name)
             else:
                 # TUI: pass diff to permission panel. Non-TUI: _interactive_confirm shows it.
-                _diff_lns: list = []
+                _diff_lns: str = ""
                 if self._confirm_callback is None:
                     from ..tui import is_tui_active as _is_tui_active
                     if _is_tui_active():
@@ -795,6 +791,20 @@ class ToolExecutor:
                     if _deferred_r is not None:
                         _deferred_r.on_tool_result(result)
                     return result
+                # After approval: set diff on the slot state so _render() shows it inline.
+                # TUI: _diff_lns already computed; console: compute it now (was only shown
+                # during questionary, never stored on the slot).
+                if _slot_renderer is not None and _agent_cb is not None:
+                    if _diff_lns:
+                        _slot_diff = _diff_lns
+                    else:
+                        _, _slot_diff = _confirm_prompt(name, inputs)
+                    if _slot_diff:
+                        _agent_cb("diff", markup=_slot_diff)
+                # TUI only: also emit to _deferred_r so flush_to() replays it in order
+                # in the conversation buffer (console parallel never calls flush_to).
+                if _deferred_r is not None and _diff_lns:
+                    _deferred_r.on_diff_preview(_diff_lns, tool_name=name)
 
         # ── Pre-tool hook ──────────────────────────────────────────────────
         if self._hook_runner is not None:

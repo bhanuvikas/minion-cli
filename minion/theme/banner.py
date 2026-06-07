@@ -94,24 +94,6 @@ _CMD_KEY_W = 10  # "/compact" (8) + 2 trailing spaces
 _SEP_W     = 3   # fixed width of the │ separator column
 
 
-def _print_logo() -> None:
-    """Section 1: figlet logo + greeting line."""
-    from rich.align import Align
-
-    art = _build_title()
-    art.justify = None
-    console.print()
-    console.print(Align(art, align="center"))
-
-    greeting = Text()
-    greeting.append("Bello! ", style=f"bold {YELLOW}")
-    greeting.append("I'm ", style="white")
-    greeting.append("Minion", style=f"bold {BLUE}")
-    greeting.append(". What do you want me to do?", style="white")
-    console.print(Align(greeting, align="center"))
-    console.print()
-
-
 def _build_session_rows(
     version: str,
     model: str,
@@ -154,7 +136,7 @@ def _build_session_rows(
         lbl = "1 role loaded" if agent_count == 1 else f"{agent_count} roles loaded"
         rows.append(("agents", _sv(lbl), "white"))
     mem_val   = "enabled" if memory_enabled else "disabled"
-    mem_style = "green"   if memory_enabled else f"dim {GREY}"
+    mem_style = GREEN     if memory_enabled else f"dim {GREY}"
     rows.append(("memory", mem_val, mem_style))
     if mcp_count > 0:
         lbl = "1 server active" if mcp_count == 1 else f"{mcp_count} servers active"
@@ -162,31 +144,33 @@ def _build_session_rows(
     return rows
 
 
-def _print_info_panel(
-    left_w: int,
-    right_w: int,
-    session_rows: list[tuple[str, str, str]],
-) -> None:
-    """Section 2: two-column commands / session grid."""
+def _build_greeting_text() -> Text:
+    t = Text()
+    t.append("Bello! ", style=f"bold {YELLOW}")
+    t.append("I'm ", style="white")
+    t.append("Minion", style=f"bold {BLUE}")
+    t.append(". What do you want me to do?", style="white")
+    return t
+
+
+def _build_info_panel_renderable(session_rows: list[tuple[str, str, str]]):
+    """Return a Table renderable for the info panel (auto-expands to container width)."""
     from rich.table import Table
 
-    dots_cmd  = (". " * (left_w  // 2))[:left_w  - 1]
-    dots_sess = (". " * (right_w // 2))[:right_w - 3]  # -2 indent, -1 safety
+    dots = ". " * 40  # long enough to fill any column width; no_wrap truncates cleanly
 
-    max_desc = max(10, left_w - _CMD_KEY_W - 1)
     cmd_text = Text()
     cmd_text.append(f"{'command':<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
     cmd_text.append("description\n", style=GREY)
-    cmd_text.append(dots_cmd + "\n", style=f"dim {GREY}")
+    cmd_text.append(dots + "\n", style=f"dim {GREY}")
     for i, (cmd, desc) in enumerate(BANNER_COMMANDS):
         cmd_text.append(f"{cmd:<{_CMD_KEY_W}}", style=f"bold {YELLOW}")
-        desc_out = desc if len(desc) <= max_desc else desc[:max_desc - 1] + "…"
         suffix = "\n" if i < len(BANNER_COMMANDS) - 1 else ""
-        cmd_text.append(desc_out + suffix, style="white")
+        cmd_text.append(desc + suffix, style="white")
 
     sess_text = Text()
     sess_text.append("  session\n", style=f"bold {YELLOW}")
-    sess_text.append(f"  {dots_sess}\n", style=f"dim {GREY}")
+    sess_text.append("  " + dots + "\n", style=f"dim {GREY}")
     for i, (key, val, val_style) in enumerate(session_rows):
         sess_text.append(f"  {key:<9}", style=GREY)
         suffix = "\n" if i < len(session_rows) - 1 else ""
@@ -196,11 +180,85 @@ def _print_info_panel(
     sep_text = Text("\n".join(["│"] * n_sep), style=f"dim {SILVER}", justify="center")
 
     outer = Table.grid(expand=True)
-    outer.add_column(ratio=50)
+    outer.add_column(ratio=50, no_wrap=True)
     outer.add_column(width=_SEP_W, justify="center")
-    outer.add_column(ratio=50)
+    outer.add_column(ratio=50, no_wrap=True)
     outer.add_row(cmd_text, sep_text, sess_text)
-    console.print(outer)
+    return outer
+
+
+def get_greeting_renderables(
+    version: str = "",
+    model: str = "",
+    provider: str = "",
+    project_name: str = "",
+    cwd: str = "",
+    agent_count: int = 0,
+    memory_enabled: bool = True,
+    mcp_count: int = 0,
+    a2a_count: int = 0,
+) -> list:
+    """Return Rich renderables for the greeting banner.
+
+    Consumed by both console mode (via print_greeting) and TUI mode (via
+    _write_banner) — single source of truth for banner layout.
+    """
+    from rich.align import Align
+    from rich.rule import Rule
+    from .. import __version__
+
+    art = _build_title()
+    art.justify = None
+
+    # Compute max_val from terminal width — same formula used for both modes.
+    term_w  = console.size.width
+    left_w  = max(30, (term_w - _SEP_W) // 2)
+    right_w = max(20, term_w - _SEP_W - left_w)
+    max_val = max(8, right_w - 11 - 1)
+
+    session_rows = _build_session_rows(
+        version=version or __version__,
+        model=model,
+        provider=provider,
+        project_name=project_name,
+        a2a_count=a2a_count,
+        cwd=cwd,
+        agent_count=agent_count,
+        memory_enabled=memory_enabled,
+        mcp_count=mcp_count,
+        max_val=max_val,
+    )
+
+    def _blank() -> Text:
+        return Text(" ")
+
+    return [
+        _blank(),
+        Align(art, align="center"),
+        Align(_build_greeting_text(), align="center"),
+        _blank(),
+        Rule(style=SILVER),
+        _build_info_panel_renderable(session_rows),
+        _blank(),
+        Rule(style=SILVER),
+        _blank(),
+    ]
+
+
+def get_startup_warning_renderables(warnings: list[str]) -> list:
+    """Return Rich renderables for startup warnings.
+
+    Consumed by both console mode (via print_startup_warnings) and TUI mode
+    (via _write_banner) — single source of truth for warning layout.
+    Returns an empty list when there are no warnings.
+    """
+    if not warnings:
+        return []
+    from rich.rule import Rule
+    items: list = [Text.from_markup(w) for w in warnings]
+    items.append(Text(" "))
+    items.append(Rule(style=SILVER))
+    return items
 
 
 def print_greeting(
@@ -214,46 +272,26 @@ def print_greeting(
     mcp_count: int = 0,
     a2a_count: int = 0,
 ) -> None:
-    from .. import __version__
-    from rich.rule import Rule
-
-    term_w  = console.size.width
-    left_w  = max(30, (term_w - _SEP_W) // 2)
-    right_w = max(20, term_w - _SEP_W - left_w)
-
-    _print_logo()
-    console.print(Rule(style=SILVER))
-
-    session_rows = _build_session_rows(
-        version=version or __version__,
+    for r in get_greeting_renderables(
+        version=version,
         model=model,
         provider=provider,
         project_name=project_name,
-        a2a_count=a2a_count,
         cwd=cwd,
         agent_count=agent_count,
         memory_enabled=memory_enabled,
         mcp_count=mcp_count,
-        max_val=max(8, right_w - 11 - 1),
-    )
-    _print_info_panel(left_w=left_w, right_w=right_w, session_rows=session_rows)
-
-    console.print()
-    console.print(Rule(style=SILVER))
-    console.print()
+        a2a_count=a2a_count,
+    ):
+        console.print(r)
 
 
 def print_startup_warnings(warnings: list[str]) -> None:
-    """Section 3: startup warnings collected by loaders, followed by a closing rule.
+    """Print startup warnings collected by loaders, followed by a closing rule.
 
     No-op when warnings is empty. Each entry is a Rich markup string.
     Add new warning sources by appending to the startup_warnings list before
     print_greeting() is called, or pass extra warnings directly to this function.
     """
-    if not warnings:
-        return
-    from rich.rule import Rule
-    for w in warnings:
-        console.print(w)
-    console.print()
-    console.print(Rule(style=SILVER))
+    for r in get_startup_warning_renderables(warnings):
+        console.print(r)

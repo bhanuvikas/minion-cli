@@ -37,6 +37,11 @@ def execute_skill(
     registry: SkillRegistry,
     state: Optional["ReplState"] = None,
     _chain: frozenset[str] = frozenset(),
+    *,
+    confirmation_manager=None,
+    hook_runner=None,
+    permission_store=None,
+    approval_mode: str = "off",
 ) -> None:
     """Execute a skill — chained or direct.
 
@@ -70,7 +75,9 @@ def execute_skill(
                 console.print(f"[red]Poulet tikka masala! Unknown skill in chain: '{step_name}'[/]")
                 return
             execute_skill(step, arg, client, conversation, base_system_prompt, registry, state,
-                          _chain | {skill.name})
+                          _chain | {skill.name},
+                          confirmation_manager=confirmation_manager, hook_runner=hook_runner,
+                          permission_store=permission_store, approval_mode=approval_mode)
         return
 
     # ── Direct execution ───────────────────────────────────────────────────────
@@ -110,6 +117,10 @@ def execute_skill(
         render_markdown=render_markdown,
         markdown_title=f"/{skill.name}",
         spinner_label=spinner_label,
+        confirmation_manager=confirmation_manager,
+        hook_runner=hook_runner,
+        permission_store=permission_store,
+        approval_mode=approval_mode,
     )
 
     get_tracer().emit("skill_complete", skill_name=skill.name, arg=arg)
