@@ -134,11 +134,14 @@ def stream_response_to_stdout(chunks) -> None:
 
 
 class MarkdownStreamer:
-    """Context manager that renders LLM streaming text as live markdown.
+    """Context manager that streams LLM text as plain text, then commits as markdown on close.
 
-    Usage: call write() for each incoming text chunk. The Live display updates
-    on newline boundaries to keep re-parsing overhead low. Call close() (or use
-    as a context manager via with-statement) to finalise and exit the Live area.
+    During streaming a transient Live area shows plain text (stable, linear height growth).
+    On close the transient area is cleared and the full accumulated content is printed as
+    rendered Markdown in one committed console.print() call.
+
+    This avoids the Rich Live cursor-arithmetic bug where non-linear height changes from
+    partially-parsed markdown tables cause prior content to be overwritten mid-stream.
     """
 
     def __init__(self, display_name: str = "minion") -> None:
@@ -149,14 +152,14 @@ class MarkdownStreamer:
 
     def __enter__(self) -> "MarkdownStreamer":
         from rich.live import Live
-        from rich.markdown import Markdown
+        from rich.text import Text
         console.print(f"\n[bold {BLUE}]{self._display_name}[/] ›")
         self._live = Live(
-            Markdown(""),
+            Text(""),
             console=console,
             refresh_per_second=12,
             vertical_overflow="visible",
-            transient=False,
+            transient=True,  # cleared on exit; final markdown committed via console.print
         )
         self._live.__enter__()  # type: ignore[union-attr]
         self._entered = True
@@ -166,18 +169,19 @@ class MarkdownStreamer:
         if not self._entered:
             return
         self._buffer.append(text)
-        from rich.markdown import Markdown
-        self._live.update(Markdown("".join(self._buffer)))  # type: ignore[union-attr]
+        from rich.text import Text
+        # Plain Text height grows linearly (one line per \n) — no cursor-math surprises
+        self._live.update(Text("".join(self._buffer)))  # type: ignore[union-attr]
 
     def close(self) -> None:
-        """Finalise and exit the Live context. Safe to call if never entered."""
+        """Exit the transient live area, then commit the final markdown render."""
         if not self._entered:
             return
+        self._live.__exit__(None, None, None)  # type: ignore[union-attr]  # clears transient area
+        self._entered = False
         if self._buffer:
             from rich.markdown import Markdown
-            self._live.update(Markdown("".join(self._buffer)), refresh=True)  # type: ignore[union-attr]
-        self._live.__exit__(None, None, None)  # type: ignore[union-attr]
-        self._entered = False
+            console.print(Markdown("".join(self._buffer)))
 
     def __exit__(self, *args: object) -> None:
         self.close()

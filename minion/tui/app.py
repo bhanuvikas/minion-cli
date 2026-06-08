@@ -1132,7 +1132,12 @@ class MinionApp(App):
                 self._streaming_widget = self._conv_area.append_block(renderable)
             else:
                 self._streaming_widget.update(renderable)
-                self._conv_area.scroll_end(animate=False, x_axis=False)
+                # Layout reflows on the next frame after update(); scroll_end() must
+                # fire after that reflow or it uses the pre-growth virtual height and
+                # doesn't scroll far enough to reveal the newest content.
+                self.call_after_refresh(
+                    self._conv_area.scroll_end, animate=False, x_axis=False
+                )
 
         if self._on_tui_loop():
             _do()

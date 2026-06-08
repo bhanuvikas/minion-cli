@@ -294,7 +294,7 @@ class ConversationBuffer:
 
         from rich.console import Group
         from rich.markdown import Markdown
-        return Group(prefix, Markdown("\n".join(text.split("\n")[-12:])))
+        return Group(prefix, Markdown(text))
 
     @property
     def is_empty(self) -> bool:
