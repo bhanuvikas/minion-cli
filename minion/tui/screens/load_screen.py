@@ -242,25 +242,25 @@ LoadScreen {{
         return tbl
 
     def _build_greeting(self) -> str:
-        keycap = f"[bold white on #4a4a4a]"
-        dot = f"[{_DIM}]·[/]"
+        kc = "bold white on #4a4a4a"   # style only — no brackets
+        dim = _DIM
         if self._mode == "confirm_delete":
             return (
                 f"[bold {_ORANGE}]⚠[/]  "
-                f"[{_DIM}]Press [{keycap}] d [/] again to confirm deletion, or "
-                f"[{keycap}] esc [/] to cancel.[/]"
+                f"[{dim}]Press [{kc}] d [/] again to confirm deletion, "
+                f"or [{kc}] esc [/] to cancel.[/]"
             )
         if self._mode == "empty":
             return (
                 f"[bold {_GOLD}]Bello![/]  "
-                f"[{_DIM}]No saved sessions yet. Use [bold]{_esc('/save <name>')}[/] to create one.[/]"
+                f"[{dim}]No saved sessions yet. Use [{kc}]/save <name>[/] to create one.[/]"
             )
         return (
             f"[bold {_GOLD}]Bello![/]  "
-            f"[{_DIM}]Navigate with [{keycap}] ↑↓ [/]  "
-            f"{dot}  [{keycap}] ↵ [/] to load  "
-            f"{dot}  [{keycap}] d [/] to delete  "
-            f"{dot}  type to filter[/]"
+            f"[{dim}]Navigate [{kc}] ↑↓ [/]  ·  "
+            f"[{kc}] ↵ [/] load  ·  "
+            f"[{kc}] d [/] delete  ·  "
+            f"type to filter[/]"
         )
 
     def _build_list(self) -> RenderableType:
