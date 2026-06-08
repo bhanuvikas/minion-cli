@@ -215,7 +215,7 @@ LoadScreen {{
                      style=_ORANGE if not self._visible else _DIM)
         return t
 
-    def _build_list(self) -> Text:
+    def _build_list(self) -> RenderableType:
         if self._mode == "empty":
             t = Text()
             t.append("\n  No saved sessions found.\n", style=_DIM)
@@ -230,61 +230,75 @@ LoadScreen {{
             t.append(f'"{self._query}"', style=_ORANGE)
             return t
 
-        t = Text()
+        outer = Table.grid(expand=True, padding=0)
+        outer.add_column()
+
+        # Columns: ptr | name (fills) | msgs | tokens | model | age | pad
+        tbl = Table.grid(expand=True, padding=0)
+        tbl.add_column(width=5,  no_wrap=True)   # pointer
+        tbl.add_column(ratio=1,  no_wrap=True)   # session name
+        tbl.add_column(width=10, no_wrap=True)   # "103 msgs"
+        tbl.add_column(width=12, no_wrap=True)   # "1203.3k tok"
+        tbl.add_column(width=14, no_wrap=True)   # "sonnet-4-6"
+        tbl.add_column(width=8,  no_wrap=True)   # "7h ago"
+        tbl.add_column(width=2,  no_wrap=True)   # right-edge padding
+
         for i, s in enumerate(self._visible):
             is_sel = (i == self._selected)
             is_del = (is_sel and self._mode == "confirm_delete")
 
             if is_del:
-                bg = _TINT_RED
+                row_style  = f"on {_TINT_RED}"
                 name_style = f"bold {_RED}"
-                meta_style = _DIM
-                ptr = "  ✕  "
-                ptr_style = f"bold {_RED}"
+                meta_style = f"strike {_DIM}"
+                ptr_text   = Text(" ✕ ", style=f"bold {_RED}", no_wrap=True)
             elif is_sel:
-                bg = _TINT_YEL
+                row_style  = f"on {_TINT_YEL}"
                 name_style = f"bold {_GOLD}"
                 meta_style = _DIM
-                ptr = "  ▸  "
-                ptr_style = f"bold {_GOLD}"
+                ptr_text   = Text(" ▸ ", style=f"bold {_GOLD}", no_wrap=True)
             else:
-                bg = ""
+                row_style  = ""
                 name_style = _TEXT
                 meta_style = _FAINT
-                ptr = "     "
-                ptr_style = _FAINT
+                ptr_text   = Text("   ", no_wrap=True)
 
-            line = Text(no_wrap=True, overflow="ellipsis", end="\n")
-            line.append(ptr, style=ptr_style)
-
-            # Session name (with search highlight)
+            # Session name with search highlight
             if self._query and self._query.lower() in s.name.lower():
+                name_t = Text(no_wrap=True, overflow="ellipsis")
                 lower = s.name.lower()
                 q = self._query.lower()
                 pos = 0
                 while True:
                     idx = lower.find(q, pos)
                     if idx == -1:
-                        line.append(s.name[pos:], style=name_style)
+                        name_t.append(s.name[pos:], style=name_style)
                         break
-                    line.append(s.name[pos:idx], style=name_style)
-                    line.append(s.name[idx:idx + len(q)], style=f"bold {_ORANGE}")
+                    name_t.append(s.name[pos:idx], style=name_style)
+                    name_t.append(s.name[idx:idx + len(q)], style=f"bold {_ORANGE}")
                     pos = idx + len(q)
             else:
-                line.append(s.name, style=name_style)
+                name_t = Text(s.name, style=name_style, no_wrap=True, overflow="ellipsis")
 
-            # Compact metadata
-            msgs = f"{s.message_count} msg{'s' if s.message_count != 1 else ''}"
-            tok  = f"{s.total_tokens / 1000:.1f}k tok" if s.total_tokens >= 1000 else f"{s.total_tokens} tok"
-            mod  = _model_short(s.model)
-            age  = _age(s.saved_at)
-            line.append(f"  ·  {msgs}  {tok}  {mod}  {age}", style=meta_style)
+            msgs_str = f"{s.message_count} msg{'s' if s.message_count != 1 else ''}"
+            tok_str  = (f"{s.total_tokens / 1000:.1f}k tok"
+                        if s.total_tokens >= 1000 else f"{s.total_tokens} tok")
+            mod_str  = _model_short(s.model)
+            age_str  = _age(s.saved_at)
 
-            if bg:
-                line.stylize(f"on {bg}")
-            t.append_text(line)
+            tbl.add_row(
+                ptr_text,
+                name_t,
+                Text(msgs_str, style=meta_style, no_wrap=True),
+                Text(tok_str,  style=meta_style, no_wrap=True),
+                Text(mod_str,  style=meta_style, no_wrap=True),
+                Text(age_str,  style=meta_style, no_wrap=True),
+                Text(""),
+                style=row_style,
+            )
 
-        return t
+        outer.add_row(tbl)
+        return outer
 
     def _build_preview(self) -> RenderableType:
         if self._mode == "empty" or not self._visible:
