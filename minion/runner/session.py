@@ -17,6 +17,7 @@ Session file format (version 1):
 """
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Union
@@ -115,3 +116,57 @@ def list_sessions() -> list[str]:
         return sorted(p.stem for p in _sessions_dir().glob("*.json"))
     except FileNotFoundError:
         return []
+
+
+@dataclass
+class SessionMeta:
+    """Lightweight session descriptor — read from JSON without full message deserialisation."""
+    name: str
+    model: str
+    total_tokens: int
+    saved_at: str        # ISO 8601 timestamp
+    message_count: int
+    first_user_msg: str  # first 400 chars of first user message (plain text)
+    last_user_msg: str   # first 400 chars of last user message ("" if only one)
+
+
+def _extract_text(content: object) -> str:
+    """Pull plain text out of a message content field (str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return block.get("text", "")
+    return ""
+
+
+def list_sessions_with_metadata() -> list[SessionMeta]:
+    """Return sessions sorted newest-first, with metadata extracted from each JSON file."""
+    metas: list[SessionMeta] = []
+    try:
+        paths = list(_sessions_dir().glob("*.json"))
+    except FileNotFoundError:
+        return []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            msgs = data.get("messages", [])
+            user_texts = [
+                _extract_text(m["content"])
+                for m in msgs if m.get("role") == "user"
+            ]
+            first = user_texts[0][:400] if user_texts else ""
+            last  = user_texts[-1][:400] if len(user_texts) > 1 else ""
+            metas.append(SessionMeta(
+                name=path.stem,
+                model=data.get("model", ""),
+                total_tokens=data.get("total_tokens", 0),
+                saved_at=data.get("saved_at", ""),
+                message_count=len(msgs),
+                first_user_msg=first,
+                last_user_msg=last,
+            ))
+        except Exception:
+            metas.append(SessionMeta(path.stem, "", 0, "", 0, "", ""))
+    return sorted(metas, key=lambda s: s.saved_at, reverse=True)

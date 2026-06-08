@@ -24,7 +24,7 @@ from ..memory.injection import inject_memories
 from ..memory.store import MemoryStore
 from ..output import ConsoleRenderer, TuiRenderer
 from ..runner import run_prompt_async
-from ..theme import SILVER, YELLOW, console
+from ..theme import BLUE, SILVER, YELLOW, console
 from ..tracing import get_tracer
 from .agent_handlers import _handle_remote_command, _run_agent_handoff_summary
 from .commands import _get_last_response_text, _handle_slash_command
@@ -831,6 +831,34 @@ async def _run_repl_tui(
                 MemoriesScreen(memory_store=memory_store, initial_query=_mem_query),
                 _on_memories_done,
             )
+            return
+
+        if user_input.startswith("/") and user_input.strip().split()[0] in ("/load", "/resume"):
+            from ..tui.screens.load_screen import LoadScreen
+            from ..runner.session import load as _load_session_data
+
+            _parts = user_input.strip().split(maxsplit=1)
+            _initial_query = _parts[1].strip() if len(_parts) > 1 else ""
+
+            async def _on_load_done(name: Optional[str]) -> None:
+                if not name:
+                    tui_app.set_thinking(False)
+                    return
+                try:
+                    loaded = _load_session_data(name)
+                    conversation.messages = loaded.messages
+                    conversation.total_tokens = loaded.total_tokens
+                    conversation._model = loaded._model
+                    msg_count = len(loaded.messages)
+                    tui_app.conversation.append_system(
+                        f"[{YELLOW}]Session loaded:[/] [{BLUE}]{name}[/] "
+                        f"[muted]({msg_count} messages, {loaded.total_tokens:,} tokens)[/]"
+                    )
+                except FileNotFoundError:
+                    tui_app.conversation.append_system(f"[red]Session '{name}' not found.[/]")
+                tui_app.set_thinking(False)
+
+            tui_app.push_screen(LoadScreen(initial_query=_initial_query), _on_load_done)
             return
 
         if user_input.startswith("/") and user_input.strip().split()[0] == "/agents":
