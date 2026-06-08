@@ -69,7 +69,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - Hooks configuration migrated from `[hooks]` in `config.toml` to standalone YAML files — composable and shareable per project
-- `/memory` command removed; stats folded into `/recall` output
+- `/memory` command removed; use `/memories` to browse, search, edit, and delete stored records
 - `repl.py` (1,878 lines), `cli.py`, `theme.py` (608 lines), and `runner.py` decomposed into subpackages (`repl/`, `cli/`, `theme/`, `runner/`) — each module under ~300 lines
 - `OutputRenderer` ABC introduced — TUI and console share one rendering code path, eliminating ~390 lines of duplicated display logic
 
