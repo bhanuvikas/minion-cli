@@ -100,11 +100,6 @@ LoadScreen {{
     background: #0d0d0d;
     border-bottom: solid {_RULE};
 }}
-#ld-greeting {{
-    height: auto;
-    padding: 0 2;
-    border-bottom: solid {_RULE};
-}}
 #ld-body {{
     height: 1fr;
 }}
@@ -160,7 +155,6 @@ LoadScreen {{
     def compose(self) -> ComposeResult:
         with Vertical(id="ld-panel"):
             yield Static("", id="ld-title")
-            yield Static("", id="ld-greeting")
             with Horizontal(id="ld-body"):
                 with Vertical(id="ld-list-pane"):
                     yield ModalSearchBar(placeholder="filter sessions…", id="ld-search")
@@ -207,11 +201,10 @@ LoadScreen {{
     # ── Refresh ───────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        self.query_one("#ld-title",    Static).update(self._build_title())
-        self.query_one("#ld-greeting", Static).update(self._build_greeting())
-        self.query_one("#ld-list",     Static).update(self._build_list())
-        self.query_one("#ld-preview",  Static).update(self._build_preview())
-        self.query_one("#ld-footer",   Static).update(self._build_footer())
+        self.query_one("#ld-title",   Static).update(self._build_title())
+        self.query_one("#ld-list",    Static).update(self._build_list())
+        self.query_one("#ld-preview", Static).update(self._build_preview())
+        self.query_one("#ld-footer",  Static).update(self._build_footer())
 
     # ── Renderers ─────────────────────────────────────────────────────────────
 
@@ -481,8 +474,10 @@ LoadScreen {{
             search = self.query_one("#ld-search", ModalSearchBar)
             inp = search.query_one(Input)
             inp.focus()
-            inp.value = event.character
-            inp.cursor_position = len(inp.value)
+            if event.character != "/":
+                # Pre-fill with the typed char; / just focuses without inserting
+                inp.value = event.character
+                inp.cursor_position = len(inp.value)
             event.stop()
 
     # ── Actions ───────────────────────────────────────────────────────────────
