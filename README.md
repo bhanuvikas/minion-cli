@@ -31,7 +31,7 @@ orchestration, YAML skills and agent roles, shell lifecycle hooks, and a Textual
 
 - Python 3.11 or later
 - One of the following API keys:
-  - `ANTHROPIC_API_KEY` — [Anthropic Console](https://console.anthropic.com/settings/keys)
+  - `ANTHROPIC_API_KEY` — [Anthropic Console](https://console.anthropic.com/settings/keys) *(preferred)*
   - `OPENAI_API_KEY` — [OpenAI Platform](https://platform.openai.com/api-keys)
   - `OPENROUTER_API_KEY` — [OpenRouter](https://openrouter.ai/keys)
 
@@ -43,37 +43,35 @@ orchestration, YAML skills and agent roles, shell lifecycle hooks, and a Textual
 pip install minion-cli
 ```
 
-After installing, run the setup wizard to configure your API key and preferred model:
-
-```bash
-minion setup
-```
-
-### Shell tab completion (optional but recommended)
-
-```bash
-minion --install-completion zsh     # or bash, fish
-```
-
-Run `exec $SHELL` (or open a new terminal) to activate completion.
+On first run, minion automatically detects that no API key is configured and walks you through setup.
 
 ---
 
 ## Quickstart
 
 ```bash
-# Check installed version
-minion --version
-
 # One-shot query
 minion "explain what this repo does"
 
 # Interactive REPL (full-screen TUI when stdout is a TTY)
 minion
 
+# Check installed version
+minion --version
+
 # Health check
 minion doctor
 ```
+
+---
+
+## Shell Tab Completion
+
+```bash
+minion --install-completion zsh     # or bash, fish
+```
+
+Run `exec $SHELL` (or open a new terminal) to activate.
 
 ---
 
@@ -124,14 +122,6 @@ builtin_minion_md = true        # tip to update MINION.md after file writes
 | `MINION_PROVIDER` | Default provider: `anthropic` \| `openai` \| `openrouter` |
 | `MINION_MODEL` | Default model ID (overridden by `--model` flag) |
 | `MINION_NO_TUI` | Set to `1` to force console mode (disables the full-screen TUI) |
-
-API keys and env vars belong in a `.env` file in your project directory, or exported from your shell:
-
-```bash
-# .env
-ANTHROPIC_API_KEY=sk-ant-...
-MINION_MODEL=claude-sonnet-4-6
-```
 
 ---
 
