@@ -74,6 +74,7 @@ class ConversationBuffer:
         self._streaming_text: str = ""
         self._is_streaming: bool = False
         self._is_thinking: bool = False   # true between submit and first token
+        self._is_compacting: bool = False  # true while /compact is running
         self._display_name: str = "minion"  # label shown on assistant turns
 
         # ── Last committed assistant text (for clipboard copy) ────────────────
@@ -229,6 +230,12 @@ class ConversationBuffer:
             self._is_thinking = thinking
         self._refresh()
 
+    def set_compacting(self, compacting: bool) -> None:
+        """Show/hide the compact-specific spinner in StreamingZone."""
+        with self._lock:
+            self._is_compacting = compacting
+        self._refresh()
+
     def emit_spacer(self) -> None:
         """Emit a blank line and mark gap so start_assistant_turn() skips its own."""
         self._emit(self._blank())
@@ -246,6 +253,7 @@ class ConversationBuffer:
             self._streaming_text     = ""
             self._is_streaming       = False
             self._is_thinking        = False
+            self._is_compacting      = False
             self._had_external_print = False
             self._last_was_assistant = False
             self._gap_emitted        = False
@@ -261,18 +269,28 @@ class ConversationBuffer:
     @property
     def is_streaming(self) -> bool:
         with self._lock:
-            return self._is_streaming or self._is_thinking
+            return self._is_streaming or self._is_thinking or self._is_compacting
 
     def get_streaming_renderable(self):
         """Return a Rich renderable for the live StreamingZone Static widget."""
         from rich.text import Text
         with self._lock:
-            text         = self._streaming_text
-            is_thinking  = self._is_thinking
-            is_streaming = self._is_streaming
+            text           = self._streaming_text
+            is_thinking    = self._is_thinking
+            is_streaming   = self._is_streaming
+            is_compacting  = self._is_compacting
 
-        if not is_thinking and not is_streaming:
+        if not is_thinking and not is_streaming and not is_compacting:
             return Text(" ")   # single space keeps the zone at height=1
+
+        if is_compacting and not is_streaming:
+            t     = _time.monotonic()
+            frame = _THINK_FRAMES[int(t * 4) % len(_THINK_FRAMES)]
+            result = Text()
+            result.append(frame, style="bold #FFD700")
+            result.append("  ")
+            result.append("compacting", style="italic #FFD700")
+            return result
 
         if is_thinking and not is_streaming:
             t      = _time.monotonic()

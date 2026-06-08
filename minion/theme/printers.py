@@ -72,7 +72,7 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
     filled = round(bar_width * pct / 100)
     bar = f"[{BLUE}]" + "█" * filled + "[/]" + f"[muted]" + "░" * (bar_width - filled) + "[/]"
 
-    console.print(f"  [bold {YELLOW}]Context — {snapshot.model}[/]")
+    console.print(f"  [bold {BLUE}]Context — {snapshot.model}[/]")
     console.print(f"  {bar}  {pct:.1f}%")
     console.print(
         f"  [muted]{snapshot.current_context_tokens:,} / {snapshot.context_limit:,} tokens[/]"
@@ -84,8 +84,8 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
         console.print(f"  [muted]History cleared — context is fresh.[/]")
     else:
         console.print(
-            f"  This turn:     [{YELLOW}]{snapshot.input_tokens:,}[/] in  /  "
-            f"[{YELLOW}]{snapshot.output_tokens:,}[/] out"
+            f"  This turn:     [{BLUE}]{snapshot.input_tokens:,}[/] in  /  "
+            f"[{BLUE}]{snapshot.output_tokens:,}[/] out"
         )
         if snapshot.cache_read_tokens > 0 or snapshot.cache_creation_tokens > 0:
             uncached = snapshot.input_tokens - snapshot.cache_read_tokens - snapshot.cache_creation_tokens
@@ -98,7 +98,7 @@ def print_context(snapshot: "Optional[ContextSnapshot]") -> None:  # type: ignor
     # ── Session ────────────────────────────────────────────────────────────────
     turn_word = "turn" if snapshot.turn_count == 1 else "turns"
     console.print(
-        f"  Billed (cumulative): [{YELLOW}]{snapshot.session_total:,}[/] tokens  "
+        f"  Billed (cumulative): [{BLUE}]{snapshot.session_total:,}[/] tokens  "
         f"[muted]({snapshot.turn_count} {turn_word})[/]"
     )
 

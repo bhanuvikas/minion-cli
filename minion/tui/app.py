@@ -1358,6 +1358,12 @@ class MinionApp(App):
     def set_thinking(self, thinking: bool) -> None:
         self._set_thinking(thinking)
 
+    def mount_live_widget(self, renderable: "RenderableType") -> "Optional[Static]":
+        """Mount a Static block that the caller can update in-place via .update()."""
+        if self._conv_area is None:
+            return None
+        return self._conv_area.append_block(renderable)
+
     def set_startup_warnings(self, warnings: list[str]) -> None:
         self._startup_warnings = list(warnings)
 

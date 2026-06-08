@@ -895,17 +895,43 @@ async def _run_repl_tui(
 
             # Show "Compacting…" immediately — before the thinking animation fills the gap.
             tui_app.conversation.append_system(
-                f"[{YELLOW}]Compacting[/] [muted]({_msg_count} messages · strategy: {_strategy_name})[/]"
+                f"[{BLUE}]Compacting[/] [muted]({_msg_count} messages · strategy: {_strategy_name})[/]"
             )
 
             async def _run_compact() -> None:
+                from rich.text import Text as _RichText
+
+                _COMPACT_FRAMES = ["◡ ◡", "○ ○", "◠ ○", "○ ○", "○ ◠", "○ ○"]
+
+                # Mount an updatable widget for the spinner — driven by the loop below,
+                # not the timer, so there's no race with _run_submit's finally.
+                _anim = tui_app.mount_live_widget(_RichText())
+
+                _work = asyncio.create_task(
+                    asyncio.to_thread(_strategy.compact, conversation, client, ctx.base_system_prompt)
+                )
+                _fi = 0
+                while not _work.done():
+                    if _anim is not None:
+                        frame = _COMPACT_FRAMES[_fi % len(_COMPACT_FRAMES)]
+                        _t = _RichText()
+                        _t.append(f"{frame}  ", style="bold #1E90FF")
+                        _t.append("compacting", style="italic #1E90FF")
+                        _anim.update(_t)
+                    _fi += 1
+                    await asyncio.sleep(0.25)
+
+                if _anim is not None:
+                    try:
+                        _anim.remove()
+                    except Exception:
+                        pass
+
                 try:
-                    _result = await asyncio.to_thread(
-                        _strategy.compact, conversation, client, ctx.base_system_prompt
-                    )
+                    _result = await _work
                     _saved = _result.tokens_estimate_before - _result.tokens_estimate_after
                     tui_app.conversation.append_system(
-                        f"[{YELLOW}]Compacted.[/] [muted]"
+                        f"[{BLUE}]Compacted.[/] [muted]"
                         f"{_result.messages_before} → {_result.messages_after} messages · "
                         f"~{_result.tokens_estimate_before:,} → ~{_result.tokens_estimate_after:,} tokens "
                         f"(saved ~{_saved:,})[/]"
