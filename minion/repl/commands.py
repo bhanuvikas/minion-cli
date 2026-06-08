@@ -322,8 +322,12 @@ def _handle_slash_command(raw: str, ctx: CommandContext) -> bool:
         strategy = get_strategy(strategy_name, **kwargs)
         msg_count = len(conversation.messages)
         console.print(f"[{YELLOW}]Compacting[/] [muted]({msg_count} messages · strategy: {strategy_name})[/]")
-        with console.status(f"[muted]compacting...[/]", spinner="dots"):
+        _in_tui = getattr(console._file, "is_capture_buf", False)
+        if _in_tui:
             result = strategy.compact(conversation, client, ctx.base_system_prompt)
+        else:
+            with console.status(f"[muted]compacting...[/]", spinner="dots"):
+                result = strategy.compact(conversation, client, ctx.base_system_prompt)
         saved = result.tokens_estimate_before - result.tokens_estimate_after
         console.print(
             f"[{YELLOW}]Compacted.[/] [muted]"
