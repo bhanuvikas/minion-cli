@@ -861,6 +861,63 @@ async def _run_repl_tui(
             tui_app.push_screen(LoadScreen(initial_query=_initial_query), _on_load_done)
             return
 
+        if user_input.startswith("/") and user_input.strip().split()[0] == "/compact":
+            from ..compact import DEFAULT_STRATEGY, STRATEGIES, get_strategy as _get_strategy
+
+            _compact_arg = " ".join(user_input.strip().split()[1:])
+            _strategy_name = DEFAULT_STRATEGY
+            _strategy_kwargs: dict = {}
+
+            if not conversation.messages:
+                tui_app.conversation.append_system(f"[muted]Nothing to compact — conversation is empty.[/]")
+                tui_app.set_thinking(False)
+                return
+
+            if _compact_arg:
+                _parts2 = _compact_arg.split()
+                _strategy_name = _parts2[0].lower()
+                if _strategy_name not in STRATEGIES:
+                    tui_app.conversation.append_system(
+                        f"[muted]Unknown strategy '{_strategy_name}'. Available: {', '.join(STRATEGIES)}[/]"
+                    )
+                    tui_app.set_thinking(False)
+                    return
+                if _strategy_name == "truncate" and len(_parts2) > 1:
+                    try:
+                        _strategy_kwargs["keep_turns"] = int(_parts2[1])
+                    except ValueError:
+                        tui_app.conversation.append_system(f"[muted]Usage: /compact truncate [N turns to keep][/]")
+                        tui_app.set_thinking(False)
+                        return
+
+            _strategy = _get_strategy(_strategy_name, **_strategy_kwargs)
+            _msg_count = len(conversation.messages)
+
+            # Show "Compacting…" immediately — before the thinking animation fills the gap.
+            tui_app.conversation.append_system(
+                f"[{YELLOW}]Compacting[/] [muted]({_msg_count} messages · strategy: {_strategy_name})[/]"
+            )
+
+            async def _run_compact() -> None:
+                try:
+                    _result = await asyncio.to_thread(
+                        _strategy.compact, conversation, client, ctx.base_system_prompt
+                    )
+                    _saved = _result.tokens_estimate_before - _result.tokens_estimate_after
+                    tui_app.conversation.append_system(
+                        f"[{YELLOW}]Compacted.[/] [muted]"
+                        f"{_result.messages_before} → {_result.messages_after} messages · "
+                        f"~{_result.tokens_estimate_before:,} → ~{_result.tokens_estimate_after:,} tokens "
+                        f"(saved ~{_saved:,})[/]"
+                    )
+                except Exception as _exc:
+                    tui_app.conversation.append_system(f"[red]Compact failed:[/] [muted]{_exc}[/]")
+                finally:
+                    tui_app.set_thinking(False)
+
+            asyncio.create_task(_run_compact())
+            return  # thinking stays on until _run_compact finishes
+
         if user_input.startswith("/") and user_input.strip().split()[0] == "/agents":
             from ..tui.screens import AgentsScreen
 
