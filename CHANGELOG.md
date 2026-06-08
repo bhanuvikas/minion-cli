@@ -8,23 +8,70 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-05-04 — "Gru's Lab"
+## [1.0.0] — 2026-06-07 — "Gru's Lab"
 
 ### Added
-- `pip install minion-cli` packaging via hatchling — wheel includes all YAML and HTML assets
-- Shell tab completion via `minion --install-completion [bash|zsh|fish]`
-- `minion setup` — interactive first-run onboarding wizard (provider + API key)
-- First-run auto-detection: wizard fires automatically when no API key is configured
-- CHANGELOG.md (this file) in keepachangelog format
-- README.md with installation, quickstart, configuration reference, and feature tour
-- Version sourced from package metadata via `importlib.metadata` (single source of truth)
-- `pytest-cov` added to dev deps; 75%+ coverage target on core modules
-- Flow tests for memory pipeline and planning cycle
-- Unit tests for `minion/compact/` (previously uncovered)
+
+**TUI — full Textual rewrite**
+- Complete TUI rewrite from prompt_toolkit to [Textual](https://textual.textualize.io/) — Rich markup rendering, no visual glitches, proper async event loop
+- `/help` — command palette modal with category tabs and per-command detail pane
+- `/model` — 3-step wizard modal: provider card selector → model picker → API key input with live validation
+- `/config` — interactive settings panel; all config keys editable in-app with immediate feedback
+- `/load` — session picker modal with fuzzy search, content preview, and delete
+- `/agents` — full agent management UI: browse all tiers, search, create, edit (tools / model / system prompt / iterations), run, duplicate, delete
+- `/skills` — full skill browser: search, filter by tier, preview system prompt, run directly
+- `/hooks` — hook management UI: browse, create, delete, multi-select tool filter
+- `/memories` — memory browser: search, edit text, delete individual records or clear all
+- Inline permission panel — confirmation dialogs render inside the conversation area (no external prompt takeover)
+- Slash-command autocomplete dropdown with inline description preview; arrow-key nav, gold highlighting
+- `/compact` animates with a live blue spinner; `/context` token breakdown rendered in blue
+- Input shortcuts: Ctrl+A/E for line navigation, clipboard copy, selection tip
+- Thinking animation during LLM calls; streaming response renders directly into conversation log
+- TUI-native first-run onboarding: guided setup checklist screen with per-row status cards
+- `/plan` TUI experience: live narration during planning, streaming choices on completion
+- Diff shown inline in parallel tool slots and permission panel
+
+**Hooks system**
+- Lifecycle event hooks: `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`
+- Shell handlers — run any shell command in response to a lifecycle event
+- Built-in hook: MINION.md staleness tip fires after `write_file` / `edit_file` with deduplication
+- Hook definitions in YAML files at `~/.minion/hooks/` (global) and `.minion/hooks/` (project)
+- `/hooks [list|on|off]` REPL command to inspect and toggle hooks
+- Nefario trace events emitted for all hook lifecycle firings
+
+**Subagents and agent management**
+- Persistent agent chat mode: `/agent <role>` opens a back-and-forth session; `/back` returns to minion, `/handoff` passes the conversation
+- Subagent inspector (Ctrl+O) redesigned as a two-pane Textual modal with clickable agent tabs and Markdown transcript rendering
+- `/agent` result fed back to minion for interpretation after completion (both console and TUI)
+- Create new agent flow in `/agents` modal: name, description, tool checklist, model, system prompt, iterations
+
+**Packaging and release**
+- `pip install minion-cli` via hatchling — wheel bundles all YAML skill/agent manifests and HTML trace viewer
+- Shell tab completion: `minion --install-completion [bash|zsh|fish]`
+- `minion setup` — interactive first-run wizard (provider + API key); fires automatically when no key is detected
+- `minion --version` — shows installed version (`minion-cli v1.0.0`)
+- `python -m minion` entry point via `__main__.py`
+- Version single-sourced from `importlib.metadata` in `minion/__init__.py`
+- MIT `LICENSE` file
+- CHANGELOG.md in keepachangelog / semver format
+- README.md with installation, quickstart, full configuration reference, and feature tour
+- `pytest-cov` added to dev deps; 70% coverage threshold enforced
+- Flow tests for memory pipeline, planning cycle, and compaction
 
 ### Fixed
+- LLM `complete()` / `async_complete()` switched to streaming transport — fixes silent hangs on large responses
 - `pytest-asyncio` moved from runtime to dev dependencies
 - `--install-completion zsh` no longer misinterpreted as a one-shot LLM prompt
+- All pyright type errors resolved (0 errors, `basic` mode)
+- `.env` loading consolidated to `~/.minion/.env` only — project root `.env` no longer silently loaded
+- `/remote` routed through `CommandContext` so TUI captures output correctly
+- Serialized parallel tool confirmations — overlapping dialogs no longer race each other
+
+### Changed
+- Hooks configuration migrated from `[hooks]` in `config.toml` to standalone YAML files — composable and shareable per project
+- `/memory` command removed; stats folded into `/recall` output
+- `repl.py` (1,878 lines), `cli.py`, `theme.py` (608 lines), and `runner.py` decomposed into subpackages (`repl/`, `cli/`, `theme/`, `runner/`) — each module under ~300 lines
+- `OutputRenderer` ABC introduced — TUI and console share one rendering code path, eliminating ~390 lines of duplicated display logic
 
 ---
 
