@@ -17,12 +17,13 @@ can load the conversation.
 
 from __future__ import annotations
 
+import re as _re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from rich.console import RenderableType
-from rich.rule import Rule
+from rich.markup import escape as _esc
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
@@ -34,21 +35,21 @@ from textual.widgets import Input, Static
 
 from .base import ModalSearchBar
 
-# ── Color tokens (aligned with memories_screen palette) ──────────────────────
+# ── Color tokens (aligned with help_screen / memories_screen palette) ─────────
 
-_GOLD     = "#e5c46b"
-_GOLD_DIM = "#b8a030"
-_BLUE     = "#6aa3d4"
-_ORANGE   = "#d97757"
-_DIM      = "#7a7464"
-_FAINT    = "#4a4639"
-_RULE     = "#2a2820"
-_TEXT     = "#d8cfb8"
-_TINT_YEL = "#1a1400"
-_TINT_ORG = "#1a0800"
-_TINT_RED = "#1a0000"
-_SILVER   = "#c0c0c0"
-_RED      = "#e05555"
+_BRIGHT   = "#f5d76e"   # selected row name (warm gold)
+_GOLD     = "#e5c46b"   # header, badge
+_GOLD_DIM = "#b8a030"   # section labels (DETAILS / FIRST MESSAGE)
+_GREEN    = "#6ed98e"   # detail values (like /help USAGE lines)
+_CYAN     = "#6aa3d4"   # related links / model name
+_ORANGE   = "#d97757"   # search match highlight, danger
+_DIM      = "#7a7464"   # secondary text
+_FAINT    = "#4a4639"   # very faint / column headers
+_RULE     = "#2e2e2e"   # borders (more visible, matches /help)
+_TEXT     = "#d8cfb8"   # primary text
+_TINT_YEL = "#1a1400"   # focused row background
+_TINT_RED = "#1a0000"   # delete row background
+_SILVER   = "#c0c0c0"   # keybinding hints
 
 
 def _age(iso: str) -> str:
@@ -72,12 +73,11 @@ def _age(iso: str) -> str:
 
 
 def _model_short(model: str) -> str:
-    """Strip 'claude-' prefix for compact display (e.g. 'sonnet-4-6')."""
-    return model.removeprefix("claude-") if model else "—"
-
-
-def _keycap(key: str) -> Text:
-    return Text(f" {key} ", style=f"bold {_SILVER} on #2a2a2a")
+    """Strip 'claude-' prefix and date suffix: 'claude-haiku-4-5-20251001' → 'haiku-4-5'."""
+    m = model.removeprefix("claude-") if model else ""
+    if not m:
+        return "—"
+    return _re.sub(r"-\d{8}$", "", m)
 
 
 class LoadScreen(ModalScreen):  # type: ignore[type-arg]
@@ -89,12 +89,18 @@ LoadScreen {{
     background: #000000 40%;
 }}
 #ld-panel {{
-    width: 90%;
-    height: 85%;
+    width: 85%;
+    height: 88%;
     background: #0d0d0d;
-    border: round {_RULE};
+    border: round #3a3a3a;
 }}
-#ld-header {{
+#ld-title {{
+    height: auto;
+    padding: 0 2;
+    background: #0d0d0d;
+    border-bottom: solid {_RULE};
+}}
+#ld-greeting {{
     height: auto;
     padding: 0 2;
     border-bottom: solid {_RULE};
@@ -109,14 +115,17 @@ LoadScreen {{
 #ld-list-scroll {{
     height: 1fr;
     scrollbar-size-vertical: 1;
+    scrollbar-background: #111111;
     scrollbar-color: #2a2a2a;
+    scrollbar-color-hover: #444444;
 }}
 #ld-list {{
     height: auto;
+    padding: 0 0;
 }}
 #ld-preview-pane {{
     width: 50%;
-    padding: 0 2;
+    padding: 1 2;
 }}
 #ld-preview {{
     height: auto;
@@ -125,6 +134,7 @@ LoadScreen {{
     height: 2;
     padding: 0 2;
     background: #0d0d0d;
+    color: {_DIM};
     border-top: solid {_RULE};
 }}
 """
@@ -149,7 +159,8 @@ LoadScreen {{
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ld-panel"):
-            yield Static("", id="ld-header")
+            yield Static("", id="ld-title")
+            yield Static("", id="ld-greeting")
             with Horizontal(id="ld-body"):
                 with Vertical(id="ld-list-pane"):
                     yield ModalSearchBar(placeholder="filter sessions…", id="ld-search")
@@ -196,24 +207,61 @@ LoadScreen {{
     # ── Refresh ───────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        self.query_one("#ld-header",  Static).update(self._build_header())
-        self.query_one("#ld-list",    Static).update(self._build_list())
-        self.query_one("#ld-preview", Static).update(self._build_preview())
-        self.query_one("#ld-footer",  Static).update(self._build_footer())
+        self.query_one("#ld-title",    Static).update(self._build_title())
+        self.query_one("#ld-greeting", Static).update(self._build_greeting())
+        self.query_one("#ld-list",     Static).update(self._build_list())
+        self.query_one("#ld-preview",  Static).update(self._build_preview())
+        self.query_one("#ld-footer",   Static).update(self._build_footer())
 
     # ── Renderers ─────────────────────────────────────────────────────────────
 
-    def _build_header(self) -> Text:
-        t = Text()
-        t.append("  Load Session", style=f"bold {_GOLD}")
-        if self._sessions:
-            t.append(f"  {len(self._sessions)} session{'s' if len(self._sessions) != 1 else ''}",
-                     style=_DIM)
-        if self._query:
-            t.append(f"  ·  ", style=_FAINT)
-            t.append(f"{len(self._visible)} match{'es' if len(self._visible) != 1 else ''}",
-                     style=_ORANGE if not self._visible else _DIM)
-        return t
+    def _build_title(self) -> RenderableType:
+        tbl = Table.grid(expand=True, padding=0)
+        tbl.add_column(no_wrap=True)
+        tbl.add_column(no_wrap=True, justify="right")
+
+        left = Text.from_markup(f"[{_DIM}]⌐ /load[/] [{_DIM}]— sessions[/]")
+
+        if self._mode == "confirm_delete" and self._visible:
+            right = Text.from_markup(f"[bold {_ORANGE}]delete pending[/]")
+        elif self._visible and self._mode in ("browse", "search"):
+            sel = self._visible[self._selected]
+            right = Text.from_markup(
+                f"[{_DIM}]↵ load:[/] [bold {_GREEN}]{_esc(sel.name)}[/]"
+            )
+        elif self._sessions:
+            n = len(self._sessions)
+            label = f"{n} session{'s' if n != 1 else ''}"
+            if self._query:
+                label += f"  ·  {len(self._visible)} match{'es' if len(self._visible) != 1 else ''}"
+            right = Text.from_markup(f"[{_DIM}]{label}[/]")
+        else:
+            right = Text.from_markup(f"[{_DIM}]no sessions[/]")
+
+        tbl.add_row(left, right)
+        return tbl
+
+    def _build_greeting(self) -> str:
+        keycap = f"[bold white on #4a4a4a]"
+        dot = f"[{_DIM}]·[/]"
+        if self._mode == "confirm_delete":
+            return (
+                f"[bold {_ORANGE}]⚠[/]  "
+                f"[{_DIM}]Press [{keycap}] d [/] again to confirm deletion, or "
+                f"[{keycap}] esc [/] to cancel.[/]"
+            )
+        if self._mode == "empty":
+            return (
+                f"[bold {_GOLD}]Bello![/]  "
+                f"[{_DIM}]No saved sessions yet. Use [bold]{_esc('/save <name>')}[/] to create one.[/]"
+            )
+        return (
+            f"[bold {_GOLD}]Bello![/]  "
+            f"[{_DIM}]Navigate with [{keycap}] ↑↓ [/]  "
+            f"{dot}  [{keycap}] ↵ [/] to load  "
+            f"{dot}  [{keycap}] d [/] to delete  "
+            f"{dot}  type to filter[/]"
+        )
 
     def _build_list(self) -> RenderableType:
         if self._mode == "empty":
@@ -233,15 +281,35 @@ LoadScreen {{
         outer = Table.grid(expand=True, padding=0)
         outer.add_column()
 
+        # Faint column header row
+        hdr = Table.grid(expand=True, padding=0)
+        hdr.add_column(width=5,  no_wrap=True)
+        hdr.add_column(ratio=1,  no_wrap=True)
+        hdr.add_column(width=10, no_wrap=True)
+        hdr.add_column(width=12, no_wrap=True)
+        hdr.add_column(width=14, no_wrap=True)
+        hdr.add_column(width=8,  no_wrap=True)
+        hdr.add_column(width=2,  no_wrap=True)
+        hdr.add_row(
+            Text(""),
+            Text("name", style=_FAINT, no_wrap=True),
+            Text("msgs", style=_FAINT, no_wrap=True),
+            Text("tokens", style=_FAINT, no_wrap=True),
+            Text("model", style=_FAINT, no_wrap=True),
+            Text("age", style=_FAINT, no_wrap=True),
+            Text(""),
+        )
+        outer.add_row(hdr)
+
         # Columns: ptr | name (fills) | msgs | tokens | model | age | pad
         tbl = Table.grid(expand=True, padding=0)
-        tbl.add_column(width=5,  no_wrap=True)   # pointer
-        tbl.add_column(ratio=1,  no_wrap=True)   # session name
-        tbl.add_column(width=10, no_wrap=True)   # "103 msgs"
-        tbl.add_column(width=12, no_wrap=True)   # "1203.3k tok"
-        tbl.add_column(width=14, no_wrap=True)   # "sonnet-4-6"
-        tbl.add_column(width=8,  no_wrap=True)   # "7h ago"
-        tbl.add_column(width=2,  no_wrap=True)   # right-edge padding
+        tbl.add_column(width=5,  no_wrap=True)
+        tbl.add_column(ratio=1,  no_wrap=True)
+        tbl.add_column(width=10, no_wrap=True)
+        tbl.add_column(width=12, no_wrap=True)
+        tbl.add_column(width=14, no_wrap=True)
+        tbl.add_column(width=8,  no_wrap=True)
+        tbl.add_column(width=2,  no_wrap=True)
 
         for i, s in enumerate(self._visible):
             is_sel = (i == self._selected)
@@ -249,14 +317,14 @@ LoadScreen {{
 
             if is_del:
                 row_style  = f"on {_TINT_RED}"
-                name_style = f"bold {_RED}"
+                name_style = f"bold {_ORANGE}"
                 meta_style = f"strike {_DIM}"
-                ptr_text   = Text(" ✕ ", style=f"bold {_RED}", no_wrap=True)
+                ptr_text   = Text(" ✕ ", style=f"bold {_ORANGE}", no_wrap=True)
             elif is_sel:
                 row_style  = f"on {_TINT_YEL}"
-                name_style = f"bold {_GOLD}"
+                name_style = f"bold {_BRIGHT}"
                 meta_style = _DIM
-                ptr_text   = Text(" ▸ ", style=f"bold {_GOLD}", no_wrap=True)
+                ptr_text   = Text(" ▸ ", style=f"bold {_BRIGHT}", no_wrap=True)
             else:
                 row_style  = ""
                 name_style = _TEXT
@@ -300,32 +368,28 @@ LoadScreen {{
         outer.add_row(tbl)
         return outer
 
-    def _build_preview(self) -> RenderableType:
+    def _build_preview(self) -> str:
         if self._mode == "empty" or not self._visible:
-            t = Text()
-            t.append("\n  Select a session to preview.", style=_FAINT)
-            return t
+            return f"[{_FAINT}]\n  Select a session to preview.[/]"
 
         s = self._visible[self._selected]
 
         if self._mode == "confirm_delete":
-            t = Text()
-            t.append("\n  Delete this session?\n\n", style=f"bold {_RED}")
-            t.append(f"  {s.name}\n", style=f"bold {_TEXT}")
-            t.append(f"\n  This cannot be undone.\n\n", style=_DIM)
-            t.append("  Press ", style=_FAINT)
-            t.append(" d ", style=f"bold {_RED} on #2a0000")
-            t.append(" again to confirm, or ", style=_FAINT)
-            t.append(" esc ", style=f"bold {_SILVER} on #2a2a2a")
-            t.append(" to cancel.", style=_FAINT)
-            return t
+            lines = [
+                "",
+                f"[bold {_ORANGE}]Delete this session?[/]",
+                "",
+                f"[bold {_TEXT}]  {_esc(s.name)}[/]",
+                "",
+                f"[{_DIM}]This cannot be undone. The session file will be[/]",
+                f"[{_DIM}]permanently removed from ~/.minion/sessions/.[/]",
+                "",
+                f"[bold white on #4a4a4a] d [/] [{_DIM}]confirm delete[/]   "
+                f"[bold white on #4a4a4a] esc [/] [{_DIM}]cancel[/]",
+            ]
+            return "\n".join(lines)
 
-        # Normal detail view
-        tbl = Table.grid(padding=(0, 1))
-        tbl.add_column(style=_DIM,  no_wrap=True, min_width=10)
-        tbl.add_column(style=_TEXT, no_wrap=True)
-
-        # Format saved_at nicely
+        # Format saved_at
         saved_fmt = s.saved_at
         try:
             dt = datetime.fromisoformat(s.saved_at)
@@ -333,57 +397,62 @@ LoadScreen {{
         except (ValueError, AttributeError):
             pass
 
-        tbl.add_row("", "")
-        tbl.add_row(Text(s.name, style=f"bold {_GOLD}"), Text(""))
-        tbl.add_row(Text("─" * 30, style=_RULE), Text(""))
-        tbl.add_row("Saved",    saved_fmt or "—")
-        tbl.add_row("Age",      _age(s.saved_at))
-        tbl.add_row("Model",    s.model or "—")
-        tbl.add_row("Messages", str(s.message_count))
-        tbl.add_row("Tokens",   f"{s.total_tokens:,}" if s.total_tokens else "0")
+        tok_fmt = f"{s.total_tokens:,}" if s.total_tokens else "0"
+        mod_full = s.model or "—"
+        age_str = _age(s.saved_at)
 
-        # Message previews
+        lines: list[str] = [
+            f"[bold {_BRIGHT}]{_esc(s.name)}[/]  [{_DIM} on #1a1a1a]  {_esc(_model_short(s.model))}  [/]",
+            "",
+            f"[{_DIM}]{_esc(age_str)} · {s.message_count} messages · {_esc(tok_fmt)} tokens[/]",
+            "",
+            f"[bold {_GOLD_DIM}]DETAILS[/]",
+            f"[{_GREEN}]  Saved      {_esc(saved_fmt or '—')}[/]",
+            f"[{_GREEN}]  Model      {_esc(mod_full)}[/]",
+            f"[{_GREEN}]  Messages   {s.message_count}[/]",
+            f"[{_GREEN}]  Tokens     {_esc(tok_fmt)}[/]",
+        ]
+
         if s.first_user_msg:
-            tbl.add_row("", "")
-            tbl.add_row(Text("── first message", style=_FAINT), Text(""))
             preview = s.first_user_msg.replace("\n", " ")
-            tbl.add_row("", Text(preview, style=_DIM, overflow="fold"))
+            if len(preview) > 160:
+                preview = preview[:157] + "…"
+            lines += [
+                "",
+                f"[bold {_GOLD_DIM}]FIRST MESSAGE[/]",
+                f"[{_DIM}]  {_esc(preview)}[/]",
+            ]
 
         if s.last_user_msg:
-            tbl.add_row("", "")
-            tbl.add_row(Text("── last message", style=_FAINT), Text(""))
             preview = s.last_user_msg.replace("\n", " ")
-            tbl.add_row("", Text(preview, style=_DIM, overflow="fold"))
+            if len(preview) > 160:
+                preview = preview[:157] + "…"
+            lines += [
+                "",
+                f"[bold {_GOLD_DIM}]LAST MESSAGE[/]",
+                f"[{_DIM}]  {_esc(preview)}[/]",
+            ]
 
-        return tbl
+        return "\n".join(lines)
 
-    def _build_footer(self) -> Text:
-        t = Text()
-        t.append("  ")
+    def _build_footer(self) -> str:
+        dot = f"[{_DIM}]·[/]"
+        s = f"[{_SILVER}]"
+        d = f"[{_DIM}]"
         if self._mode == "confirm_delete":
-            t.append_text(_keycap("d"))
-            t.append(" confirm delete", style=_DIM)
-            t.append("  ·  ", style=_FAINT)
-            t.append_text(_keycap("esc"))
-            t.append(" cancel", style=_DIM)
-        elif self._mode == "empty":
-            t.append_text(_keycap("esc"))
-            t.append(" dismiss", style=_DIM)
-        else:
-            t.append_text(_keycap("↑↓"))
-            t.append(" navigate", style=_DIM)
-            t.append("  ·  ", style=_FAINT)
-            t.append_text(_keycap("↵"))
-            t.append(" load", style=_DIM)
-            t.append("  ·  ", style=_FAINT)
-            t.append_text(_keycap("d"))
-            t.append(" delete", style=_DIM)
-            t.append("  ·  ", style=_FAINT)
-            t.append(" type to filter ", style=_DIM)
-            t.append("  ·  ", style=_FAINT)
-            t.append_text(_keycap("esc"))
-            t.append(" dismiss", style=_DIM)
-        return t
+            return (
+                f"  [{_SILVER}]d[/] {d}confirm delete[/]  {dot}  "
+                f"[{_SILVER}]esc[/] {d}cancel[/]"
+            )
+        if self._mode == "empty":
+            return f"  [{_SILVER}]esc[/] {d}dismiss[/]"
+        return (
+            f"  {s}↑ ↓[/] {d}navigate[/]  {dot}  "
+            f"{s}↵[/] {d}load[/]  {dot}  "
+            f"{s}d[/] {d}delete[/]  {dot}  "
+            f"{s}type[/] {d}to filter[/]  {dot}  "
+            f"{s}esc[/] {d}dismiss[/]"
+        )
 
     # ── Input handling ────────────────────────────────────────────────────────
 
@@ -409,7 +478,6 @@ LoadScreen {{
             and event.character.isprintable()
             and event.key not in ("escape", "enter", "up", "down", "tab", "d")
         ):
-            # Any printable char (not already handled) → jump to search bar
             search = self.query_one("#ld-search", ModalSearchBar)
             inp = search.query_one(Input)
             inp.focus()
