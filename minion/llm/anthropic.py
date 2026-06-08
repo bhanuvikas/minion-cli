@@ -134,9 +134,14 @@ class AnthropicClient(LLMClient):
 
         for attempt in range(_MAX_RETRY):
             try:
-                response = self._client.messages.create(**kwargs)
+                with self._client.messages.stream(**kwargs) as stream_ctx:
+                    response = stream_ctx.get_final_message()
+                text = next(
+                    (b.text for b in response.content if isinstance(b, anthropic.types.TextBlock)),
+                    "",
+                )
                 return LLMResponse(
-                    content=response.content[0].text,
+                    content=text,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     model=response.model,
@@ -256,9 +261,14 @@ class AnthropicClient(LLMClient):
 
         for attempt in range(_MAX_RETRY):
             try:
-                response = await self._async_client.messages.create(**kwargs)
+                async with self._async_client.messages.stream(**kwargs) as stream_ctx:
+                    response = await stream_ctx.get_final_message()
+                text = next(
+                    (b.text for b in response.content if isinstance(b, anthropic.types.TextBlock)),
+                    "",
+                )
                 return LLMResponse(
-                    content=response.content[0].text,
+                    content=text,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     model=response.model,
