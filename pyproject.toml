@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minion-cli"
-version = "1.0.0"
-description = "A terminal-native agentic coding assistant — tool use, memory, MCP, subagents, and A2A."
+version = "1.0.1"
+description = "A terminal-native agentic coding harness — streaming ReAct loop with reflection and planning, MCP/A2A protocols, cross-session semantic memory, subagent orchestration, YAML skills and agent roles, shell lifecycle hooks, and a Textual TUI."
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "MIT" }

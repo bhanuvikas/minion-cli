@@ -4,19 +4,26 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A terminal-native agentic coding assistant powered by LLMs. Reads, writes, and reasons
-about code using a ReAct loop — with tool use, memory, reflection, skills, MCP server
-integration, subagents, and agent-to-agent (A2A) coordination, all from a single CLI.
+A terminal-native agentic coding harness — streaming ReAct loop with reflection
+and planning, MCP/A2A protocols, cross-session semantic memory, subagent
+orchestration, YAML skills and agent roles, shell lifecycle hooks, and a Textual TUI.
 
 ---
 
-## Why minion-cli?
+## Highlights
 
-- **Full ReAct loop** — reads files, writes code, runs shell commands, and reasons across up to 20 iterations without you driving it step by step
-- **Long-term memory** — extracts facts from sessions and retrieves them automatically; survives context compaction
-- **MCP-native** — connect any MCP-compliant tool server; tools appear in the agent's tool list automatically
-- **Full-screen TUI** — [Textual](https://textual.textualize.io/) terminal UI with scrollable conversation, live agent/tool status, subagent inspector (Ctrl+O), and inline permission panels
-- **Multi-provider** — Anthropic, OpenAI, and OpenRouter; switch with a single flag or env var
+- **ReAct loop** — runs up to 20 think→tool→observe iterations; `--reflect N` adds a separate critique→score→refine pass on each response, which is a distinct second LLM call, not part of the loop itself.
+- **Planning mode** — `/plan <goal>` explores the codebase read-only first using a restricted tool subset, produces an editable markdown document, then executes with full tool access only after you approve it.
+- **Long-term memory** — retrieves candidates scored as `0.7×similarity + 0.2×recency + 0.1×type_weight`; identity and preference records always inject, episodic records compete on score; stored as Markdown with YAML frontmatter you can edit directly.
+- **Skills** — the five builtins (`/commit`, `/review`, `/refactor`, `/explain`, `/test`) are examples; drop any `.yaml` file into `.minion/skills/` to define `/yourthing` as a reusable prompt workflow.
+- **Agent roles** — `researcher` is read-only, `coder` reads and writes but has no shell access, `tester` gets full tool access; each role runs in an isolated conversation with no access to REPL history.
+- **Persistent agent sessions** — `/agent <role>` without a task opens an ongoing chat with that role; `/handoff` passes the conversation summary back to the main orchestrator as context.
+- **Lifecycle hooks** — drop a YAML file in `.minion/hooks/` (project) or `~/.minion/hooks/` (global); the shell handler receives event JSON on stdin; exit 2 blocks the tool call before it runs; six event types cover the full session and tool lifecycle.
+- **3-tier registries** — skills, agent roles, and permissions all resolve builtin → `~/.minion/` → `.minion/`; project-local entries shadow user and builtin ones without forking.
+- **Dry-run and approval tiers** — `--dry-run` previews every tool call before touching anything; permanent rules live at session, project, or global scope; compound shell commands are split before pattern matching.
+- **MCP and A2A** — persistent stdio/HTTP sessions per MCP server with no reconnect overhead per call; expose minion as an A2A endpoint any external orchestrator can delegate to, or delegate outward to named remote agents mid-task.
+- **Nefario** — every session writes a JSONL trace to `~/.minion/traces/`; `nefario --latest` replays it in a self-contained browser SPA showing per-turn token counts and cache hit rates.
+- **TUI modals** — `/agents`, `/skills`, `/hooks`, `/memories`, `/help`, `/config`, `/model`, and `/load` each open a full-screen modal; the entire system is browsable and configurable without leaving the terminal.
 
 ---
 
@@ -134,18 +141,69 @@ MINION_MODEL=claude-sonnet-4-6
 |---------|-----------|
 | **One-shot mode** | `minion "your task"` |
 | **Interactive REPL** | `minion` (no args); full-screen TUI when stdout is a TTY |
-| **Tool use (ReAct loop)** | Automatic — reads/writes files, runs shell, searches code |
+| **File and code tools** | Automatic — `read_file`, `write_file`, `edit_file`, `list_directory`, `run_shell` |
+| **Code navigation** | Automatic — `get_file_outline` extracts class/function structure from Python/JS/TS; `glob` finds files by name pattern; `search_file` greps by regex |
+| **Web access** | Automatic — `web_fetch` retrieves and strips any URL the agent needs during a task |
+| **Task tracking** | Automatic — agent uses `todo_write`/`todo_read` to maintain a visible checklist during multi-step work |
 | **Self-refine reflection** | `--reflect 1` flag or `/config reflect 1` in REPL |
 | **Long-term memory** | Automatic extraction/injection; `/remember`, `/forget`, `/memories` |
-| **Skills** | `/commit`, `/refactor`, `/review`, `/explain`, `/test` |
+| **Skills** | `/commit`, `/refactor`, `/review`, `/explain`, `/test` — or write your own YAML skill |
 | **Planning** | `/plan <goal>` — explore codebase → generate plan → execute |
-| **Subagents** | `minion agents run coder "implement X"` or `/agent <role> <task>` |
-| **MCP servers** | Configure in `~/.minion/mcp.json`; any MCP-compliant server |
-| **A2A coordination** | `minion remote serve` — expose minion as a remote A2A agent |
+| **Subagents** | `minion agents run coder "implement X"` or `/agent <role>` for persistent chat |
+| **MCP servers** | Configure in `~/.minion/mcp.json`; tools, resources, and prompts; stdio and HTTP transports |
+| **A2A coordination** | Both client and server — delegate to remote agents or accept tasks from external orchestrators |
 | **Session tracing** | Automatic JSONL traces; `nefario --latest` to view in browser |
 | **Dry-run mode** | `--dry-run` — preview tool calls without executing |
 | **Auto-approval** | `/config approval edits` (writes only) or `yolo` (all tools) |
 | **`@mention` injection** | `@path/to/file.py` in a message inlines the file into context |
+| **Prompt caching** | Static system prompt sent with `cache_control: ephemeral` on Anthropic — cache hits visible in `nefario` traces as `cache_read_input_tokens` |
+
+---
+
+## Hooks
+
+Hooks let you attach shell scripts to lifecycle events in the agent loop without touching minion's source code.
+Drop a YAML file in `~/.minion/hooks/` (global) or `.minion/hooks/` (project-scoped).
+
+### Events
+
+| Event | Fires when |
+|-------|-----------|
+| `PreToolUse` | Before any tool call — can block execution |
+| `PostToolUse` | After a tool call completes |
+| `SessionStart` | When the REPL session initialises |
+| `SessionEnd` | When the session exits cleanly |
+| `UserPromptSubmit` | When the user submits a prompt |
+| `StopTurn` | When the agent finishes a response turn |
+
+### Shell handler protocol
+
+The hook's command receives the event as a JSON object on **stdin**.
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Proceed; stdout is parsed as `{"tip": "...", "reason": "..."}` (both optional) |
+| `2` | Block (default for `PreToolUse`); stderr content is shown to the user as the reason |
+| other | Non-blocking; execution continues regardless |
+
+### Example hook
+
+`~/.minion/hooks/audit-shell.yaml`:
+
+```yaml
+description: Append every shell command to an audit log
+event: PreToolUse
+tools: [run_shell]
+command: |
+  python3 -c "
+  import sys, json
+  d = json.loads(sys.stdin.read())
+  open('/tmp/minion-audit.log', 'a').write(d['tool_input']['command'] + '\n')
+  "
+timeout: 5
+```
+
+`tools` is optional — omit it to match all tools. Set `blocking: true` to make the hook block on exit code 2 for non-`PreToolUse` events.
 
 ---
 
@@ -265,6 +323,59 @@ overrides or extends `~/.minion/` global settings:
 | `.minion/plans/` | Saved plan files |
 | `.minion/memory/` | Project-scoped memory records and vector index |
 | `.minion/permissions.toml` | Project-level auto-approval rules |
+
+---
+
+## Custom Skills and Agent Roles
+
+### Skills
+
+A skill is a YAML file that injects a system prompt and optional tool constraints before running the agent.
+Place it in `.minion/skills/` (project) or `~/.minion/skills/` (user) and invoke it as `/<name>`.
+
+`.minion/skills/deploy.yaml`:
+
+```yaml
+name: deploy
+description: Run the deployment checklist and push to staging
+prompt: |
+  You are a deployment specialist.
+  1. Run the test suite — stop if any tests fail.
+  2. Run `git log --oneline origin/main..HEAD` to summarise what's shipping.
+  3. Ask for confirmation before running the deploy command.
+  4. Run: ./scripts/deploy.sh staging
+tools:
+  - run_shell
+  - read_file
+max_iterations: 10
+```
+
+Invoke with `/deploy` in the REPL. Builtin skills (`/commit`, `/review`, `/explain`, `/refactor`, `/test`)
+follow the same format and can be used as templates. Skills can chain using a `steps:` list.
+
+### Agent roles
+
+An agent role defines a subagent with its own system prompt and a scoped tool list.
+Place it in `.minion/agents/` (project) or `~/.minion/agents/` (user).
+
+`.minion/agents/devops.yaml`:
+
+```yaml
+name: devops
+description: Infrastructure and deployment specialist — has shell access, no file writes.
+system_prompt: |
+  You are a devops engineer. You inspect infrastructure, run diagnostics, and
+  report findings. You may run read-only shell commands. Never modify files.
+tools:
+  - run_shell
+  - read_file
+  - list_directory
+  - search_file
+max_iterations: 15
+```
+
+Invoke with `/agent devops <task>` or `minion agents run devops "<task>"`.
+Project roles shadow user roles; user roles shadow builtin roles on name collision.
 
 ---
 

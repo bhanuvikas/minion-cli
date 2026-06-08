@@ -8,6 +8,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-06-07
+
+### Changed
+- README: replaced "Why minion-cli?" with "Highlights" section — 12 concrete capability bullets covering the full system depth
+- README: updated tagline to accurately describe the harness architecture
+- `pyproject.toml`: updated package description to match
+
 ## [1.0.0] — 2026-06-07 — "Gru's Lab"
 
 ### Added
