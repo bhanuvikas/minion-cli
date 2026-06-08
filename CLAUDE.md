@@ -20,9 +20,18 @@ pytest "tests/test_display_utils.py::TestFragsToRichMarkup::test_rich_special_ch
 pytest --cov=minion --cov-report=term-missing                                                               # coverage (exits non-zero below 70%)
 
 # Run CLI (dev)
-minion "your task"        # one-shot
-minion                    # interactive REPL (TUI if stdout is a TTY)
-MINION_NO_TUI=1 minion    # force console mode
+minion "your task"               # one-shot
+minion                           # interactive REPL (TUI if stdout is a TTY)
+minion "your task" --dry-run     # preview tool calls without executing
+minion "your task" --reflect 1   # self-refine after response (1–3 rounds)
+minion setup                     # first-run API key wizard
+minion --install-completion zsh  # set up shell tab completion (bash/fish also supported)
+MINION_NO_TUI=1 minion           # force console mode
+MINION_PROVIDER=openai minion    # override provider (anthropic|openai|openrouter)
+
+# Trace viewer (second CLI, registered as `nefario`)
+nefario --latest      # view most recent session trace
+nefario <session-id>  # replay a specific session trace
 
 # Build
 python -m build
@@ -345,6 +354,28 @@ When `needs_scrollback_flush=True`, the caller (in `runner/parallel.py`) must ma
 | `config/__init__.py` | Re-exports everything; callers use `from .config import X` |
 
 **Loading priority** (lowest → highest): hardcoded defaults → `~/.minion/config.toml` → `.minion/config.toml` → `.env` → CLI flags.
+
+**`~/.minion/config.toml` schema:**
+
+```toml
+[llm]
+provider = "anthropic"          # anthropic | openai | openrouter
+model    = "claude-sonnet-4-6"  # any model ID supported by the provider
+
+[agent]
+reflect_depth       = 0         # 0 = off; 1–3 = self-refine rounds after each response
+agents_enabled      = true
+max_subagent_depth  = 2
+
+[memory]
+enabled             = true      # extract and inject cross-session memories
+extraction_trigger  = "substantial"  # always | substantial | manual
+
+[tracing]
+enabled = true                  # write session traces to ~/.minion/traces/
+```
+
+API keys belong in `.env` (or shell environment), not `config.toml`.
 
 ---
 
