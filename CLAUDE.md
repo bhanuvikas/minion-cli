@@ -41,6 +41,21 @@ The venv Python interpreter is `.venv/bin/python` — use it when `python` / `py
 
 ---
 
+## Release process
+
+Follow these steps in order before every release:
+
+1. **Security review** — run `/security-review` in Claude Code; review all changes since the last tag
+2. **Update CHANGELOG.md** — run `git log v{last_tag}..HEAD --oneline` and ask Claude to write the new version entry following the existing format
+3. **Bump version** — update `version` in `pyproject.toml` (semver: patch for fixes, minor for new features, major for breaking changes)
+4. **Commit** — `git commit -m "chore: release vX.Y.Z"`
+5. **Tag and push** — `git tag vX.Y.Z && git push origin main && git push origin vX.Y.Z`
+   - The pre-push hook will prompt you to confirm security review was done
+   - GitHub Actions automatically builds and uploads to PyPI
+   - GitHub Actions automatically creates a GitHub Release with generated notes
+
+---
+
 ## Package layout
 
 ```
